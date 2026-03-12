@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: cc_mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP
+      - "1935:1935"   # RTMP
+      - "8888:8888"   # HLS
+      - "8889:8889"   # WebRTC
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+
+  ffmpeg-mixer:
+    build: ./ffmpeg-mixer
+    container_name: cc_ffmpeg
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    volumes:
+      - ./data/library:/library:ro
+      - ./data/announcements:/announcements:ro
+    environment:
+      - MEDIAMTX_HOST=mediamtx
+      - API_HOST=api
+      - PYTHONUNBUFFERED=1
+    # Command is handled by entrypoint.sh in the Dockerfile
+
+  api:
+    build: ./api
+    container_name: cc_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/library:/app/data/library
+      - ./data/announcements:/app/data/announcements
+      - ./api:/app  # For hot-reloading in dev
+      - ./supabase/migrations:/app/supabase/migrations:ro
+    environment:
+      - DB_MODE=${DB_MODE:-local}
+      - POSTGRES_USER=${POSTGRES_USER:-coco}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-coco_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-cocostation}
+      - POSTGRES_HOST=db
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY:-}
+      - FFMPEG_HOST=ffmpeg-mixer
+    depends_on:
+      - db
+      - ffmpeg-mixer
+
+  db:
+    image: postgres:16-alpine
+    container_name: cc_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coco}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coco_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-cocostation}
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    ports:
+      - "5432:5432" # Exposed for debugging
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: cc_dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
+      - VITE_SUPABASE_URL=${SUPABASE_URL:-}
+      - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
+    depends_on:
+      - api

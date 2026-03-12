@@ -1,0 +1,15 @@
+version: '3.8'
+
+# Override file for Supabase (Cloud) Mode.
+# Run with: docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d
+
+services:
+  # In cloud mode, we don't need the local PostgreSQL container
+  db:
+    profiles:
+      - donotstart
+
+  api:
+    # Remove the dependency on local db
+    depends_on:
+      - ffmpeg-mixer

@@ -1,0 +1,51 @@
+###############################################
+# Global settings
+
+# API needed to read status, if needed
+api: yes
+apiAddress: :9997
+
+###############################################
+# RTSP settings
+
+rtsp: yes
+rtspAddress: :8554
+
+###############################################
+# RTMP settings
+
+rtmp: yes
+rtmpAddress: :1935
+
+###############################################
+# HLS settings
+
+hls: yes
+hlsAddress: :8888
+# hlsAlwaysRemux: yes
+
+###############################################
+# WebRTC settings
+
+webrtc: yes
+webrtcAddress: :8889
+
+###############################################
+# Path settings
+
+paths:
+  # Deck A
+  deck-a:
+    runOnInit: ""
+  
+  # Deck B
+  deck-b:
+    runOnInit: ""
+  
+  # Deck C
+  deck-c:
+    runOnInit: ""
+  
+  # Deck D
+  deck-d:
+    runOnInit: ""
