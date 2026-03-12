@@ -20,5 +20,10 @@ class TTSRequest(BaseModel):
     targets: List[str]
     schedule_at: Optional[datetime] = None
 
+class LibraryItem(BaseModel):
+    filename: str
+    size: int
+    duration: Optional[float] = None
+
 class SettingUpdateRequest(BaseModel):
     value: dict

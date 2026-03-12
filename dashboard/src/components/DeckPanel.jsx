@@ -70,8 +70,25 @@ export default function DeckPanel({ id, name }) {
       </div>
       
       {/* Stream Link Copy */}
-      <div style={{ marginTop: '1rem', fontSize: '0.7rem', color: 'var(--text-secondary)', textAlign: 'center', cursor: 'pointer', opacity: 0.6 }}>
-        Stream: /live/deck-{id}
+      <div 
+        onClick={() => {
+          const streamUrl = `${window.location.protocol}//${window.location.hostname}:8888/live/deck-${id}`;
+          navigator.clipboard.writeText(streamUrl);
+          alert(`Copied Stream URL: ${streamUrl}`);
+        }}
+        style={{ 
+          marginTop: '1rem', 
+          fontSize: '0.75rem', 
+          color: 'var(--accent-blue)', 
+          textAlign: 'center', 
+          cursor: 'pointer', 
+          padding: '0.5rem',
+          borderRadius: '4px',
+          background: 'rgba(0, 212, 255, 0.05)',
+          border: '1px solid rgba(0, 212, 255, 0.1)'
+        }}
+      >
+        Copy Stream URL
       </div>
 
       <style>{`

@@ -1,6 +1,4 @@
-import React from 'react';
-import DeckPanel from '../components/DeckPanel';
-import OnAirButton from '../components/OnAirButton';
+import LibraryManager from '../components/LibraryManager';
 
 export default function MixerPage() {
   return (
@@ -19,12 +17,7 @@ export default function MixerPage() {
       </div>
       
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: '1.5rem' }}>
-        <div className="glass-panel" style={{ height: '400px' }}>
-          <h3>Library Manager</h3>
-          <div style={{ marginTop: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-            Drag & drop MP3s here
-          </div>
-        </div>
+        <LibraryManager />
         <div>
           <OnAirButton />
         </div>

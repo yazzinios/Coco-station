@@ -6,9 +6,16 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict
 
-from schemas import DeckRenameRequest, VolumeRequest, PlayRequest, MicControlRequest, TTSRequest, SettingUpdateRequest
+import shutil
+from pathlib import Path
+from schemas import DeckRenameRequest, VolumeRequest, PlayRequest, MicControlRequest, TTSRequest, SettingUpdateRequest, LibraryItem
 from tts import generate_tts
 from db_client import db
+
+MEDIA_DIR = Path("data/library")
+ANNOUNCEMENTS_DIR = Path("data/announcements")
+MEDIA_DIR.mkdir(exist_ok=True)
+ANNOUNCEMENTS_DIR.mkdir(exist_ok=True)
 
 # In a real app we'd import auth and dependencies here
 # from auth import verify_token, require_admin
@@ -114,9 +121,26 @@ async def mic_off():
 @app.post("/api/announcements/tts")
 def create_tts_announcement(req: TTSRequest):
     filepath = generate_tts(req.text)
-    # 1. Save record to DB
-    # 2. If no schedule_at, play immediately on targets by writing to jingle pipes
+    # logic to save to DB and schedule
     return {"status": "ok", "file": filepath}
+
+@app.get("/api/library", response_model=List[LibraryItem])
+def list_library():
+    items = []
+    for f in MEDIA_DIR.glob("*.mp3"):
+        stat = f.stat()
+        items.append(LibraryItem(filename=f.name, size=stat.st_size))
+    return items
+
+@app.post("/api/library/upload")
+async def upload_track(file: Request):
+    # Simplified upload for now - in production use UploadFile
+    pass
+
+@app.get("/api/announcements")
+def list_announcements():
+    # Mock data for now
+    return []
 
 @app.get("/api/health")
 def health():
