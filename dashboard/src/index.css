@@ -23,14 +23,12 @@ body {
   font-family: 'Inter', sans-serif;
   background-color: var(--bg-color);
   color: var(--text-primary);
-  /* We will dynamically set the background image via React state */
   background-size: cover;
   background-position: center;
   background-attachment: fixed;
   overflow-x: hidden;
 }
 
-/* Glassmorphism utility */
 .glass-panel {
   background: var(--panel-bg);
   backdrop-filter: blur(12px);
@@ -45,10 +43,9 @@ body {
   display: flex;
   min-height: 100vh;
   width: 100vw;
-  background-color: var(--bg-overlay); /* darkens the bg image */
+  background-color: var(--bg-overlay);
 }
 
-/* Scrollbars */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

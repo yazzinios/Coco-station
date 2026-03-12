@@ -7,7 +7,6 @@ export default function LoginPage() {
   const handleLogin = (e) => {
     e.preventDefault();
     console.log("Login submitted", email, password);
-    // Real logic will connect to Supabase Auth
   };
 
   return (

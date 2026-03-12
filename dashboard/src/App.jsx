@@ -8,7 +8,6 @@ import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 
 function App() {
-  // Placeholder: Authentication check logic will go here
   const isAuthenticated = true;
 
   if (!isAuthenticated) {

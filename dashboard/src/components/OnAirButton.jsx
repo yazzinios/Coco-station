@@ -6,12 +6,6 @@ export default function OnAirButton() {
   const [targets, setTargets] = useState(['ALL']);
 
   const handleToggle = () => {
-    // Note: React state toggle
-    // In actual implementation, this triggers:
-    // 1. Play 'tin-tin-tin' beep via backend
-    // 2. Delay 1500ms
-    // 3. Send /api/mic/on command with `targets`
-    // 4. Send API command to drop Deck volumes to 5% (music fade feature)
     setIsOnAir(!isOnAir);
   };
 
