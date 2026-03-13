@@ -73,8 +73,24 @@ export default function DeckPanel({ id, name }) {
       <div 
         onClick={() => {
           const streamUrl = `${window.location.protocol}//${window.location.hostname}:8888/live/deck-${id}`;
-          navigator.clipboard.writeText(streamUrl);
-          alert(`Copied Stream URL: ${streamUrl}`);
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(streamUrl);
+            alert(`Copied Stream URL: ${streamUrl}`);
+          } else {
+            // Fallback for non-secure contexts
+            const textArea = document.createElement("textarea");
+            textArea.value = streamUrl;
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+              document.execCommand('copy');
+              alert(`Copied Stream URL (Fallback): ${streamUrl}`);
+            } catch (err) {
+              console.error('Fallback copy failed', err);
+              alert(`Failed to copy. URL is: ${streamUrl}`);
+            }
+            document.body.removeChild(textArea);
+          }
         }}
         style={{ 
           marginTop: '1rem', 
