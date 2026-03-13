@@ -16,9 +16,9 @@ Write-Host "Pulling from Repository: $RepoUrl" -ForegroundColor Cyan
 $envArray = @()
 $envFile = Join-Path -Path $PSScriptRoot -ChildPath ".env"
 if (Test-Path $envFile) {
-    foreach ($line in Get-Content $envFile) {
-        if (!([string]::IsNullOrWhiteSpace($line)) -and !$line.StartsWith("#")) {
-            $parts = $line.Split("=", 2)
+    Get-Content $envFile | ForEach-Object {
+        if (!([string]::IsNullOrWhiteSpace($_)) -and !($_.StartsWith("#"))) {
+            $parts = $_.Split("=", 2)
             if ($parts.Length -eq 2) {
                 $envArray += @{
                     name = $parts[0]
@@ -31,11 +31,11 @@ if (Test-Path $envFile) {
 }
 
 $payload = @{
-    name = $StackName
-    repositoryURL = $RepoUrl
-    repositoryReferenceName = "refs/heads/main"
-    composeFile = $ComposeFile
-    env = $envArray
+    Name = $StackName
+    RepositoryURL = $RepoUrl
+    RepositoryReferenceName = "refs/heads/main"
+    ComposeFile = $ComposeFile
+    Env = $envArray
 } | ConvertTo-Json -Depth 10
 
 # Note: Using create/standalone/repository API allows Portainer to clone the github repo. 
@@ -48,7 +48,7 @@ $headers = @{
 
 try {
     Write-Host "Sending deployment request to Portainer (this may take a few minutes as it builds images)..." -ForegroundColor Yellow
-    $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $payload -TimeoutSec 600
+    $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $payload -TimeoutSec 1800
     Write-Host "Success! Stack deployed." -ForegroundColor Green
     Write-Host "Stack ID: $($response.Id)" -ForegroundColor Green
 } catch {
@@ -56,5 +56,14 @@ try {
     Write-Host $_.Exception.Message -ForegroundColor Red
     if ($_.ErrorDetails) {
         Write-Host $_.ErrorDetails.Message -ForegroundColor DarkGray
+    }
+    if ($_.Exception.Response) {
+        try {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $body = $reader.ReadToEnd()
+            Write-Host "Response Body: $body" -ForegroundColor Yellow
+        } catch {
+            Write-Host "Could not read response body." -ForegroundColor Gray
+        }
     }
 }

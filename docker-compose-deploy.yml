@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: cc_mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP
+      - "1935:1935"   # RTMP
+      - "8888:8888"   # HLS
+      - "8889:8889"   # WebRTC
+    # mediamtx.yml mount removed to avoid the "not a directory" error temporarily
+    # volumes:
+    #   - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+
+  ffmpeg-mixer:
+    image: cocostation-ffmpeg-mixer:latest
+    container_name: cc_ffmpeg
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    environment:
+      - MEDIAMTX_HOST=mediamtx
+      - API_HOST=api
+      - PYTHONUNBUFFERED=1
+
+  api:
+    image: cocostation-api:latest
+    container_name: cc_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_MODE=local
+      - POSTGRES_USER=coco
+      - POSTGRES_PASSWORD=coco_secret
+      - POSTGRES_DB=cocostation
+      - POSTGRES_HOST=db
+      - FFMPEG_HOST=ffmpeg-mixer
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    container_name: cc_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: coco
+      POSTGRES_PASSWORD: coco_secret
+      POSTGRES_DB: cocostation
+    ports:
+      - "5432:5432"
+
+  dashboard:
+    image: cocostation-dashboard:latest
+    container_name: cc_dashboard
+    restart: unless-stopped
+    ports:
+      - "8083:80"
+    environment:
+      - VITE_API_URL=http://172.22.255.10:8000
+      - VITE_WS_URL=ws://172.22.255.10:8000
+    depends_on:
+      - api

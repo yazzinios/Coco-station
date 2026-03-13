@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: cc_mediamtx
+    restart: always
+    ports:
+      - "8554:8554"   # RTSP
+      - "1935:1935"   # RTMP
+      - "8888:8888"   # HLS
+      - "8889:8889"   # WebRTC
+    # mediamtx.yml mount removed to avoid "no such file" error in remote deployment
+    # volumes:
+    #   - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    networks:
+      cocostation-net:
+        ipv4_address: 10.20.0.2
+
+  db:
+    image: postgres:16-alpine
+    container_name: cc_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coco}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coco_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-cocostation}
+    volumes:
+      - cocostation-db-data:/var/lib/postgresql/data
+    networks:
+      cocostation-net:
+        ipv4_address: 10.20.0.3
+
+  api:
+    build:
+      context: "https://github.com/yazzinios/Coco-station.git#main:api"
+      no_cache: true
+    container_name: cc_api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_MODE=${DB_MODE:-local}
+      - POSTGRES_USER=${POSTGRES_USER:-coco}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-coco_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-cocostation}
+      - POSTGRES_HOST=db
+      - FFMPEG_HOST=ffmpeg-mixer
+    depends_on:
+      - db
+    networks:
+      cocostation-net:
+        ipv4_address: 10.20.0.4
+
+  ffmpeg-mixer:
+    build:
+      context: "https://github.com/yazzinios/Coco-station.git#main:ffmpeg-mixer"
+      no_cache: true
+    container_name: cc_ffmpeg
+    restart: always
+    depends_on:
+      - mediamtx
+    environment:
+      - MEDIAMTX_HOST=mediamtx
+      - API_HOST=api
+      - PYTHONUNBUFFERED=1
+    networks:
+      cocostation-net:
+        ipv4_address: 10.20.0.5
+
+  dashboard:
+    build:
+      context: "https://github.com/yazzinios/Coco-station.git#main:dashboard"
+      no_cache: true
+      args:
+        VITE_API_URL: "http://172.22.255.10:8000"
+        VITE_WS_URL: "ws://172.22.255.10:8000"
+    container_name: cc_dashboard
+    restart: always
+    ports:
+      - "8083:80"
+    environment:
+      - VITE_API_URL=http://172.22.255.10:8000
+      - VITE_WS_URL=ws://172.22.255.10:8000
+    depends_on:
+      - api
+    networks:
+      cocostation-net:
+        ipv4_address: 10.20.0.6
+
+networks:
+  cocostation-net:
+    name: cocostation-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
+          gateway: 10.20.0.1
+
+volumes:
+  cocostation-db-data:
+    name: cocostation-db-data

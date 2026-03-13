@@ -1,4 +1,6 @@
 import LibraryManager from '../components/LibraryManager';
+import DeckPanel from '../components/DeckPanel';
+import OnAirButton from '../components/OnAirButton';
 
 export default function MixerPage() {
   return (
