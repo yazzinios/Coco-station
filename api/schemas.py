@@ -6,13 +6,13 @@ class DeckRenameRequest(BaseModel):
     name: str
 
 class VolumeRequest(BaseModel):
-    volume: int
+    volume: int  # 0-100
 
 class PlayRequest(BaseModel):
-    track_id: str
+    track_id: str  # filename in data/library/
 
 class MicControlRequest(BaseModel):
-    targets: List[str]  # e.g. ["a", "b"] or ["all"]
+    targets: List[str]  # e.g. ["a", "b"] or ["ALL"]
 
 class TTSRequest(BaseModel):
     name: str
@@ -27,3 +27,20 @@ class LibraryItem(BaseModel):
 
 class SettingUpdateRequest(BaseModel):
     value: dict
+
+class DeckState(BaseModel):
+    id: str
+    name: str
+    track: Optional[str] = None
+    volume: int = 100
+    is_playing: bool = False
+    is_paused: bool = False
+
+class Announcement(BaseModel):
+    id: str
+    name: str
+    type: str         # 'TTS' | 'MP3'
+    filename: str
+    targets: List[str]
+    status: str = 'Ready'
+    created_at: Optional[str] = None
