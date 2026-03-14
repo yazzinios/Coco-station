@@ -2,13 +2,19 @@ import React, { useState, useRef } from 'react';
 import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
-const STREAM_BASE = `${window.location.protocol}//${window.location.hostname}`;
-const STREAM_LINKS = [
-  { label: 'HLS (browser)', url: `${STREAM_BASE}:8888/deck-a/index.m3u8`, desc: 'Deck A – HLS' },
-  { label: 'WebRTC', url: `${STREAM_BASE}:8889/deck-a`, desc: 'Deck A – WebRTC' },
-  { label: 'RTSP', url: `rtsp://${window.location.hostname}:8554/deck-a`, desc: 'Deck A – RTSP' },
-  { label: 'RTMP', url: `rtmp://${window.location.hostname}:1935/deck-a`, desc: 'Deck A – RTMP' },
-];
+const HOST = window.location.hostname;
+const HTTP = window.location.protocol;
+
+function getStreamLinks(deckId) {
+  return [
+    { label: 'HLS', desc: 'Browser / VLC / ffplay', url: `${HTTP}//${HOST}:8888/${deckId}/index.m3u8` },
+    { label: 'WebRTC', desc: 'Browser (low latency)', url: `${HTTP}//${HOST}:8889/${deckId}` },
+    { label: 'RTSP', desc: 'VLC / OBS / ffplay', url: `rtsp://${HOST}:8554/${deckId}` },
+    { label: 'RTMP', desc: 'OBS / streaming software', url: `rtmp://${HOST}:1935/${deckId}` },
+  ];
+}
+
+const DECK_IDS = ['deck-a', 'deck-b', 'deck-c', 'deck-d'];
 
 export default function AnnouncementsPage() {
   const { announcements, toast, api } = useApp();
@@ -20,6 +26,7 @@ export default function AnnouncementsPage() {
   const [annFile, setAnnFile] = useState(null);
   const [scheduledAt, setScheduledAt] = useState('');
   const [copiedIdx, setCopiedIdx] = useState(null);
+  const [streamDeck, setStreamDeck] = useState('deck-a');
   const fileRef = useRef(null);
 
   const copyLink = (url, idx) => {
@@ -261,13 +268,18 @@ export default function AnnouncementsPage() {
                   }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: '500', fontSize: '0.9rem', marginBottom: '0.2rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.75rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <span style={{
                           background: a.type === 'TTS' ? 'rgba(165,94,234,0.15)' : 'rgba(0,212,255,0.1)',
                           color: a.type === 'TTS' ? '#a55eea' : '#00d4ff',
                           padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.7rem'
                         }}>{a.type}</span>
                         <span>→ {a.targets?.join(', ')}</span>
+                        {a.scheduled_at && (
+                          <span style={{ color: '#00d4ff' }}>
+                            ⏰ {new Date(a.scheduled_at).toLocaleString()}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <span style={{
@@ -309,22 +321,38 @@ export default function AnnouncementsPage() {
 
       {/* ── Stream Links ──────────────────────────────────────── */}
       <div className="glass-panel" style={{ marginTop: '2rem' }}>
-        <h3 style={{ marginBottom: '1.25rem', color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Radio size={16} /> Stream Links
-        </h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
-          {STREAM_LINKS.map((s, idx) => (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <h3 style={{ color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+            <Radio size={16} /> Stream Links
+          </h3>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            {DECK_IDS.map(d => (
+              <button key={d} onClick={() => setStreamDeck(d)} style={{
+                padding: '0.25rem 0.65rem', borderRadius: '6px', border: 'none', fontSize: '0.78rem', fontWeight: '600',
+                background: streamDeck === d ? 'var(--accent-blue)' : 'rgba(255,255,255,0.06)',
+                color: streamDeck === d ? '#000' : 'var(--text-secondary)',
+                cursor: 'pointer', transition: 'all 0.15s',
+              }}>{d.replace('deck-', 'Deck ').toUpperCase()}</button>
+            ))}
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '0.75rem' }}>
+          {getStreamLinks(streamDeck).map((s, idx) => (
             <div key={idx} style={{
               background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
               borderRadius: '10px', padding: '0.85rem 1rem',
-              display: 'flex', flexDirection: 'column', gap: '0.3rem',
+              display: 'flex', flexDirection: 'column', gap: '0.35rem',
             }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{s.desc}</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontWeight: '700', fontSize: '0.8rem', color: 'var(--accent-blue)' }}>{s.label}</span>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>{s.desc}</span>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <code style={{
-                  flex: 1, fontSize: '0.75rem', color: 'var(--accent-blue)',
-                  background: 'rgba(0,212,255,0.06)', padding: '0.3rem 0.5rem',
+                  flex: 1, fontSize: '0.72rem', color: 'rgba(255,255,255,0.75)',
+                  background: 'rgba(0,0,0,0.25)', padding: '0.3rem 0.5rem',
                   borderRadius: '5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  border: '1px solid rgba(255,255,255,0.08)',
                 }}>{s.url}</code>
                 <button
                   onClick={() => copyLink(s.url, idx)}

@@ -151,9 +151,6 @@ export default function LibraryManager() {
             return (
               <div
                 key={track.filename}
-                onDragOver={e => { e.preventDefault(); setDragging(true); }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={e => { e.preventDefault(); setDragging(false); handleFileSelect(e.dataTransfer.files); }}
                 style={{
                   background: loadedOnDeck ? 'rgba(0,212,255,0.05)' : 'rgba(255,255,255,0.02)',
                   border: `1px solid ${loadedOnDeck ? 'rgba(0,212,255,0.25)' : 'var(--panel-border)'}`,

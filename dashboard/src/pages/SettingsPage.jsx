@@ -8,9 +8,13 @@ export default function SettingsPage() {
     a: '', b: '', c: '', d: ''
   });
   const [ducking, setDucking] = useState(5);
+  const [micDucking, setMicDucking] = useState(20);
   const [dbMode, setDbMode] = useState('local');
   const [micDevices, setMicDevices] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [dbSaving, setDbSaving] = useState(false);
+  const [dbTesting, setDbTesting] = useState(false);
+  const [dbStatus, setDbStatus] = useState(null); // null | 'ok' | 'error'
 
   // Populate deck names from context
   useEffect(() => {
@@ -34,6 +38,42 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const handleTestDb = async () => {
+    setDbTesting(true);
+    setDbStatus(null);
+    try {
+      const res = await fetch('/api/settings/db-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ db_mode: dbMode }),
+      });
+      if (res.ok) {
+        setDbStatus('ok');
+        toast.success('Connection successful!');
+      } else {
+        setDbStatus('error');
+        toast.error('Connection failed.');
+      }
+    } catch (err) {
+      setDbStatus('error');
+      toast.error('Connection failed: ' + err.message);
+    } finally {
+      setDbTesting(false);
+    }
+  };
+
+  const handleSaveDb = async () => {
+    setDbSaving(true);
+    try {
+      await api.saveSettings({ db_mode: dbMode });
+      toast.success('Database setting saved!');
+    } catch (err) {
+      toast.error(`Save failed: ${err.message}`);
+    } finally {
+      setDbSaving(false);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -44,7 +84,7 @@ export default function SettingsPage() {
         }
       }
       // Save global settings
-      await api.saveSettings({ ducking_percent: ducking, db_mode: dbMode });
+      await api.saveSettings({ ducking_percent: ducking, mic_ducking_percent: micDucking, db_mode: dbMode });
       toast.success('Settings saved!');
     } catch (err) {
       toast.error(`Save failed: ${err.message}`);
@@ -84,7 +124,53 @@ export default function SettingsPage() {
               </label>
             ))}
           </div>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>Switching requires an application restart.</p>
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>Switching requires an application restart.</p>
+
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Test Connection */}
+            <button
+              onClick={handleTestDb}
+              disabled={dbTesting}
+              style={{
+                padding: '0.5rem 1rem', fontSize: '0.85rem', fontFamily: 'inherit',
+                background: 'rgba(0,212,255,0.1)', border: '1px solid rgba(0,212,255,0.35)',
+                color: 'var(--accent-blue)', borderRadius: '8px', cursor: dbTesting ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: '0.45rem', opacity: dbTesting ? 0.6 : 1,
+                transition: 'all 0.2s',
+              }}
+            >
+              {dbTesting ? '⟳ Testing…' : '⚡ Test Connection'}
+            </button>
+
+            {/* Status badge */}
+            {dbStatus && (
+              <span style={{
+                fontSize: '0.8rem', fontWeight: '600', padding: '0.3rem 0.75rem',
+                borderRadius: '20px',
+                background: dbStatus === 'ok' ? 'rgba(46,213,115,0.15)' : 'rgba(255,71,87,0.15)',
+                border: `1px solid ${dbStatus === 'ok' ? 'rgba(46,213,115,0.4)' : 'rgba(255,71,87,0.4)'}`,
+                color: dbStatus === 'ok' ? '#2ed573' : '#ff4757',
+              }}>
+                {dbStatus === 'ok' ? '✓ Connected' : '✕ Unreachable'}
+              </span>
+            )}
+
+            {/* Save DB */}
+            <button
+              onClick={handleSaveDb}
+              disabled={dbSaving}
+              style={{
+                marginLeft: 'auto', padding: '0.5rem 1.1rem', fontSize: '0.85rem', fontFamily: 'inherit',
+                background: dbSaving ? 'rgba(46,213,115,0.2)' : 'rgba(46,213,115,0.15)',
+                border: '1px solid rgba(46,213,115,0.4)',
+                color: '#2ed573', borderRadius: '8px', cursor: dbSaving ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: '0.45rem', opacity: dbSaving ? 0.6 : 1,
+                transition: 'all 0.2s',
+              }}
+            >
+              {dbSaving ? '✓ Saving…' : '💾 Save'}
+            </button>
+          </div>
         </div>
 
         {/* ── Deck Names ─────────────────────── */}
@@ -141,9 +227,10 @@ export default function SettingsPage() {
             )}
           </div>
 
+          {/* Announcement ducking */}
           <div style={{ marginBottom: '1.5rem' }}>
             <label style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between' }}>
-              <span>Music Ducking</span>
+              <span>📢 Announcement Ducking</span>
               <span style={{ color: 'var(--accent-blue)' }}>{ducking}%</span>
             </label>
             <input
@@ -156,7 +243,27 @@ export default function SettingsPage() {
               }}
             />
             <div style={{ marginTop: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-              Volume music drops to when On Air or Announcements are playing.
+              Volume music drops to when an Announcement plays.
+            </div>
+          </div>
+
+          {/* Mic / On Air ducking */}
+          <div style={{ marginBottom: '1.5rem' }}>
+            <label style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between' }}>
+              <span>🎙 On Air Mic Ducking</span>
+              <span style={{ color: '#ff4757' }}>{micDucking}%</span>
+            </label>
+            <input
+              type="range" min="0" max="100" value={micDucking}
+              onChange={e => setMicDucking(Number(e.target.value))}
+              style={{
+                width: '100%', maxWidth: '380px',
+                background: `linear-gradient(to right, #ff4757 ${micDucking}%, rgba(255,255,255,0.15) ${micDucking}%)`,
+                height: '4px', appearance: 'none', borderRadius: '2px', cursor: 'pointer',
+              }}
+            />
+            <div style={{ marginTop: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              Volume music fades to when DJ mic is On Air. Lower = deeper fade. Default 20%.
             </div>
           </div>
 

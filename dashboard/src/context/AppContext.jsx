@@ -60,6 +60,7 @@ export function AppProvider({ children }) {
   const [announcements, setAnnouncements] = useState([]);
   const [mic, setMic]                   = useState({ active: false, targets: [] });
   const [wsConnected, setWsConnected]   = useState(false);
+  const [settings, setSettings]         = useState({ ducking_percent: 5, mic_ducking_percent: 20 });
   const [toasts, setToasts]             = useState([]);
   const wsRef = useRef(null);
   const toastId = useRef(0);
@@ -139,6 +140,12 @@ export function AppProvider({ children }) {
       case 'ANNOUNCEMENTS_UPDATED':
         if (msg.announcements) setAnnouncements(msg.announcements);
         break;
+      case 'SETTINGS_UPDATED':
+        if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings }));
+        break;
+      case 'FULL_STATE':
+        if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings }));
+        break;
       case 'LIBRARY_UPDATED':
         fetchLibrary();
         break;
@@ -155,6 +162,15 @@ export function AppProvider({ children }) {
   }, []); // eslint-disable-line
 
   // ── API helpers ────────────────────────────────────────────
+  async function parseError(res) {
+    try {
+      const data = await res.json();
+      return data?.detail || data?.message || JSON.stringify(data);
+    } catch (_) {
+      return await res.text();
+    }
+  }
+
   async function fetchLibrary() {
     try {
       const res = await fetch('/api/library');
@@ -176,14 +192,14 @@ export function AppProvider({ children }) {
       const fd = new FormData();
       fd.append('file', file);
       const res = await fetch('/api/library/upload', { method: 'POST', body: fd });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
       const data = await res.json();
       await fetchLibrary();
       return data;
     },
     deleteTrack: async (filename) => {
       const res = await fetch(`/api/library/${encodeURIComponent(filename)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
       await fetchLibrary();
     },
     // Decks
@@ -193,19 +209,19 @@ export function AppProvider({ children }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ track_id: filename }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
     play: async (deckId) => {
       const res = await fetch(`/api/decks/${deckId}/play`, { method: 'POST' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
     pause: async (deckId) => {
       const res = await fetch(`/api/decks/${deckId}/pause`, { method: 'POST' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
     stop: async (deckId) => {
       const res = await fetch(`/api/decks/${deckId}/stop`, { method: 'POST' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
     setVolume: async (deckId, volume) => {
       await fetch(`/api/decks/${deckId}/volume`, {
@@ -220,7 +236,7 @@ export function AppProvider({ children }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
     // Mic
     micOn: async (targets) => {
@@ -229,11 +245,11 @@ export function AppProvider({ children }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targets }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
     micOff: async () => {
       const res = await fetch('/api/mic/off', { method: 'POST' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
     // Announcements
     createTTS: async (payload) => {
@@ -242,7 +258,7 @@ export function AppProvider({ children }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
       const data = await res.json();
       await fetchAnnouncements();
       return data;
@@ -254,19 +270,19 @@ export function AppProvider({ children }) {
       fd.append('targets', targets.join(','));
       if (scheduledAt) fd.append('scheduled_at', scheduledAt);
       const res = await fetch('/api/announcements/upload', { method: 'POST', body: fd });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
       const data = await res.json();
       await fetchAnnouncements();
       return data;
     },
     playAnnouncement: async (id) => {
       const res = await fetch(`/api/announcements/${id}/play`, { method: 'POST' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
       await fetchAnnouncements();
     },
     deleteAnnouncement: async (id) => {
       const res = await fetch(`/api/announcements/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
       await fetchAnnouncements();
     },
     // Settings
@@ -276,12 +292,12 @@ export function AppProvider({ children }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value: settings }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await parseError(res));
     },
   };
 
   return (
-    <AppContext.Provider value={{ decks, library, announcements, mic, wsConnected, toast, api }}>
+    <AppContext.Provider value={{ decks, library, announcements, mic, wsConnected, settings, toast, api }}>
       {children}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </AppContext.Provider>

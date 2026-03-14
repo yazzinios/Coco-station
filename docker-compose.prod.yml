@@ -9,10 +9,11 @@ services:
       - "8554:8554"   # RTSP
       - "1935:1935"   # RTMP
       - "8888:8888"   # HLS
-      - "8889:8889"   # WebRTC
-    # mediamtx.yml mount removed to avoid "no such file" error in remote deployment
-    # volumes:
-    #   - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - "8889:8889"   # WebRTC / WHEP
+      - "8189:8189/udp" # WebRTC ICE/UDP
+      - "9997:9997"   # MediaMTX API
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.2
@@ -60,9 +61,13 @@ services:
     restart: always
     depends_on:
       - mediamtx
+    volumes:
+      - cocostation-library:/library:ro
+      - cocostation-announcements:/announcements:ro
     environment:
       - MEDIAMTX_HOST=mediamtx
       - API_HOST=api
+      - MIC_DEVICE=default
       - PYTHONUNBUFFERED=1
     networks:
       cocostation-net:
@@ -100,3 +105,7 @@ networks:
 volumes:
   cocostation-db-data:
     name: cocostation-db-data
+  cocostation-library:
+    name: cocostation-library
+  cocostation-announcements:
+    name: cocostation-announcements

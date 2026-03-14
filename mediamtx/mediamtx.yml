@@ -36,16 +36,44 @@ webrtcAddress: :8889
 paths:
   # Deck A
   deck-a:
-    runOnInit: ""
-  
+    source: publisher
+    sourceOnDemand: no
+    runOnInit: >-
+      ffmpeg -re -y
+      -f lavfi -i anullsrc=r=44100:cl=stereo
+      -c:a aac -b:a 128k
+      -f flv rtmp://localhost:1935/deck-a
+    runOnInitRestart: yes
+
   # Deck B
   deck-b:
-    runOnInit: ""
-  
+    source: publisher
+    sourceOnDemand: no
+    runOnInit: >-
+      ffmpeg -re -y
+      -f lavfi -i anullsrc=r=44100:cl=stereo
+      -c:a aac -b:a 128k
+      -f flv rtmp://localhost:1935/deck-b
+    runOnInitRestart: yes
+
   # Deck C
   deck-c:
-    runOnInit: ""
-  
+    source: publisher
+    sourceOnDemand: no
+    runOnInit: >-
+      ffmpeg -re -y
+      -f lavfi -i anullsrc=r=44100:cl=stereo
+      -c:a aac -b:a 128k
+      -f flv rtmp://localhost:1935/deck-c
+    runOnInitRestart: yes
+
   # Deck D
   deck-d:
-    runOnInit: ""
+    source: publisher
+    sourceOnDemand: no
+    runOnInit: >-
+      ffmpeg -re -y
+      -f lavfi -i anullsrc=r=44100:cl=stereo
+      -c:a aac -b:a 128k
+      -f flv rtmp://localhost:1935/deck-d
+    runOnInitRestart: yes

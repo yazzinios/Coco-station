@@ -48,9 +48,10 @@ export default function DeckPanel({ id }) {
   }, [id, api]);
 
   const copyStreamUrl = () => {
-    const url = `${window.location.protocol}//${window.location.hostname}:8888/live/deck-${id}`;
+    // Use relative URL through nginx — deck-a → /deck-a/index.m3u8 (isolated per deck)
+    const url = `${window.location.origin}/deck-${id}/index.m3u8`;
     navigator.clipboard?.writeText(url).then(() => {
-      toast.success(`Copied: ${url}`);
+      toast.success(`HLS link copied! (deck-${id.toUpperCase()} isolated)`);
     }).catch(() => {
       toast.info(`Stream URL: ${url}`);
     });

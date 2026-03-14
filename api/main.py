@@ -3,6 +3,7 @@ import asyncio
 import uuid
 import json
 import time
+import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File, HTTPException
@@ -12,6 +13,10 @@ from typing import List, Dict, Optional
 
 import shutil
 from pathlib import Path
+
+FFMPEG_HOST = os.getenv("FFMPEG_HOST", "ffmpeg-mixer")
+FFMPEG_URL = f"http://{FFMPEG_HOST}:8001"
+
 from schemas import (
     DeckRenameRequest, VolumeRequest, PlayRequest, MicControlRequest,
     TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement
@@ -40,6 +45,7 @@ ANNOUNCEMENTS: List[dict] = []
 
 SETTINGS: dict = {
     "ducking_percent": 5,
+    "mic_ducking_percent": 20,   # how much music ducks when mic is ON AIR (0-100)
     "on_air_beep": "default",
     "db_mode": "local",
 }
@@ -77,16 +83,27 @@ manager = ConnectionManager()
 # App lifecycle
 # ─────────────────────────────────────────
 async def scheduler_task():
-    """Check every 30 seconds for announcements due to be played."""
+    """Check every 10 seconds for announcements due to be played."""
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(10)
         now = datetime.now()
-        for ann in ANNOUNCEMENTS:
+        for ann in list(ANNOUNCEMENTS):  # copy to avoid mutation during iteration
             if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
                 try:
                     scheduled = datetime.fromisoformat(ann["scheduled_at"])
                     if scheduled <= now:
                         ann["status"] = "Played"
+                        # Tell ffmpeg-mixer to play the announcement file
+                        filepath = str(Path("/announcements") / ann["filename"])
+                        targets = ann.get("targets", ["ALL"])
+                        deck_ids = ["a", "b", "c", "d"] if "ALL" in targets else [t.lower() for t in targets]
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            for deck_id in deck_ids:
+                                try:
+                                    await client.post(f"{FFMPEG_URL}/decks/{deck_id}/play_announcement",
+                                                     json={"filepath": filepath})
+                                except Exception:
+                                    pass
                         await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
                         await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
                 except Exception:
@@ -140,6 +157,7 @@ async def websocket_endpoint(websocket: WebSocket):
         "decks": list(DECKS.values()),
         "mic": MIC_STATE,
         "announcements": ANNOUNCEMENTS,
+        "settings": SETTINGS,
     })
     try:
         while True:
@@ -147,6 +165,87 @@ async def websocket_endpoint(websocket: WebSocket):
             # client can send pings; just ignore
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+# ─────────────────────────────────────────
+# MIC AUDIO STREAM  (browser → server → ffmpeg-mixer)
+# Browser sends raw PCM s16le 44100 1ch as binary frames over this WS.
+# The server pipes them into ffmpeg-mixer via a persistent HTTP chunked upload.
+# ─────────────────────────────────────────
+@app.websocket("/ws/mic")
+async def mic_audio_ws(websocket: WebSocket):
+    await websocket.accept()
+    targets = []
+    ducking = SETTINGS.get("mic_ducking_percent", 20)
+    ffmpeg_ws = None
+    import asyncio
+    import httpx
+
+    async def open_ffmpeg_stream(tgts, duck):
+        """Tell ffmpeg-mixer to start a mic-audio pipe session."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.post(f"{FFMPEG_URL}/mic/stream/start",
+                                 json={"targets": tgts, "ducking": duck})
+                return r.json().get("session_id")
+        except Exception as e:
+            print(f"[mic_ws] open_ffmpeg_stream error: {e}")
+            return None
+
+    async def close_ffmpeg_stream(session_id):
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{FFMPEG_URL}/mic/stream/stop",
+                             json={"session_id": session_id})
+        except Exception as e:
+            print(f"[mic_ws] close_ffmpeg_stream error: {e}")
+
+    session_id = None
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg["type"] == "websocket.receive":
+                if "text" in msg and msg["text"]:
+                    # Control message (JSON)
+                    try:
+                        ctrl = json.loads(msg["text"])
+                        if ctrl.get("type") == "mic_start":
+                            targets = ctrl.get("targets", ["ALL"])
+                            ducking = ctrl.get("ducking", SETTINGS.get("mic_ducking_percent", 20))
+                            MIC_STATE["active"] = True
+                            MIC_STATE["targets"] = targets
+                            session_id = await open_ffmpeg_stream(targets, ducking)
+                            await manager.broadcast({"type": "MIC_STATUS", "active": True, "targets": targets})
+                            await websocket.send_text(json.dumps({"type": "mic_ready", "session_id": session_id}))
+                        elif ctrl.get("type") == "mic_stop":
+                            MIC_STATE["active"] = False
+                            MIC_STATE["targets"] = []
+                            if session_id:
+                                await close_ffmpeg_stream(session_id)
+                                session_id = None
+                            await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
+                    except json.JSONDecodeError:
+                        pass
+                elif "bytes" in msg and msg["bytes"] and session_id:
+                    # Raw PCM audio chunk — forward to ffmpeg-mixer
+                    try:
+                        async with httpx.AsyncClient(timeout=2) as c:
+                            await c.post(
+                                f"{FFMPEG_URL}/mic/stream/push",
+                                content=msg["bytes"],
+                                headers={"Content-Type": "application/octet-stream",
+                                         "X-Session-Id": session_id},
+                            )
+                    except Exception:
+                        pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if session_id:
+            await close_ffmpeg_stream(session_id)
+        MIC_STATE["active"] = False
+        MIC_STATE["targets"] = []
+        await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
 
 # ─────────────────────────────────────────
 # LIBRARY
@@ -238,6 +337,13 @@ async def play_deck(deck_id: str):
     DECKS[deck_id]["is_playing"] = True
     DECKS[deck_id]["is_paused"] = False
     TRACKS_PLAYED += 1
+    # Tell ffmpeg-mixer to play this track
+    filepath = str(Path("/library") / DECKS[deck_id]["track"])
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath})
+    except Exception:
+        pass  # ffmpeg-mixer unavailable, state still updated
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
 
@@ -245,8 +351,23 @@ async def play_deck(deck_id: str):
 async def pause_deck(deck_id: str):
     if deck_id not in DECKS:
         raise HTTPException(status_code=404, detail="Deck not found")
-    DECKS[deck_id]["is_playing"] = False
-    DECKS[deck_id]["is_paused"] = True
+    if not DECKS[deck_id]["is_playing"] and DECKS[deck_id]["is_paused"]:
+        # Already paused — this is a resume
+        DECKS[deck_id]["is_playing"] = True
+        DECKS[deck_id]["is_paused"] = False
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(f"{FFMPEG_URL}/decks/{deck_id}/resume")
+        except Exception:
+            pass
+    else:
+        DECKS[deck_id]["is_playing"] = False
+        DECKS[deck_id]["is_paused"] = True
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(f"{FFMPEG_URL}/decks/{deck_id}/pause")
+        except Exception:
+            pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
 
@@ -256,6 +377,11 @@ async def stop_deck(deck_id: str):
         raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["is_playing"] = False
     DECKS[deck_id]["is_paused"] = False
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
+    except Exception:
+        pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
 
@@ -263,7 +389,13 @@ async def stop_deck(deck_id: str):
 async def set_deck_volume(deck_id: str, req: VolumeRequest):
     if deck_id not in DECKS:
         raise HTTPException(status_code=404, detail="Deck not found")
-    DECKS[deck_id]["volume"] = max(0, min(100, req.volume))
+    vol = max(0, min(100, req.volume))
+    DECKS[deck_id]["volume"] = vol
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{vol}")
+    except Exception:
+        pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok"}
 
@@ -274,6 +406,13 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest):
 async def mic_on(req: MicControlRequest):
     MIC_STATE["active"] = True
     MIC_STATE["targets"] = req.targets
+    # Tell ffmpeg-mixer to activate mic feed on target decks
+    deck_ids = ["a", "b", "c", "d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(f"{FFMPEG_URL}/mic/on", json={"targets": deck_ids})
+    except Exception as e:
+        print(f"[mic_on] ffmpeg-mixer unreachable: {e}")
     await manager.broadcast({"type": "MIC_STATUS", "active": True, "targets": req.targets})
     return {"status": "ok"}
 
@@ -281,8 +420,17 @@ async def mic_on(req: MicControlRequest):
 async def mic_off():
     MIC_STATE["active"] = False
     MIC_STATE["targets"] = []
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(f"{FFMPEG_URL}/mic/off")
+    except Exception as e:
+        print(f"[mic_off] ffmpeg-mixer unreachable: {e}")
     await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
     return {"status": "ok"}
+
+@app.get("/api/mic/status")
+def mic_status():
+    return MIC_STATE
 
 # ─────────────────────────────────────────
 # ANNOUNCEMENTS
@@ -345,6 +493,20 @@ async def play_announcement(ann_id: str):
     if not ann:
         raise HTTPException(status_code=404, detail="Announcement not found")
     ann["status"] = "Played"
+    # Tell ffmpeg-mixer to play this announcement
+    filepath = str(Path("/announcements") / ann["filename"])
+    targets = ann.get("targets", ["ALL"])
+    deck_ids = ["a", "b", "c", "d"] if "ALL" in targets else [t.lower() for t in targets]
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            for deck_id in deck_ids:
+                try:
+                    await client.post(f"{FFMPEG_URL}/decks/{deck_id}/play_announcement",
+                                     json={"filepath": filepath})
+                except Exception:
+                    pass
+    except Exception:
+        pass
     await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok"}
@@ -376,6 +538,44 @@ async def update_settings(req: SettingUpdateRequest):
     SETTINGS.update(req.value)
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
     return {"status": "ok", "settings": SETTINGS}
+
+@app.post("/api/settings/db-test")
+async def test_db_connection(req: SettingUpdateRequest):
+    mode = req.value.get("db_mode", SETTINGS.get("db_mode", "local"))
+    if mode == "local":
+        try:
+            import psycopg2
+            user = os.getenv("POSTGRES_USER", "coco")
+            password = os.getenv("POSTGRES_PASSWORD", "coco_secret")
+            host = os.getenv("POSTGRES_HOST", "db")
+            db = os.getenv("POSTGRES_DB", "cocostation")
+            conn = psycopg2.connect(
+                host=host, port=5432, user=user, password=password, dbname=db,
+                connect_timeout=3
+            )
+            conn.close()
+            return {"status": "ok", "mode": "local"}
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Local DB unreachable: {str(e)}")
+    else:
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY", "")
+        if not supabase_url or not supabase_key:
+            raise HTTPException(status_code=400, detail="SUPABASE_URL and SUPABASE_SERVICE_KEY are not configured")
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=4) as client:
+                r = await client.get(
+                    f"{supabase_url}/rest/v1/",
+                    headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
+                )
+            if r.status_code < 500:
+                return {"status": "ok", "mode": "cloud"}
+            raise HTTPException(status_code=503, detail=f"Supabase returned {r.status_code}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Supabase unreachable: {str(e)}")
 
 # ─────────────────────────────────────────
 # STATS
