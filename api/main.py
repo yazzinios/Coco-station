@@ -76,10 +76,28 @@ manager = ConnectionManager()
 # ─────────────────────────────────────────
 # App lifecycle
 # ─────────────────────────────────────────
+async def scheduler_task():
+    """Check every 30 seconds for announcements due to be played."""
+    while True:
+        await asyncio.sleep(30)
+        now = datetime.now()
+        for ann in ANNOUNCEMENTS:
+            if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
+                try:
+                    scheduled = datetime.fromisoformat(ann["scheduled_at"])
+                    if scheduled <= now:
+                        ann["status"] = "Played"
+                        await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
+                        await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
+                except Exception:
+                    pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("CocoStation API Starting...")
+    task = asyncio.create_task(scheduler_task())
     yield
+    task.cancel()
     print("CocoStation API Shutting down.")
 
 app = FastAPI(lifespan=lifespan, title="CocoStation API")
@@ -286,7 +304,8 @@ async def create_tts_announcement(req: TTSRequest):
         "type": "TTS",
         "filename": filename,
         "targets": req.targets,
-        "status": "Ready",
+        "status": "Scheduled" if getattr(req, 'scheduled_at', None) else "Ready",
+        "scheduled_at": getattr(req, 'scheduled_at', None),
         "created_at": datetime.now().isoformat(),
     }
     ANNOUNCEMENTS.append(ann)
@@ -298,6 +317,7 @@ async def upload_announcement(
     file: UploadFile = File(...),
     name: str = "Announcement",
     targets: str = "ALL",
+    scheduled_at: Optional[str] = None,
 ):
     if not any(file.filename.lower().endswith(ext) for ext in {".mp3", ".wav", ".ogg"}):
         raise HTTPException(status_code=400, detail="Only audio files are allowed")
@@ -311,7 +331,8 @@ async def upload_announcement(
         "type": "MP3",
         "filename": file.filename,
         "targets": targets.split(",") if isinstance(targets, str) else targets,
-        "status": "Ready",
+        "status": "Scheduled" if scheduled_at else "Ready",
+        "scheduled_at": scheduled_at,
         "created_at": datetime.now().isoformat(),
     }
     ANNOUNCEMENTS.append(ann)

@@ -1,6 +1,14 @@
 import React, { useState, useRef } from 'react';
-import { Mic, Upload, Send, Play, Trash2, Calendar } from 'lucide-react';
+import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+
+const STREAM_BASE = `${window.location.protocol}//${window.location.hostname}`;
+const STREAM_LINKS = [
+  { label: 'HLS (browser)', url: `${STREAM_BASE}:8888/deck-a/index.m3u8`, desc: 'Deck A – HLS' },
+  { label: 'WebRTC', url: `${STREAM_BASE}:8889/deck-a`, desc: 'Deck A – WebRTC' },
+  { label: 'RTSP', url: `rtsp://${window.location.hostname}:8554/deck-a`, desc: 'Deck A – RTSP' },
+  { label: 'RTMP', url: `rtmp://${window.location.hostname}:1935/deck-a`, desc: 'Deck A – RTMP' },
+];
 
 export default function AnnouncementsPage() {
   const { announcements, toast, api } = useApp();
@@ -10,7 +18,16 @@ export default function AnnouncementsPage() {
   const [selectedDecks, setSelectedDecks] = useState(['ALL']);
   const [submitting, setSubmitting] = useState(false);
   const [annFile, setAnnFile] = useState(null);
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [copiedIdx, setCopiedIdx] = useState(null);
   const fileRef = useRef(null);
+
+  const copyLink = (url, idx) => {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedIdx(idx);
+      setTimeout(() => setCopiedIdx(null), 2000);
+    });
+  };
 
   const toggleDeck = (deck) => {
     if (deck === 'ALL') { setSelectedDecks(['ALL']); return; }
@@ -30,14 +47,14 @@ export default function AnnouncementsPage() {
     try {
       if (type === 'TTS') {
         if (!text.trim()) { toast.error('Please enter TTS text'); setSubmitting(false); return; }
-        await api.createTTS({ name, text, targets: selectedDecks });
-        toast.success('TTS announcement created!');
-        setName(''); setText('');
+        await api.createTTS({ name, text, targets: selectedDecks, scheduled_at: scheduledAt || null });
+        toast.success(scheduledAt ? 'TTS announcement scheduled!' : 'TTS announcement created!');
+        setName(''); setText(''); setScheduledAt('');
       } else {
         if (!annFile) { toast.error('Please select an MP3 file'); setSubmitting(false); return; }
-        await api.uploadAnnouncement(annFile, name, selectedDecks);
-        toast.success(`"${annFile.name}" announcement uploaded`);
-        setName(''); setAnnFile(null);
+        await api.uploadAnnouncement(annFile, name, selectedDecks, scheduledAt || null);
+        toast.success(scheduledAt ? `"${annFile.name}" scheduled!` : `"${annFile.name}" announcement uploaded`);
+        setName(''); setAnnFile(null); setScheduledAt('');
       }
     } catch (err) {
       toast.error(err.message);
@@ -156,6 +173,24 @@ export default function AnnouncementsPage() {
               </div>
             )}
 
+            {/* Schedule Time */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Clock size={11} /> Schedule (optional)
+              </label>
+              <input
+                type="datetime-local"
+                value={scheduledAt}
+                onChange={e => setScheduledAt(e.target.value)}
+                style={{ ...inputStyle, colorScheme: 'dark' }}
+              />
+              {scheduledAt && (
+                <div style={{ marginTop: '0.3rem', fontSize: '0.75rem', color: 'var(--accent-blue)' }}>
+                  ⏰ Will auto-play at {new Date(scheduledAt).toLocaleString()}
+                </div>
+              )}
+            </div>
+
             {/* Target Decks */}
             <div>
               <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Target Decks</label>
@@ -271,6 +306,45 @@ export default function AnnouncementsPage() {
         </div>
 
       </div>
+
+      {/* ── Stream Links ──────────────────────────────────────── */}
+      <div className="glass-panel" style={{ marginTop: '2rem' }}>
+        <h3 style={{ marginBottom: '1.25rem', color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Radio size={16} /> Stream Links
+        </h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
+          {STREAM_LINKS.map((s, idx) => (
+            <div key={idx} style={{
+              background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
+              borderRadius: '10px', padding: '0.85rem 1rem',
+              display: 'flex', flexDirection: 'column', gap: '0.3rem',
+            }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{s.desc}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <code style={{
+                  flex: 1, fontSize: '0.75rem', color: 'var(--accent-blue)',
+                  background: 'rgba(0,212,255,0.06)', padding: '0.3rem 0.5rem',
+                  borderRadius: '5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{s.url}</code>
+                <button
+                  onClick={() => copyLink(s.url, idx)}
+                  title="Copy link"
+                  style={{
+                    width: '30px', height: '30px', borderRadius: '8px', border: 'none', flexShrink: 0,
+                    background: copiedIdx === idx ? 'rgba(46,213,115,0.2)' : 'rgba(255,255,255,0.06)',
+                    color: copiedIdx === idx ? '#2ed573' : 'var(--text-secondary)',
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {copiedIdx === idx ? <Check size={13} /> : <Copy size={13} />}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
     </div>
   );
 }

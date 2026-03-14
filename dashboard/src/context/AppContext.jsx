@@ -247,11 +247,12 @@ export function AppProvider({ children }) {
       await fetchAnnouncements();
       return data;
     },
-    uploadAnnouncement: async (file, name, targets) => {
+    uploadAnnouncement: async (file, name, targets, scheduledAt = null) => {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('name', name);
       fd.append('targets', targets.join(','));
+      if (scheduledAt) fd.append('scheduled_at', scheduledAt);
       const res = await fetch('/api/announcements/upload', { method: 'POST', body: fd });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();

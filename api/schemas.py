@@ -18,7 +18,7 @@ class TTSRequest(BaseModel):
     name: str
     text: str
     targets: List[str]
-    schedule_at: Optional[datetime] = None
+    scheduled_at: Optional[str] = None  # ISO datetime string e.g. "2026-03-14T15:30:00"
 
 class LibraryItem(BaseModel):
     filename: str
