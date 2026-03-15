@@ -10,8 +10,9 @@ services:
       - "1935:1935"   # RTMP
       - "8888:8888"   # HLS
       - "8889:8889"   # WebRTC
-    volumes:
-      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    configs:
+      - source: mediamtx_config
+        target: /mediamtx.yml
 
   ffmpeg-mixer:
     build: ./ffmpeg-mixer
@@ -80,3 +81,7 @@ services:
       - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
     depends_on:
       - api
+
+configs:
+  mediamtx_config:
+    file: ./mediamtx/mediamtx.yml
