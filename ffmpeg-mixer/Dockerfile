@@ -1,12 +1,18 @@
-FROM jrottenberg/ffmpeg:6.0-alpine
+FROM python:3.11-slim
 
-# Install python for controlling the processes
-RUN apk add --no-cache python3 py3-pip bash curl jq
+# Install ffmpeg and runtime tools
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    bash \
+    curl \
+    jq \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY deck_manager.py .
 COPY entrypoint.sh .
