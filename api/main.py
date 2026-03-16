@@ -45,7 +45,7 @@ ANNOUNCEMENTS: List[dict] = []
 
 SETTINGS: dict = {
     "ducking_percent": 5,
-    "mic_ducking_percent": 20,   # how much music ducks when mic is ON AIR (0-100)
+    "mic_ducking_percent": 20,
     "on_air_beep": "default",
     "db_mode": "local",
 }
@@ -83,17 +83,15 @@ manager = ConnectionManager()
 # App lifecycle
 # ─────────────────────────────────────────
 async def scheduler_task():
-    """Check every 10 seconds for announcements due to be played."""
     while True:
         await asyncio.sleep(10)
         now = datetime.now()
-        for ann in list(ANNOUNCEMENTS):  # copy to avoid mutation during iteration
+        for ann in list(ANNOUNCEMENTS):
             if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
                 try:
                     scheduled = datetime.fromisoformat(ann["scheduled_at"])
                     if scheduled <= now:
                         ann["status"] = "Played"
-                        # Tell ffmpeg-mixer to play the announcement file
                         filepath = str(Path("/announcements") / ann["filename"])
                         targets = ann.get("targets", ["ALL"])
                         deck_ids = ["a", "b", "c", "d"] if "ALL" in targets else [t.lower() for t in targets]
@@ -151,7 +149,6 @@ def health():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    # Send current full state on connect
     await websocket.send_json({
         "type": "FULL_STATE",
         "decks": list(DECKS.values()),
@@ -162,27 +159,16 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            # client can send pings; just ignore
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-
-# ─────────────────────────────────────────
-# MIC AUDIO STREAM  (browser → server → ffmpeg-mixer)
-# Browser sends raw PCM s16le 44100 1ch as binary frames over this WS.
-# The server pipes them into ffmpeg-mixer via a persistent HTTP chunked upload.
-# ─────────────────────────────────────────
 @app.websocket("/ws/mic")
 async def mic_audio_ws(websocket: WebSocket):
     await websocket.accept()
     targets = []
     ducking = SETTINGS.get("mic_ducking_percent", 20)
-    ffmpeg_ws = None
-    import asyncio
-    import httpx
 
     async def open_ffmpeg_stream(tgts, duck):
-        """Tell ffmpeg-mixer to start a mic-audio pipe session."""
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 r = await c.post(f"{FFMPEG_URL}/mic/stream/start",
@@ -206,7 +192,6 @@ async def mic_audio_ws(websocket: WebSocket):
             msg = await websocket.receive()
             if msg["type"] == "websocket.receive":
                 if "text" in msg and msg["text"]:
-                    # Control message (JSON)
                     try:
                         ctrl = json.loads(msg["text"])
                         if ctrl.get("type") == "mic_start":
@@ -227,7 +212,6 @@ async def mic_audio_ws(websocket: WebSocket):
                     except json.JSONDecodeError:
                         pass
                 elif "bytes" in msg and msg["bytes"] and session_id:
-                    # Raw PCM audio chunk — forward to ffmpeg-mixer
                     try:
                         async with httpx.AsyncClient(timeout=2) as c:
                             await c.post(
@@ -259,7 +243,6 @@ def list_library():
         if f.suffix.lower() in ALLOWED_AUDIO:
             stat = f.stat()
             items.append(LibraryItem(filename=f.name, size=stat.st_size))
-    # Sort newest first
     items.sort(key=lambda x: x.filename)
     return items
 
@@ -282,7 +265,6 @@ async def delete_track(filename: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     path.unlink()
-    # Also clear from any decks that had this track
     for deck in DECKS.values():
         if deck["track"] == filename:
             deck["track"] = None
@@ -337,13 +319,12 @@ async def play_deck(deck_id: str):
     DECKS[deck_id]["is_playing"] = True
     DECKS[deck_id]["is_paused"] = False
     TRACKS_PLAYED += 1
-    # Tell ffmpeg-mixer to play this track
     filepath = str(Path("/library") / DECKS[deck_id]["track"])
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             await client.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath})
     except Exception:
-        pass  # ffmpeg-mixer unavailable, state still updated
+        pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
 
@@ -352,7 +333,6 @@ async def pause_deck(deck_id: str):
     if deck_id not in DECKS:
         raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["is_playing"] and DECKS[deck_id]["is_paused"]:
-        # Already paused — this is a resume
         DECKS[deck_id]["is_playing"] = True
         DECKS[deck_id]["is_paused"] = False
         try:
@@ -406,7 +386,6 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest):
 async def mic_on(req: MicControlRequest):
     MIC_STATE["active"] = True
     MIC_STATE["targets"] = req.targets
-    # Tell ffmpeg-mixer to activate mic feed on target decks
     deck_ids = ["a", "b", "c", "d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -493,7 +472,6 @@ async def play_announcement(ann_id: str):
     if not ann:
         raise HTTPException(status_code=404, detail="Announcement not found")
     ann["status"] = "Played"
-    # Tell ffmpeg-mixer to play this announcement
     filepath = str(Path("/announcements") / ann["filename"])
     targets = ann.get("targets", ["ALL"])
     deck_ids = ["a", "b", "c", "d"] if "ALL" in targets else [t.lower() for t in targets]
@@ -518,7 +496,6 @@ async def delete_announcement(ann_id: str):
     if not ann:
         raise HTTPException(status_code=404, detail="Announcement not found")
     ANNOUNCEMENTS = [a for a in ANNOUNCEMENTS if a["id"] != ann_id]
-    # Remove file if it exists
     for d in [ANNOUNCEMENTS_DIR]:
         p = d / ann["filename"]
         if p.exists():
@@ -542,6 +519,9 @@ async def update_settings(req: SettingUpdateRequest):
 @app.post("/api/settings/db-test")
 async def test_db_connection(req: SettingUpdateRequest):
     mode = req.value.get("db_mode", SETTINGS.get("db_mode", "local"))
+    supabase_url = req.value.get("supabase_url") or os.getenv("SUPABASE_URL", "")
+    supabase_key = req.value.get("supabase_key") or os.getenv("SUPABASE_SERVICE_KEY", "")
+
     if mode == "local":
         try:
             import psycopg2
@@ -554,24 +534,33 @@ async def test_db_connection(req: SettingUpdateRequest):
                 connect_timeout=3
             )
             conn.close()
-            return {"status": "ok", "mode": "local"}
+            # Auto-run local migrations on successful connection
+            from migrate import run_migrations_local
+            db_url = f"postgresql://{user}:{password}@{host}:5432/{db}"
+            await asyncio.get_event_loop().run_in_executor(None, run_migrations_local, db_url)
+            return {"status": "ok", "mode": "local", "migrations": "applied"}
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Local DB unreachable: {str(e)}")
     else:
-        supabase_url = os.getenv("SUPABASE_URL", "")
-        supabase_key = os.getenv("SUPABASE_SERVICE_KEY", "")
         if not supabase_url or not supabase_key:
-            raise HTTPException(status_code=400, detail="SUPABASE_URL and SUPABASE_SERVICE_KEY are not configured")
+            raise HTTPException(status_code=400, detail="Supabase URL and Service Key are required for cloud mode")
         try:
-            import httpx as _httpx
-            async with _httpx.AsyncClient(timeout=4) as client:
+            async with httpx.AsyncClient(timeout=6) as client:
                 r = await client.get(
                     f"{supabase_url}/rest/v1/",
                     headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
                 )
-            if r.status_code < 500:
-                return {"status": "ok", "mode": "cloud"}
-            raise HTTPException(status_code=503, detail=f"Supabase returned {r.status_code}")
+            if r.status_code >= 500:
+                raise HTTPException(status_code=503, detail=f"Supabase returned {r.status_code}")
+            # Auto-run cloud migrations on successful connection
+            from migrate import run_migrations_cloud
+            ran = await asyncio.get_event_loop().run_in_executor(
+                None, run_migrations_cloud, supabase_url, supabase_key
+            )
+            # Persist credentials to env for this session
+            os.environ["SUPABASE_URL"] = supabase_url
+            os.environ["SUPABASE_SERVICE_KEY"] = supabase_key
+            return {"status": "ok", "mode": "cloud", "migrations_applied": ran}
         except HTTPException:
             raise
         except Exception as e:
