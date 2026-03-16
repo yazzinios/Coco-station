@@ -22,7 +22,7 @@ rtmpAddress: :1935
 
 hls: yes
 hlsAddress: :8888
-# hlsAlwaysRemux: yes
+hlsAlwaysRemux: yes
 
 ###############################################
 # WebRTC settings
@@ -45,6 +45,11 @@ paths:
       -f flv rtmp://localhost:1935/deck-a
     runOnInitRestart: yes
 
+  # Deck A - WebRTC compatible (Opus)
+  deck-a-webrtc:
+    source: rtmp://localhost:1935/deck-a
+    sourceOnDemand: yes
+
   # Deck B
   deck-b:
     source: publisher
@@ -55,6 +60,11 @@ paths:
       -c:a aac -b:a 128k
       -f flv rtmp://localhost:1935/deck-b
     runOnInitRestart: yes
+
+  # Deck B - WebRTC compatible (Opus)
+  deck-b-webrtc:
+    source: rtmp://localhost:1935/deck-b
+    sourceOnDemand: yes
 
   # Deck C
   deck-c:
@@ -67,6 +77,11 @@ paths:
       -f flv rtmp://localhost:1935/deck-c
     runOnInitRestart: yes
 
+  # Deck C - WebRTC compatible (Opus)
+  deck-c-webrtc:
+    source: rtmp://localhost:1935/deck-c
+    sourceOnDemand: yes
+
   # Deck D
   deck-d:
     source: publisher
@@ -77,3 +92,8 @@ paths:
       -c:a aac -b:a 128k
       -f flv rtmp://localhost:1935/deck-d
     runOnInitRestart: yes
+
+  # Deck D - WebRTC compatible (Opus)
+  deck-d-webrtc:
+    source: rtmp://localhost:1935/deck-d
+    sourceOnDemand: yes

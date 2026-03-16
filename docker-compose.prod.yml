@@ -9,11 +9,12 @@ services:
       - "8554:8554"   # RTSP
       - "1935:1935"   # RTMP
       - "8888:8888"   # HLS
-      - "8889:8889"   # WebRTC / WHEP
+      - "8889:8889"   # WebRTC
       - "8189:8189/udp" # WebRTC ICE/UDP
       - "9997:9997"   # MediaMTX API
-    volumes:
-      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    configs:
+      - source: mediamtx_config
+        target: /mediamtx.yml
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.2
@@ -47,6 +48,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-cocostation}
       - POSTGRES_HOST=db
       - FFMPEG_HOST=ffmpeg-mixer
+    volumes:
+      - cocostation-library:/app/data/library
+      - cocostation-announcements:/app/data/announcements
     depends_on:
       - db
     networks:
@@ -67,7 +71,6 @@ services:
     environment:
       - MEDIAMTX_HOST=mediamtx
       - API_HOST=api
-      - MIC_DEVICE=default
       - PYTHONUNBUFFERED=1
     networks:
       cocostation-net:
@@ -109,3 +112,7 @@ volumes:
     name: cocostation-library
   cocostation-announcements:
     name: cocostation-announcements
+
+configs:
+  mediamtx_config:
+    file: ./mediamtx/mediamtx.yml
