@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { Play, Pause, Square, Volume2, Link, Check } from 'lucide-react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { Play, Pause, Square, Volume2, Link, Check, Headphones, HeadphonesOff } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 const DECK_COLORS = {
@@ -9,21 +9,112 @@ const DECK_COLORS = {
   d: { accent: '#fd9644', glow: 'rgba(253,150,68,0.3)' },
 };
 
-// Clipboard helper — works on HTTP (no HTTPS required)
 function copyToClipboard(text) {
-  if (navigator.clipboard?.writeText) {
-    return navigator.clipboard.writeText(text);
-  }
-  // Fallback for HTTP / non-secure contexts
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
   document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
+  ta.focus(); ta.select();
   const ok = document.execCommand('copy');
   document.body.removeChild(ta);
   return ok ? Promise.resolve() : Promise.reject(new Error('execCommand failed'));
+}
+
+// HLS player using native <audio> — works on all browsers via HLS proxy through nginx
+function DeckMonitor({ id, color }) {
+  const audioRef = useRef(null);
+  const hlsRef   = useRef(null);
+  const [listening, setListening] = useState(false);
+  const [monVol,    setMonVol]    = useState(80);
+
+  // HLS URL goes through nginx proxy — no direct port access needed
+  const hlsUrl = `/deck-${id}/index.m3u8`;
+
+  const startListening = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    // Try native HLS first (Safari / iOS)
+    if (audio.canPlayType('application/vnd.apple.mpegurl')) {
+      audio.src = hlsUrl;
+      audio.volume = monVol / 100;
+      await audio.play().catch(() => {});
+      setListening(true);
+      return;
+    }
+
+    // Use hls.js for Chrome / Firefox
+    if (window.Hls?.isSupported()) {
+      const hls = new window.Hls({ lowLatencyMode: true, backBufferLength: 4 });
+      hlsRef.current = hls;
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(audio);
+      hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+        audio.volume = monVol / 100;
+        audio.play().catch(() => {});
+      });
+      setListening(true);
+      return;
+    }
+
+    // Fallback — direct src (may not work everywhere)
+    audio.src = hlsUrl;
+    audio.volume = monVol / 100;
+    audio.play().catch(() => {});
+    setListening(true);
+  }, [hlsUrl, monVol]);
+
+  const stopListening = useCallback(() => {
+    const audio = audioRef.current;
+    if (audio) { audio.pause(); audio.src = ''; }
+    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+    setListening(false);
+  }, []);
+
+  const toggleMonitor = () => {
+    if (listening) stopListening();
+    else startListening();
+  };
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = monVol / 100;
+  }, [monVol]);
+
+  // Cleanup on unmount
+  useEffect(() => () => stopListening(), []); // eslint-disable-line
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem' }}>
+      <button onClick={toggleMonitor} title={listening ? 'Stop monitoring' : 'Monitor this deck'} style={{
+        width: '30px', height: '30px', borderRadius: '50%', border: 'none', flexShrink: 0,
+        background: listening ? `rgba(${color.accent.replace(/[^\d,]/g,'')},0.2)` : 'rgba(255,255,255,0.05)',
+        color: listening ? color.accent : 'rgba(255,255,255,0.3)',
+        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: listening ? `0 0 8px ${color.glow}` : 'none',
+        transition: 'all 0.2s',
+      }}>
+        {listening ? <Headphones size={14} /> : <HeadphonesOff size={14} />}
+      </button>
+
+      {listening && (
+        <input type="range" min="0" max="100" value={monVol}
+          onChange={e => setMonVol(Number(e.target.value))}
+          title="Monitor volume"
+          style={{
+            flex: 1, height: '2px', appearance: 'none', cursor: 'pointer',
+            background: `linear-gradient(to right, ${color.accent} ${monVol}%, rgba(255,255,255,0.1) ${monVol}%)`,
+            borderRadius: '1px',
+          }}
+        />
+      )}
+      {!listening && (
+        <span style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.25)' }}>Monitor</span>
+      )}
+
+      <audio ref={audioRef} style={{ display: 'none' }} />
+    </div>
+  );
 }
 
 export default function DeckPanel({ id }) {
@@ -53,16 +144,15 @@ export default function DeckPanel({ id }) {
   }, [id, api]);
 
   const copyStreamUrl = async () => {
-    // HLS stream URL for this deck — works in VLC and most players
-    const host = window.location.hostname;
-    const url = `http://${host}:8888/deck-${id}/index.m3u8`;
+    // Use the public HTTPS domain — routed through nginx proxy
+    const base = window.location.origin;
+    const url = `${base}/deck-${id}/index.m3u8`;
     try {
       await copyToClipboard(url);
       setCopied(true);
-      toast.success(`Copied! Paste in VLC → deck-${id.toUpperCase()}`);
+      toast.success(`Stream URL copied! Paste in VLC → deck-${id.toUpperCase()}`);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Last resort — show URL in a prompt so user can copy manually
       window.prompt('Copy this stream URL:', url);
     }
   };
@@ -72,7 +162,7 @@ export default function DeckPanel({ id }) {
 
   return (
     <div className="glass-panel" style={{
-      height: '370px', display: 'flex', flexDirection: 'column',
+      height: '400px', display: 'flex', flexDirection: 'column',
       position: 'relative', overflow: 'hidden',
       borderColor: deck.is_playing ? color.accent + '40' : 'var(--panel-border)',
       transition: 'border-color 0.3s',
@@ -86,7 +176,7 @@ export default function DeckPanel({ id }) {
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', position: 'relative' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', position: 'relative' }}>
         <div>
           <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1.5px' }}>
             Deck {id.toUpperCase()}
@@ -106,7 +196,7 @@ export default function DeckPanel({ id }) {
       {/* Vinyl */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '0.75rem' }}>
         <div style={{
-          width: '85px', height: '85px', borderRadius: '50%',
+          width: '80px', height: '80px', borderRadius: '50%',
           background: `conic-gradient(${color.accent}15, rgba(0,0,0,0.5) 30%, ${color.accent}15 60%, rgba(0,0,0,0.5) 90%)`,
           border: `2px solid ${deck.is_playing ? color.accent + '60' : 'rgba(255,255,255,0.08)'}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -142,10 +232,10 @@ export default function DeckPanel({ id }) {
       </div>
 
       {/* Controls */}
-      <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
         <button onClick={handlePlay} disabled={!deck.track} style={{
           width: '44px', height: '44px', borderRadius: '50%', border: 'none',
-          background: deck.track ? (deck.is_playing ? `rgba(0,0,0,0.2)` : color.accent) : 'rgba(255,255,255,0.05)',
+          background: deck.track ? (deck.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
           color: deck.track ? (deck.is_playing ? color.accent : '#000') : 'rgba(255,255,255,0.2)',
           cursor: deck.track ? 'pointer' : 'not-allowed',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -168,7 +258,7 @@ export default function DeckPanel({ id }) {
       </div>
 
       {/* Volume */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.75rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
         <Volume2 size={14} color="var(--text-secondary)" />
         <input type="range" min="0" max="100" value={volumeLocal}
           onChange={(e) => handleVolumeChange(e.target.value)}
@@ -183,11 +273,15 @@ export default function DeckPanel({ id }) {
         </span>
       </div>
 
+      {/* Monitor (HLS inline player) */}
+      <DeckMonitor id={id} color={color} />
+
       {/* Copy Stream URL */}
       <div onClick={copyStreamUrl} style={{
         fontSize: '0.7rem', color: copied ? '#2ed573' : color.accent, textAlign: 'center',
-        cursor: 'pointer', padding: '0.4rem', borderRadius: '5px',
-        background: copied ? 'rgba(46,213,115,0.08)' : `rgba(0,0,0,0.15)`,
+        cursor: 'pointer', padding: '0.35rem',
+        borderRadius: '5px',
+        background: copied ? 'rgba(46,213,115,0.08)' : 'rgba(0,0,0,0.15)',
         border: `1px solid ${copied ? 'rgba(46,213,115,0.3)' : color.accent + '18'}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem',
         transition: 'all 0.2s', opacity: 0.85,
