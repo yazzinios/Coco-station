@@ -1,99 +1,111 @@
 ###############################################
 # Global settings
-
-# API needed to read status, if needed
 api: yes
 apiAddress: :9997
 
 ###############################################
-# RTSP settings
-
+# RTSP
 rtsp: yes
 rtspAddress: :8554
 
 ###############################################
-# RTMP settings
-
+# RTMP
 rtmp: yes
 rtmpAddress: :1935
 
 ###############################################
-# HLS settings
-
+# HLS
 hls: yes
 hlsAddress: :8888
 hlsAlwaysRemux: yes
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
 
 ###############################################
-# WebRTC settings
-
+# WebRTC
 webrtc: yes
 webrtcAddress: :8889
 
 ###############################################
-# Path settings
+# Paths
 
 paths:
-  # Deck A
   deck-a:
     source: publisher
     sourceOnDemand: no
     runOnInit: >-
       ffmpeg -re -y
       -f lavfi -i anullsrc=r=44100:cl=stereo
-      -c:a aac -b:a 128k
+      -vn -c:a aac -b:a 128k
       -f flv rtmp://localhost:1935/deck-a
     runOnInitRestart: yes
 
-  # Deck A - WebRTC compatible (Opus)
-  deck-a-webrtc:
-    source: rtmp://localhost:1935/deck-a
+  deck-a-opus:
+    source: rtsp://localhost:8554/deck-a
     sourceOnDemand: yes
+    runOnInit: >-
+      ffmpeg -re -y
+      -i rtsp://localhost:8554/deck-a
+      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
+      -f rtsp rtsp://localhost:8554/deck-a-opus
+    runOnInitRestart: yes
 
-  # Deck B
   deck-b:
     source: publisher
     sourceOnDemand: no
     runOnInit: >-
       ffmpeg -re -y
       -f lavfi -i anullsrc=r=44100:cl=stereo
-      -c:a aac -b:a 128k
+      -vn -c:a aac -b:a 128k
       -f flv rtmp://localhost:1935/deck-b
     runOnInitRestart: yes
 
-  # Deck B - WebRTC compatible (Opus)
-  deck-b-webrtc:
-    source: rtmp://localhost:1935/deck-b
+  deck-b-opus:
+    source: rtsp://localhost:8554/deck-b
     sourceOnDemand: yes
+    runOnInit: >-
+      ffmpeg -re -y
+      -i rtsp://localhost:8554/deck-b
+      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
+      -f rtsp rtsp://localhost:8554/deck-b-opus
+    runOnInitRestart: yes
 
-  # Deck C
   deck-c:
     source: publisher
     sourceOnDemand: no
     runOnInit: >-
       ffmpeg -re -y
       -f lavfi -i anullsrc=r=44100:cl=stereo
-      -c:a aac -b:a 128k
+      -vn -c:a aac -b:a 128k
       -f flv rtmp://localhost:1935/deck-c
     runOnInitRestart: yes
 
-  # Deck C - WebRTC compatible (Opus)
-  deck-c-webrtc:
-    source: rtmp://localhost:1935/deck-c
+  deck-c-opus:
+    source: rtsp://localhost:8554/deck-c
     sourceOnDemand: yes
+    runOnInit: >-
+      ffmpeg -re -y
+      -i rtsp://localhost:8554/deck-c
+      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
+      -f rtsp rtsp://localhost:8554/deck-c-opus
+    runOnInitRestart: yes
 
-  # Deck D
   deck-d:
     source: publisher
     sourceOnDemand: no
     runOnInit: >-
       ffmpeg -re -y
       -f lavfi -i anullsrc=r=44100:cl=stereo
-      -c:a aac -b:a 128k
+      -vn -c:a aac -b:a 128k
       -f flv rtmp://localhost:1935/deck-d
     runOnInitRestart: yes
 
-  # Deck D - WebRTC compatible (Opus)
-  deck-d-webrtc:
-    source: rtmp://localhost:1935/deck-d
+  deck-d-opus:
+    source: rtsp://localhost:8554/deck-d
     sourceOnDemand: yes
+    runOnInit: >-
+      ffmpeg -re -y
+      -i rtsp://localhost:8554/deck-d
+      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
+      -f rtsp rtsp://localhost:8554/deck-d-opus
+    runOnInitRestart: yes
