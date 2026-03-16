@@ -10,6 +10,8 @@ export default function SettingsPage() {
   const [ducking, setDucking] = useState(5);
   const [micDucking, setMicDucking] = useState(20);
   const [dbMode, setDbMode] = useState('local');
+  const [supabaseUrl, setSupabaseUrl] = useState('');
+  const [supabaseKey, setSupabaseKey] = useState('');
   const [micDevices, setMicDevices] = useState([]);
   const [saving, setSaving] = useState(false);
   const [dbSaving, setDbSaving] = useState(false);
@@ -42,17 +44,20 @@ export default function SettingsPage() {
     setDbTesting(true);
     setDbStatus(null);
     try {
+      // API expects { value: { db_mode: ... } }
+      const payload = { value: { db_mode: dbMode } };
       const res = await fetch('/api/settings/db-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ db_mode: dbMode }),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         setDbStatus('ok');
         toast.success('Connection successful!');
       } else {
+        const err = await res.json().catch(() => ({}));
         setDbStatus('error');
-        toast.error('Connection failed.');
+        toast.error('Connection failed: ' + (err.detail || res.statusText));
       }
     } catch (err) {
       setDbStatus('error');
@@ -65,7 +70,13 @@ export default function SettingsPage() {
   const handleSaveDb = async () => {
     setDbSaving(true);
     try {
-      await api.saveSettings({ db_mode: dbMode });
+      // API expects { value: { ... } }
+      const payload = { db_mode: dbMode };
+      if (dbMode === 'cloud') {
+        payload.supabase_url = supabaseUrl;
+        payload.supabase_key = supabaseKey;
+      }
+      await api.saveSettings(payload);
       toast.success('Database setting saved!');
     } catch (err) {
       toast.error(`Save failed: ${err.message}`);
@@ -77,13 +88,11 @@ export default function SettingsPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // Rename each deck
       for (const [id, name] of Object.entries(deckNames)) {
         if (name !== decks[id]?.name) {
           await api.renameDeck(id, name);
         }
       }
-      // Save global settings
       await api.saveSettings({ ducking_percent: ducking, mic_ducking_percent: micDucking, db_mode: dbMode });
       toast.success('Settings saved!');
     } catch (err) {
@@ -117,17 +126,50 @@ export default function SettingsPage() {
                 <input
                   type="radio" name="db_mode" value={mode}
                   checked={dbMode === mode}
-                  onChange={() => setDbMode(mode)}
+                  onChange={() => { setDbMode(mode); setDbStatus(null); }}
                   style={{ accentColor: 'var(--accent-blue)' }}
                 />
-                <span>{mode === 'local' ? 'Local (PostgreSQL)' : 'Cloud (Supabase)'}</span>
+                <span>{mode === 'local' ? '🖥 Local (PostgreSQL)' : '☁️ Cloud (Supabase)'}</span>
               </label>
             ))}
           </div>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>Switching requires an application restart.</p>
+
+          {/* Cloud fields — only shown when cloud is selected */}
+          {dbMode === 'cloud' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1rem', padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
+              <div>
+                <label style={labelStyle}>Supabase URL</label>
+                <input
+                  type="text"
+                  value={supabaseUrl}
+                  onChange={e => setSupabaseUrl(e.target.value)}
+                  placeholder="https://xxxx.supabase.co"
+                  style={inputStyle}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Supabase Service Key</label>
+                <input
+                  type="password"
+                  value={supabaseKey}
+                  onChange={e => setSupabaseKey(e.target.value)}
+                  placeholder="eyJ..."
+                  style={inputStyle}
+                />
+              </div>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
+                Find these in your Supabase project → Settings → API
+              </p>
+            </div>
+          )}
+
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+            {dbMode === 'local'
+              ? 'Using the built-in PostgreSQL container. No extra config needed.'
+              : 'Switching to Supabase requires an application restart after saving.'}
+          </p>
 
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Test Connection */}
             <button
               onClick={handleTestDb}
               disabled={dbTesting}
@@ -142,7 +184,6 @@ export default function SettingsPage() {
               {dbTesting ? '⟳ Testing…' : '⚡ Test Connection'}
             </button>
 
-            {/* Status badge */}
             {dbStatus && (
               <span style={{
                 fontSize: '0.8rem', fontWeight: '600', padding: '0.3rem 0.75rem',
@@ -155,7 +196,6 @@ export default function SettingsPage() {
               </span>
             )}
 
-            {/* Save DB */}
             <button
               onClick={handleSaveDb}
               disabled={dbSaving}
@@ -227,7 +267,6 @@ export default function SettingsPage() {
             )}
           </div>
 
-          {/* Announcement ducking */}
           <div style={{ marginBottom: '1.5rem' }}>
             <label style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between' }}>
               <span>📢 Announcement Ducking</span>
@@ -247,7 +286,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Mic / On Air ducking */}
           <div style={{ marginBottom: '1.5rem' }}>
             <label style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between' }}>
               <span>🎙 On Air Mic Ducking</span>
@@ -263,10 +301,9 @@ export default function SettingsPage() {
               }}
             />
             <div style={{ marginTop: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-              Volume music fades to when DJ mic is On Air. Lower = deeper fade. Default 20%.
+              Volume music fades to when DJ mic is On Air. Default 20%.
             </div>
           </div>
-
         </div>
 
         {/* ── Appearance ─────────────────────── */}
