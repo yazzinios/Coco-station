@@ -182,7 +182,7 @@ export default function AnnouncementsPage() {
 
             {/* Schedule Time */}
             <div>
-              <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <label style={{ marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 <Clock size={11} /> Schedule (optional)
               </label>
               <input

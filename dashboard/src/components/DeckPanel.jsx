@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Play, Pause, Square, Volume2, Link, Check, Headphones, HeadphonesOff } from 'lucide-react';
+import { Play, Pause, Square, Volume2, Link, Check, Headphones } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 const DECK_COLORS = {
@@ -94,7 +94,7 @@ function DeckMonitor({ id, color }) {
         boxShadow: listening ? `0 0 8px ${color.glow}` : 'none',
         transition: 'all 0.2s',
       }}>
-        {listening ? <Headphones size={14} /> : <HeadphonesOff size={14} />}
+        <Headphones size={14} />
       </button>
 
       {listening && (

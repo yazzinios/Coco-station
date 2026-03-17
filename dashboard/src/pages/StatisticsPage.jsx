@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { BarChart2, Clock, Music, Radio, Layers } from 'lucide-react';
 
 export default function StatisticsPage() {
@@ -17,12 +17,13 @@ export default function StatisticsPage() {
     return () => clearInterval(poll);
   }, []);
 
-  // Live uptime counter
+  // Live uptime counter — restart ticker whenever base uptime changes
   useEffect(() => {
     if (!stats) return;
+    setUptimeTick(0); // reset offset when we get a fresh base from API
     const interval = setInterval(() => setUptimeTick(t => t + 1), 1000);
     return () => clearInterval(interval);
-  }, [stats?.uptime_seconds]);
+  }, [stats?.uptime_seconds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatUptime = (base) => {
     const total = (base || 0) + uptimeTick;
