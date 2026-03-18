@@ -2,15 +2,15 @@ import React, { useState, useRef } from 'react';
 import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
+const ORIGIN = window.location.origin;
 const HOST = window.location.hostname;
-const HTTP = window.location.protocol;
 
 function getStreamLinks(deckId) {
   return [
-    { label: 'HLS', desc: 'Browser / VLC / ffplay', url: `${HTTP}//${HOST}:8888/${deckId}/index.m3u8` },
-    { label: 'WebRTC', desc: 'Browser (low latency)', url: `${HTTP}//${HOST}:8889/${deckId}` },
-    { label: 'RTSP', desc: 'VLC / OBS / ffplay', url: `rtsp://${HOST}:8554/${deckId}` },
-    { label: 'RTMP', desc: 'OBS / streaming software', url: `rtmp://${HOST}:1935/${deckId}` },
+    { label: 'HLS', desc: 'Secure Browser / VLC', url: `${ORIGIN}/${deckId}/index.m3u8` },
+    { label: 'WebRTC', desc: 'Low Latency Browser', url: `${ORIGIN}/${deckId}/whep` },
+    { label: 'RTSP', desc: 'VLC / OBS (Internal)', url: `rtsp://${HOST}:8554/${deckId}` },
+    { label: 'RTMP', desc: 'Streaming Software (Internal)', url: `rtmp://${HOST}:1935/${deckId}` },
   ];
 }
 
@@ -29,11 +29,24 @@ export default function AnnouncementsPage() {
   const [streamDeck, setStreamDeck] = useState('deck-a');
   const fileRef = useRef(null);
 
-  const copyLink = (url, idx) => {
-    navigator.clipboard.writeText(url).then(() => {
+  const copyLink = async (url, idx) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
       setCopiedIdx(idx);
+      toast.success('Link copied to clipboard!');
       setTimeout(() => setCopiedIdx(null), 2000);
-    });
+    } catch (err) {
+      toast.error('Failed to copy link');
+    }
   };
 
   const toggleDeck = (deck) => {
