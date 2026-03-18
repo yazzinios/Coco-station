@@ -3,6 +3,9 @@ import subprocess
 import threading
 import time
 import uuid
+import queue
+import audioop
+import signal
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 import uvicorn
@@ -11,160 +14,205 @@ from typing import Optional
 
 MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
 RTMP_BASE_URL = f"rtmp://{MEDIAMTX_HOST}:1935"
-LIBRARY_DIR = "/library"
-ANNOUNCEMENTS_DIR = "/announcements"
 
-# Base ffmpeg output args — audio only AAC, no video track
-FFMPEG_OUT = ["-vn", "-c:a", "aac", "-b:a", "128k", "-f", "flv"]
-
+CHUNK_SIZE = 4096
+SAMPLE_RATE = 44100
+CHANNELS = 2
+SAMPWIDTH = 2 # 16-bit
 
 class Deck:
     def __init__(self, name):
         self.name = name
         self.lock = threading.Lock()
         self.volume = 100
+        self.duck_volume = 100
         self.is_playing = False
         self.current_track = None
+        
+        self.track_proc = None
+        self.ann_proc = None
+        
+        self.track_q = queue.Queue(maxsize=100)
+        self.ann_q = queue.Queue(maxsize=100)
+        self.mic_q = queue.Queue(maxsize=100)
+        
         self.stream_proc = None
-        self.play_proc = None
-        self.play_thread = None
+        self._start_master_stream()
+        
+        self.mixer_thread = threading.Thread(target=self._mix_loop, daemon=True)
+        self.mixer_thread.start()
 
-    def start_stream(self):
-        """Start a continuous silent RTMP stream for this deck."""
-        if self.stream_proc and self.stream_proc.poll() is None:
-            return
+    def _start_master_stream(self):
         rtmp_url = f"{RTMP_BASE_URL}/deck-{self.name}"
+        # Start a continuous ffmpeg stream reading from stdin. 
+        # By removing -re and relying on stdin pipe blocking, we achieve perfect streaming stability.
         cmd = [
-            "ffmpeg", "-re", "-y",
-            "-fflags", "nobuffer", "-flags", "low_delay",
-            "-probesize", "32", "-analyzeduration", "0",
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-        ] + FFMPEG_OUT + [rtmp_url]
-        self.stream_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"Deck {self.name} started streaming to {rtmp_url}")
+            "ffmpeg", "-y",
+            "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "-i", "pipe:0",
+            "-c:a", "aac", "-b:a", "128k", "-f", "flv", rtmp_url
+        ]
+        self.stream_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"Deck {self.name} master stream started: {rtmp_url}")
 
-    def _play_file_thread(self, filepath, volume, rtmp_url):
-        """Background thread: decode audio file and push to RTMP."""
-        if self.stream_proc and self.stream_proc.poll() is None:
-            self.stream_proc.terminate()
-            self.stream_proc.wait()
-            self.stream_proc = None
+    def _mix_loop(self):
+        silence = b'\x00' * CHUNK_SIZE
+        while True:
+            # Get track audio if available
+            track_chunk = silence
+            if not self.track_q.empty():
+                try: track_chunk = self.track_q.get_nowait()
+                except queue.Empty: pass
+                
+            # Get announcement audio if available
+            ann_chunk = silence
+            if not self.ann_q.empty():
+                try: ann_chunk = self.ann_q.get_nowait()
+                except queue.Empty: pass
+                
+            # Get mic audio if available
+            mic_chunk = silence
+            mic_active = False
+            if not self.mic_q.empty():
+                try: 
+                    mic_chunk = self.mic_q.get_nowait()
+                    mic_active = True
+                except queue.Empty: pass
+            
+            # Combine volume control and ducking
+            current_vol = self.volume
+            if mic_active:
+                current_vol = (self.volume / 100.0) * (self.duck_volume / 100.0) * 100
+            
+            if current_vol != 100:
+                vol_factor = max(0.0, current_vol / 100.0)
+                try: 
+                    # If silence, multiplying it by volume still keeps it silence
+                    if track_chunk != silence:
+                        track_chunk = audioop.mul(track_chunk, SAMPWIDTH, vol_factor)
+                except Exception: pass
+            
+            # Mix the tracks using audioop!
+            mixed = silence
+            try:
+                mixed = audioop.add(track_chunk, ann_chunk, SAMPWIDTH)
+                mixed = audioop.add(mixed, mic_chunk, SAMPWIDTH)
+            except Exception:
+                pass
+            
+            # Write to RTMP encoder. If encoder buffer is full, it blocks here, inherently matching real-time pace.
+            try:
+                if self.stream_proc and self.stream_proc.stdin:
+                    self.stream_proc.stdin.write(mixed)
+            except (BrokenPipeError, OSError):
+                print(f"Deck {self.name} connection broken, restarting master RTMP stream")
+                self._start_master_stream()
 
-        vol_filter = f"volume={volume / 100:.2f}"
-        cmd = [
-            "ffmpeg", "-re", "-y",
-            "-fflags", "nobuffer", "-flags", "low_delay",
-            "-probesize", "32", "-analyzeduration", "0",
-            "-i", filepath,
-            "-af", vol_filter,
-        ] + FFMPEG_OUT + [rtmp_url]
-
-        print(f"Deck {self.name} playing: {filepath} → {rtmp_url}")
-        self.play_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        _, stderr = self.play_proc.communicate()
-        if self.play_proc.returncode != 0 and stderr:
-            print(f"Deck {self.name} ffmpeg error: {stderr[-500:].decode(errors='replace')}")
-
-        with self.lock:
-            self.is_playing = False
-            self.current_track = None
-        self.start_stream()
+    def _reader_thread(self, proc, q, proc_name):
+        try:
+            while proc and proc.poll() is None:
+                chunk = proc.stdout.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                if len(chunk) < CHUNK_SIZE:
+                    chunk += b'\x00' * (CHUNK_SIZE - len(chunk))
+                try:
+                    q.put(chunk, timeout=2)
+                except queue.Full:
+                    pass
+        except Exception:
+            pass
+        finally:
+            if proc_name == "track":
+                with self.lock:
+                    self.is_playing = False
+                    self.current_track = None
 
     def play(self, filepath):
+        self.stop()
         with self.lock:
-            if self.play_proc and self.play_proc.poll() is None:
-                self.play_proc.terminate()
-                self.play_proc.wait()
             self.is_playing = True
             self.current_track = filepath
-        rtmp_url = f"{RTMP_BASE_URL}/deck-{self.name}"
-        self.play_thread = threading.Thread(
-            target=self._play_file_thread,
-            args=(filepath, self.volume, rtmp_url),
-            daemon=True
-        )
-        self.play_thread.start()
+        cmd = [
+            "ffmpeg", "-y", "-i", filepath,
+            "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1"
+        ]
+        self.track_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        threading.Thread(target=self._reader_thread, args=(self.track_proc, self.track_q, "track"), daemon=True).start()
+        print(f"Deck {self.name} playing: {filepath}")
 
     def pause(self):
-        import signal as _signal
         with self.lock:
-            if self.play_proc and self.play_proc.poll() is None:
-                try:
-                    self.play_proc.send_signal(_signal.SIGSTOP)
-                except Exception as e:
-                    print(f"Deck {self.name} pause error: {e}")
+            if self.track_proc and self.track_proc.poll() is None:
+                try: self.track_proc.send_signal(signal.SIGSTOP)
+                except Exception: pass
             self.is_playing = False
 
     def resume(self):
-        import signal as _signal
         with self.lock:
-            if self.play_proc and self.play_proc.poll() is None:
-                try:
-                    self.play_proc.send_signal(_signal.SIGCONT)
-                except Exception as e:
-                    print(f"Deck {self.name} resume error: {e}")
+            if self.track_proc and self.track_proc.poll() is None:
+                try: self.track_proc.send_signal(signal.SIGCONT)
+                except Exception: pass
             self.is_playing = True
 
     def stop(self):
         with self.lock:
-            if self.play_proc and self.play_proc.poll() is None:
-                self.play_proc.terminate()
-                self.play_proc.wait()
-            self.play_proc = None
+            if self.track_proc and self.track_proc.poll() is None:
+                try: 
+                    self.track_proc.terminate()
+                    self.track_proc.wait(timeout=2)
+                except Exception: pass
+            self.track_proc = None
             self.is_playing = False
             self.current_track = None
-        self.start_stream()
+            # Empty track queue
+            while not self.track_q.empty():
+                try: self.track_q.get_nowait()
+                except: pass
 
     def set_volume(self, vol):
-        self.volume = max(0, min(100, vol))
-        if self.is_playing and self.current_track:
-            self.play(self.current_track)
+        with self.lock:
+            self.volume = max(0, min(100, vol))
+
+    def set_ducking(self, vol):
+        with self.lock:
+            self.duck_volume = max(0, min(100, vol))
 
     def play_announcement(self, filepath):
-        """Play an announcement non-destructively over current state."""
-        def _ann_thread():
-            saved_playing = self.is_playing
-            if self.play_proc and self.play_proc.poll() is None:
-                self.play_proc.send_signal(__import__('signal').SIGSTOP)
-            rtmp_url = f"{RTMP_BASE_URL}/deck-{self.name}"
-            cmd = [
-                "ffmpeg", "-re", "-y",
-                "-fflags", "nobuffer", "-flags", "low_delay",
-                "-probesize", "32", "-analyzeduration", "0",
-                "-i", filepath
-            ] + FFMPEG_OUT + [rtmp_url]
-            ann_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            ann_proc.wait()
-            if saved_playing and self.play_proc and self.play_proc.poll() is None:
-                self.play_proc.send_signal(__import__('signal').SIGCONT)
-            elif not saved_playing:
-                self.start_stream()
-        threading.Thread(target=_ann_thread, daemon=True).start()
+        if self.ann_proc and self.ann_proc.poll() is None:
+            try:
+                self.ann_proc.terminate()
+                self.ann_proc.wait(timeout=2)
+            except Exception: pass
+        # Empty old announcement queue
+        while not self.ann_q.empty():
+            try: self.ann_q.get_nowait()
+            except: pass
+        
+        cmd = [
+            "ffmpeg", "-y", "-i", filepath,
+            "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1"
+        ]
+        self.ann_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        threading.Thread(target=self._reader_thread, args=(self.ann_proc, self.ann_q, "ann"), daemon=True).start()
+        print(f"Deck {self.name} playing announcement: {filepath}")
 
 
 decks = {name: Deck(name) for name in ["a", "b", "c", "d"]}
-mic_procs: dict = {}
 mic_sessions: dict = {}
-MIC_INPUT_DEVICE = os.getenv("MIC_DEVICE", "default")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    for deck in decks.values():
-        deck.start_stream()
     yield
     for deck in decks.values():
         deck.stop()
-
+        if deck.stream_proc and deck.stream_proc.poll() is None:
+            deck.stream_proc.terminate()
 
 app = FastAPI(lifespan=lifespan)
 
-
 class PlayRequest(BaseModel):
     filepath: str
-
-class MicRequest(BaseModel):
-    targets: list
 
 class MicStreamStartRequest(BaseModel):
     targets: list
@@ -176,167 +224,124 @@ class MicStreamStopRequest(BaseModel):
 
 @app.post("/decks/{deck_id}/play")
 def play_track(deck_id: str, req: PlayRequest):
-    if deck_id not in decks:
-        raise HTTPException(status_code=404, detail="Deck not found")
+    if deck_id not in decks: raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].play(req.filepath)
     return {"status": "ok", "deck": deck_id, "filepath": req.filepath}
 
 @app.post("/decks/{deck_id}/pause")
 def pause_track(deck_id: str):
-    if deck_id not in decks:
-        raise HTTPException(status_code=404, detail="Deck not found")
+    if deck_id not in decks: raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].pause()
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/decks/{deck_id}/resume")
 def resume_track(deck_id: str):
-    if deck_id not in decks:
-        raise HTTPException(status_code=404, detail="Deck not found")
+    if deck_id not in decks: raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].resume()
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/decks/{deck_id}/stop")
 def stop_track(deck_id: str):
-    if deck_id not in decks:
-        raise HTTPException(status_code=404, detail="Deck not found")
+    if deck_id not in decks: raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].stop()
     return {"status": "ok"}
 
 @app.post("/decks/{deck_id}/volume/{level}")
 def set_volume(deck_id: str, level: int):
-    if deck_id not in decks:
-        raise HTTPException(status_code=404, detail="Deck not found")
+    if deck_id not in decks: raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].set_volume(level)
-    return {"status": "ok", "volume": decks[deck_id].volume}
+    return {"status": "ok", "volume": level}
 
 @app.post("/decks/{deck_id}/play_announcement")
 def play_announcement(deck_id: str, req: PlayRequest):
-    if deck_id not in decks:
-        raise HTTPException(status_code=404, detail="Deck not found")
+    if deck_id not in decks: raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].play_announcement(req.filepath)
     return {"status": "ok"}
-
-@app.post("/mic/on")
-def mic_on(req: MicRequest):
-    global mic_procs
-    for proc in list(mic_procs.values()):
-        if proc and proc.poll() is None:
-            proc.terminate(); proc.wait()
-    mic_procs.clear()
-    targets = req.targets if req.targets else ["a", "b", "c", "d"]
-    for deck_id in targets:
-        rtmp_url = f"{RTMP_BASE_URL}/deck-{deck_id}"
-        cmd = ["ffmpeg", "-re", "-y", "-f", "alsa", "-i", MIC_INPUT_DEVICE,
-               "-vn", "-c:a", "aac", "-b:a", "128k", "-f", "flv", rtmp_url]
-        try:
-            mic_procs[deck_id] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print(f"Mic proc failed for deck {deck_id}: {e}")
-    return {"status": "ok", "targets": targets}
-
-@app.post("/mic/off")
-def mic_off():
-    global mic_procs
-    for proc in list(mic_procs.values()):
-        if proc and proc.poll() is None:
-            proc.terminate(); proc.wait()
-    mic_procs.clear()
-    for sid in list(mic_sessions.keys()):
-        _stop_mic_session(sid)
-    return {"status": "ok"}
-
-def _stop_mic_session(session_id: str):
-    session = mic_sessions.pop(session_id, None)
-    if not session:
-        return
-    for deck_id, proc in session.get("procs", {}).items():
-        try:
-            if proc.stdin:
-                proc.stdin.close()
-            if proc.poll() is None:
-                proc.terminate()
-                proc.wait(timeout=2)
-        except Exception:
-            pass
-        if deck_id in decks:
-            decks[deck_id].start_stream()
-    print(f"[mic_session] {session_id} stopped")
 
 @app.post("/mic/stream/start")
 def mic_stream_start(req: MicStreamStartRequest):
     raw_targets = req.targets
-    if not raw_targets or "ALL" in raw_targets:
-        target_ids = ["a", "b", "c", "d"]
-    else:
-        target_ids = [t.lower() for t in raw_targets]
+    target_ids = ["a", "b", "c", "d"] if not raw_targets or "ALL" in raw_targets else [t.lower() for t in raw_targets]
 
     session_id = str(uuid.uuid4())[:8]
-    procs = {}
     duck_vol = max(0, min(100, req.ducking))
 
     for deck_id in target_ids:
         if deck_id in decks:
-            decks[deck_id].set_volume(duck_vol)
+            decks[deck_id].set_ducking(duck_vol)
 
-    for deck_id in target_ids:
-        if deck_id in decks:
-            d = decks[deck_id]
-            if d.stream_proc and d.stream_proc.poll() is None:
-                d.stream_proc.terminate()
-                d.stream_proc.wait()
-                d.stream_proc = None
+    # Proc to convert mono PCM to stereo PCM for mixing
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0",
+        "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    
+    mic_sessions[session_id] = {"proc": proc, "targets": target_ids, "duck_vol": duck_vol}
 
-    for deck_id in target_ids:
-        rtmp_url = f"{RTMP_BASE_URL}/deck-{deck_id}"
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0",
-            "-vn", "-c:a", "aac", "-b:a", "128k", "-f", "flv", rtmp_url
-        ]
-        print(f"[mic_session] {session_id} → deck-{deck_id} ({rtmp_url})")
+    def _mic_reader():
         try:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            procs[deck_id] = proc
-        except Exception as e:
-            print(f"[mic_session] ffmpeg start error for deck {deck_id}: {e}")
+            while proc and proc.poll() is None:
+                chunk = proc.stdout.read(CHUNK_SIZE)
+                if not chunk: break
+                if len(chunk) < CHUNK_SIZE:
+                    chunk += b'\x00' * (CHUNK_SIZE - len(chunk))
+                for did in target_ids:
+                    if did in decks:
+                        try: decks[did].mic_q.put(chunk, timeout=0.1)
+                        except queue.Full: pass
+        except Exception: pass
 
-    mic_sessions[session_id] = {"procs": procs, "targets": target_ids, "duck_vol": duck_vol}
+    threading.Thread(target=_mic_reader, daemon=True).start()
     return {"status": "ok", "session_id": session_id, "targets": target_ids}
 
 @app.post("/mic/stream/push")
 async def mic_stream_push(request: Request):
     session_id = request.headers.get("X-Session-Id", "")
     session = mic_sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    if not session: raise HTTPException(status_code=404, detail="Session not found")
     data = await request.body()
     if data:
-        for deck_id, proc in session["procs"].items():
-            try:
-                if proc.stdin and proc.poll() is None:
-                    proc.stdin.write(data)
-                    proc.stdin.flush()
-            except BrokenPipeError:
-                pass
+        proc = session["proc"]
+        try:
+            if proc.stdin and proc.poll() is None:
+                proc.stdin.write(data)
+                # Important: flush isn't strictly necessary for pipe, but helpful
+                proc.stdin.flush()
+        except BrokenPipeError:
+            pass
     return {"status": "ok"}
 
 @app.post("/mic/stream/stop")
 def mic_stream_stop(req: MicStreamStopRequest):
-    session = mic_sessions.get(req.session_id)
+    session = mic_sessions.pop(req.session_id, None)
     if session:
+        proc = session.get("proc")
+        if proc:
+            try:
+                if proc.stdin: proc.stdin.close()
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception: pass
         for deck_id in session.get("targets", []):
             if deck_id in decks:
-                decks[deck_id].set_volume(100)
-    _stop_mic_session(req.session_id)
+                decks[deck_id].set_ducking(100)
+    return {"status": "ok"}
+
+@app.post("/mic/off") # Fallback cleanup
+def mic_off():
+    keys = list(mic_sessions.keys())
+    for k in keys:
+        mic_stream_stop(MicStreamStopRequest(session_id=k))
     return {"status": "ok"}
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "decks": {name: {"playing": d.is_playing, "track": d.current_track} for name, d in decks.items()},
-        "mic_active": bool(mic_procs),
-        "mic_targets": list(mic_procs.keys()),
+        "decks": {name: {"playing": d.is_playing, "track": d.current_track, "volume": d.volume, "duck": d.duck_volume} for name, d in decks.items()},
+        "mic_sessions": list(mic_sessions.keys())
     }
 
 if __name__ == "__main__":
