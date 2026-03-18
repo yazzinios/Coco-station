@@ -33,79 +33,24 @@ paths:
   deck-a:
     source: publisher
     sourceOnDemand: no
-    runOnInit: >-
-      ffmpeg -re -y
-      -f lavfi -i anullsrc=r=44100:cl=stereo
-      -vn -c:a aac -b:a 128k
-      -f flv rtmp://localhost:1935/deck-a
-    runOnInitRestart: yes
-
   deck-a-opus:
     source: rtsp://localhost:8554/deck-a
     sourceOnDemand: yes
-    runOnInit: >-
-      ffmpeg -re -y
-      -i rtsp://localhost:8554/deck-a
-      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
-      -f rtsp rtsp://localhost:8554/deck-a-opus
-    runOnInitRestart: yes
-
   deck-b:
     source: publisher
     sourceOnDemand: no
-    runOnInit: >-
-      ffmpeg -re -y
-      -f lavfi -i anullsrc=r=44100:cl=stereo
-      -vn -c:a aac -b:a 128k
-      -f flv rtmp://localhost:1935/deck-b
-    runOnInitRestart: yes
-
   deck-b-opus:
     source: rtsp://localhost:8554/deck-b
     sourceOnDemand: yes
-    runOnInit: >-
-      ffmpeg -re -y
-      -i rtsp://localhost:8554/deck-b
-      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
-      -f rtsp rtsp://localhost:8554/deck-b-opus
-    runOnInitRestart: yes
-
   deck-c:
     source: publisher
     sourceOnDemand: no
-    runOnInit: >-
-      ffmpeg -re -y
-      -f lavfi -i anullsrc=r=44100:cl=stereo
-      -vn -c:a aac -b:a 128k
-      -f flv rtmp://localhost:1935/deck-c
-    runOnInitRestart: yes
-
   deck-c-opus:
     source: rtsp://localhost:8554/deck-c
     sourceOnDemand: yes
-    runOnInit: >-
-      ffmpeg -re -y
-      -i rtsp://localhost:8554/deck-c
-      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
-      -f rtsp rtsp://localhost:8554/deck-c-opus
-    runOnInitRestart: yes
-
   deck-d:
     source: publisher
     sourceOnDemand: no
-    runOnInit: >-
-      ffmpeg -re -y
-      -f lavfi -i anullsrc=r=44100:cl=stereo
-      -vn -c:a aac -b:a 128k
-      -f flv rtmp://localhost:1935/deck-d
-    runOnInitRestart: yes
-
   deck-d-opus:
     source: rtsp://localhost:8554/deck-d
     sourceOnDemand: yes
-    runOnInit: >-
-      ffmpeg -re -y
-      -i rtsp://localhost:8554/deck-d
-      -vn -c:a libopus -b:a 96k -ar 48000 -ac 2
-      -f rtsp rtsp://localhost:8554/deck-d-opus
-    runOnInitRestart: yes

@@ -36,6 +36,8 @@ class Deck:
         rtmp_url = f"{RTMP_BASE_URL}/deck-{self.name}"
         cmd = [
             "ffmpeg", "-re", "-y",
+            "-fflags", "nobuffer", "-flags", "low_delay",
+            "-probesize", "32", "-analyzeduration", "0",
             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
         ] + FFMPEG_OUT + [rtmp_url]
         self.stream_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -51,6 +53,8 @@ class Deck:
         vol_filter = f"volume={volume / 100:.2f}"
         cmd = [
             "ffmpeg", "-re", "-y",
+            "-fflags", "nobuffer", "-flags", "low_delay",
+            "-probesize", "32", "-analyzeduration", "0",
             "-i", filepath,
             "-af", vol_filter,
         ] + FFMPEG_OUT + [rtmp_url]
@@ -123,7 +127,12 @@ class Deck:
             if self.play_proc and self.play_proc.poll() is None:
                 self.play_proc.send_signal(__import__('signal').SIGSTOP)
             rtmp_url = f"{RTMP_BASE_URL}/deck-{self.name}"
-            cmd = ["ffmpeg", "-re", "-y", "-i", filepath] + FFMPEG_OUT + [rtmp_url]
+            cmd = [
+                "ffmpeg", "-re", "-y",
+                "-fflags", "nobuffer", "-flags", "low_delay",
+                "-probesize", "32", "-analyzeduration", "0",
+                "-i", filepath
+            ] + FFMPEG_OUT + [rtmp_url]
             ann_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             ann_proc.wait()
             if saved_playing and self.play_proc and self.play_proc.poll() is None:
