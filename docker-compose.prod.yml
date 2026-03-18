@@ -12,6 +12,9 @@ services:
       - "8889:8889"
       - "8189:8189/udp"
       - "9997:9997"
+    configs:
+      - source: mediamtx_config
+        target: /mediamtx.yml
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.2
@@ -26,6 +29,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-cocostation}
     volumes:
       - cocostation-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coco} -d ${POSTGRES_DB:-cocostation}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.3
@@ -35,8 +43,7 @@ services:
       context: "https://github.com/yazzinios/Coco-station.git#main:api"
     container_name: cc_api
     restart: always
-    ports:
-      - "8000:8000"
+    # Port 8000 is NOT exposed publicly — accessed only through nginx (dashboard)
     environment:
       - DB_MODE=${DB_MODE:-local}
       - POSTGRES_USER=${POSTGRES_USER:-coco}
@@ -48,7 +55,8 @@ services:
       - cocostation-library:/app/data/library
       - cocostation-announcements:/app/data/announcements
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.4
@@ -60,6 +68,7 @@ services:
     restart: always
     depends_on:
       - mediamtx
+      - api
     volumes:
       - cocostation-library:/library
       - cocostation-announcements:/announcements
@@ -86,6 +95,10 @@ services:
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.6
+
+configs:
+  mediamtx_config:
+    file: ./mediamtx/mediamtx.yml
 
 networks:
   cocostation-net:

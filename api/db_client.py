@@ -1,8 +1,7 @@
 import os
 import json
-import uuid
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 DB_MODE = os.getenv("DB_MODE", "local").lower()
 
@@ -71,8 +70,8 @@ class DBClient:
                 return results
 
     def create_announcement(self, ann: Dict):
-        # ann matches columns: name, text, type, file_path, targets, schedule_at
         data = {
+            "id": ann["id"],  # Use the same ID as in-memory to keep them in sync
             "name": ann["name"],
             "text": ann.get("text"),
             "type": ann["type"].lower(),
@@ -85,7 +84,7 @@ class DBClient:
         else:
             conn = self._get_conn()
             with conn.cursor() as cur:
-                columns = data.keys()
+                columns = list(data.keys())
                 values = [data[column] for column in columns]
                 insert_query = f"INSERT INTO announcements ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(values))})"
                 cur.execute(insert_query, values)
