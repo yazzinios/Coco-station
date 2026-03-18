@@ -33,7 +33,6 @@ services:
   api:
     build:
       context: "https://github.com/yazzinios/Coco-station.git#main:api"
-      no_cache: true
     container_name: cc_api
     restart: always
     ports:
@@ -57,7 +56,6 @@ services:
   ffmpeg-mixer:
     build:
       context: "https://github.com/yazzinios/Coco-station.git#main:ffmpeg-mixer"
-      no_cache: true
     container_name: cc_ffmpeg
     restart: always
     depends_on:
@@ -76,7 +74,6 @@ services:
   dashboard:
     build:
       context: "https://github.com/yazzinios/Coco-station.git#main:dashboard"
-      no_cache: true
       args:
         VITE_API_URL: "https://radio.cocopark.duckdns.org"
         VITE_WS_URL: "wss://radio.cocopark.duckdns.org"
