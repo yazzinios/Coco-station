@@ -20,6 +20,7 @@ from schemas import (
     TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement
 )
 from tts import generate_tts
+from db_client import db
 
 MEDIA_DIR         = Path("data/library")
 ANNOUNCEMENTS_DIR = Path("data/announcements")
@@ -75,7 +76,17 @@ async def scheduler_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global ANNOUNCEMENTS
     print("CocoStation API Starting...")
+    try:
+        # Load announcements from DB
+        ANNOUNCEMENTS = await asyncio.get_event_loop().run_in_executor(None, db.get_announcements)
+        # Initialize internal status
+        for a in ANNOUNCEMENTS:
+            if not a.get("status"):
+                a["status"] = "Scheduled" if a.get("scheduled_at") else "Ready"
+    except Exception as e:
+        print(f"Failed to load announcements from DB: {e}")
     task = asyncio.create_task(scheduler_task())
     yield
     task.cancel()
@@ -306,7 +317,10 @@ async def create_tts_announcement(req: TTSRequest):
     ann = {"id": uuid.uuid4().hex, "name": req.name, "type": "TTS", "filename": filename,
            "targets": req.targets, "status": "Scheduled" if getattr(req,'scheduled_at',None) else "Ready",
            "scheduled_at": getattr(req,'scheduled_at',None), "created_at": datetime.now().isoformat()}
-    ANNOUNCEMENTS.append(ann)
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.create_announcement, ann)
+    except Exception: pass
+    ANNOUNCEMENTS.insert(0, ann)
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok", "announcement": ann}
 
@@ -321,7 +335,10 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
            "targets": targets.split(",") if isinstance(targets, str) else targets,
            "status": "Scheduled" if scheduled_at else "Ready", "scheduled_at": scheduled_at,
            "created_at": datetime.now().isoformat()}
-    ANNOUNCEMENTS.append(ann)
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.create_announcement, ann)
+    except Exception: pass
+    ANNOUNCEMENTS.insert(0, ann)
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok", "announcement": ann}
 
@@ -347,6 +364,9 @@ async def delete_announcement(ann_id: str):
     global ANNOUNCEMENTS
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.delete_announcement, ann_id)
+    except Exception: pass
     ANNOUNCEMENTS = [a for a in ANNOUNCEMENTS if a["id"] != ann_id]
     p = ANNOUNCEMENTS_DIR / ann["filename"]
     if p.exists(): p.unlink()
