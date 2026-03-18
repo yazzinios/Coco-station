@@ -1,8 +1,7 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies (no ffmpeg needed - that lives in ffmpeg-mixer)
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
     gcc \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
