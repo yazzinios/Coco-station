@@ -53,15 +53,26 @@ export function AppProvider({ children }) {
   };
 
   function buildWsUrl(path = '/ws') {
-    if (import.meta.env.VITE_WS_URL) {
-      const base = import.meta.env.VITE_WS_URL.replace(/\/+$/, '');
-      if (base.startsWith('ws://') || base.startsWith('wss://')) return `${base}${path}`;
-      if (base.startsWith('http://'))  return `ws://${base.slice(7)}${path}`;
-      if (base.startsWith('https://')) return `wss://${base.slice(8)}${path}`;
-      return `wss://${base}${path}`;
-    }
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${protocol}://${window.location.host}${path}`;
+    const host = window.location.host; // includes port if any
+
+    // If VITE_WS_URL is provided AND it's not just a local/internal IP, use it.
+    // Otherwise, always default to the current domain to avoid Mixed Content errors.
+    if (import.meta.env.VITE_WS_URL) {
+      const envUrl = import.meta.env.VITE_WS_URL;
+      const isInternal = envUrl.includes('172.') || envUrl.includes('192.') || envUrl.includes('10.') || envUrl.includes('localhost');
+      
+      if (!isInternal) {
+        const base = envUrl.replace(/\/+$/, '');
+        if (base.startsWith('ws://') || base.startsWith('wss://')) return `${base}${path}`;
+        if (base.startsWith('http://'))  return `ws://${base.slice(7)}${path}`;
+        if (base.startsWith('https://')) return `wss://${base.slice(8)}${path}`;
+        return `wss://${base}${path}`;
+      }
+    }
+    
+    // Default to the current page's origin
+    return `${protocol}://${host}${path}`;
   }
 
   const connectWS = useCallback(() => {
