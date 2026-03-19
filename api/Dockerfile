@@ -13,15 +13,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip/setuptools/wheel first so all modern wheels resolve correctly
 RUN pip install --upgrade pip setuptools wheel
 
-# Install requirements — verbose flag shows exactly which package fails
 COPY requirements.txt .
-RUN pip install --no-cache-dir -v -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY . .
 
-# Run as non-root user for security
-RUN adduser --disabled-password --gecos "" appuser
+# Create non-root user and pre-create data dirs with correct ownership
+# Docker volumes mount over these dirs but inherit the uid/gid set here
+RUN adduser --disabled-password --gecos "" appuser \
+  && mkdir -p /app/data/library /app/data/announcements \
+  && chown -R appuser:appuser /app
+
 USER appuser
 
 # Run database migrations and start the server
