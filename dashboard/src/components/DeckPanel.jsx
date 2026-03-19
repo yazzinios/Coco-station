@@ -124,17 +124,48 @@ export default function DeckPanel({ id }) {
   const [volumeLocal, setVolumeLocal] = useState(deck.volume);
   const [copied, setCopied] = useState(false);
 
+  // Optimistic state: reflects the desired state immediately on click,
+  // before the server WebSocket update confirms it.
+  const [optimistic, setOptimistic] = useState(null);
+
+  // Merge server state with optimistic override
+  const display = optimistic ? { ...deck, ...optimistic } : deck;
+
+  // Clear optimistic state once the server confirms the change
+  useEffect(() => {
+    if (
+      optimistic &&
+      optimistic.is_playing === deck.is_playing &&
+      optimistic.is_paused  === deck.is_paused
+    ) {
+      setOptimistic(null);
+    }
+  }, [deck.is_playing, deck.is_paused]); // eslint-disable-line
+
   const handlePlay = async () => {
     if (!deck.track) { toast.error('Load a track first'); return; }
+    // Immediately reflect the new state in the UI
+    if (deck.is_playing) {
+      setOptimistic({ is_playing: false, is_paused: true });
+    } else {
+      setOptimistic({ is_playing: true,  is_paused: false });
+    }
     try {
       if (deck.is_playing) await api.pause(id);
       else await api.play(id);
-    } catch (err) { toast.error(err.message); }
+    } catch (err) {
+      setOptimistic(null); // revert on failure
+      toast.error(err.message);
+    }
   };
 
   const handleStop = async () => {
+    setOptimistic({ is_playing: false, is_paused: false }); // immediate feedback
     try { await api.stop(id); }
-    catch (err) { toast.error(err.message); }
+    catch (err) {
+      setOptimistic(null); // revert on failure
+      toast.error(err.message);
+    }
   };
 
   const handleVolumeChange = useCallback(async (val) => {
@@ -158,16 +189,16 @@ export default function DeckPanel({ id }) {
   };
 
   const trackDisplayName = deck.track ? deck.track.replace(/\.[^.]+$/, '') : null;
-  const isActive = deck.is_playing || deck.is_paused;
+  const isActive = display.is_playing || display.is_paused;
 
   return (
     <div className="glass-panel" style={{
       height: '400px', display: 'flex', flexDirection: 'column',
       position: 'relative', overflow: 'hidden',
-      borderColor: deck.is_playing ? color.accent + '40' : 'var(--panel-border)',
+      borderColor: display.is_playing ? color.accent + '40' : 'var(--panel-border)',
       transition: 'border-color 0.3s',
     }}>
-      {deck.is_playing && (
+      {display.is_playing && (
         <div style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
           background: `radial-gradient(ellipse at top, ${color.glow} 0%, transparent 70%)`,
@@ -187,8 +218,8 @@ export default function DeckPanel({ id }) {
         </div>
         <div style={{
           width: '10px', height: '10px', borderRadius: '50%',
-          background: deck.is_playing ? color.accent : deck.is_paused ? '#fd9644' : 'rgba(255,255,255,0.15)',
-          boxShadow: deck.is_playing ? `0 0 10px ${color.accent}` : 'none',
+          background: display.is_playing ? color.accent : display.is_paused ? '#fd9644' : 'rgba(255,255,255,0.15)',
+          boxShadow: display.is_playing ? `0 0 10px ${color.accent}` : 'none',
           transition: 'all 0.3s',
         }} />
       </div>
@@ -198,15 +229,15 @@ export default function DeckPanel({ id }) {
         <div style={{
           width: '80px', height: '80px', borderRadius: '50%',
           background: `conic-gradient(${color.accent}15, rgba(0,0,0,0.5) 30%, ${color.accent}15 60%, rgba(0,0,0,0.5) 90%)`,
-          border: `2px solid ${deck.is_playing ? color.accent + '60' : 'rgba(255,255,255,0.08)'}`,
+          border: `2px solid ${display.is_playing ? color.accent + '60' : 'rgba(255,255,255,0.08)'}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: deck.is_playing ? `0 0 20px ${color.glow}` : 'none',
-          animation: deck.is_playing ? 'vinylSpin 3s linear infinite' : 'none',
+          boxShadow: display.is_playing ? `0 0 20px ${color.glow}` : 'none',
+          animation: display.is_playing ? 'vinylSpin 3s linear infinite' : 'none',
           transition: 'box-shadow 0.3s, border-color 0.3s',
         }}>
           <div style={{
             width: '20px', height: '20px', borderRadius: '50%',
-            background: deck.is_playing ? color.accent : 'rgba(255,255,255,0.15)',
+            background: display.is_playing ? color.accent : 'rgba(255,255,255,0.15)',
             transition: 'all 0.3s',
           }} />
         </div>
@@ -219,7 +250,7 @@ export default function DeckPanel({ id }) {
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '140px',
               }} title={deck.track}>{trackDisplayName}</div>
               <div style={{ fontSize: '0.75rem', color: color.accent }}>
-                {deck.is_playing ? '▶ Playing' : deck.is_paused ? '⏸ Paused' : '⏹ Ready'}
+                {display.is_playing ? '▶ Playing' : display.is_paused ? '⏸ Paused' : '⏹ Ready'}
               </div>
             </>
           ) : (
@@ -235,14 +266,14 @@ export default function DeckPanel({ id }) {
       <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
         <button onClick={handlePlay} disabled={!deck.track} style={{
           width: '44px', height: '44px', borderRadius: '50%', border: 'none',
-          background: deck.track ? (deck.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
-          color: deck.track ? (deck.is_playing ? color.accent : '#000') : 'rgba(255,255,255,0.2)',
+          background: deck.track ? (display.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
+          color: deck.track ? (display.is_playing ? color.accent : '#000') : 'rgba(255,255,255,0.2)',
           cursor: deck.track ? 'pointer' : 'not-allowed',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: deck.is_playing ? `0 0 12px ${color.glow}` : 'none',
+          boxShadow: display.is_playing ? `0 0 12px ${color.glow}` : 'none',
           transition: 'all 0.2s',
         }}>
-          {deck.is_playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" style={{ marginLeft: '2px' }} />}
+          {display.is_playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" style={{ marginLeft: '2px' }} />}
         </button>
 
         <button onClick={handleStop} disabled={!isActive} style={{

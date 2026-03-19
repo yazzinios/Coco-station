@@ -1,12 +1,21 @@
-# Use Python 3.13-slim — patched Debian base with fewer CVEs than 3.11-slim
-FROM python:3.13-slim
+# Python 3.11-slim — stable LTS with pre-built wheels for all dependencies
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install pip requirements
-# psycopg2-binary is a self-contained wheel — no gcc or libpq-dev needed
+# Install build tools in case any package needs to compile from source
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    curl \
+  && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip/setuptools/wheel first so all modern wheels resolve correctly
+RUN pip install --upgrade pip setuptools wheel
+
+# Install requirements — verbose flag shows exactly which package fails
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -v -r requirements.txt
 
 # Copy source code
 COPY . .
