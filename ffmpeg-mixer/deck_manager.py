@@ -19,6 +19,8 @@ CHUNK_SIZE = 4096
 SAMPLE_RATE = 44100
 CHANNELS = 2
 SAMPWIDTH = 2 # 16-bit
+# Seconds of audio per chunk — used to pace the mix_loop in real-time
+CHUNK_DURATION = CHUNK_SIZE / (SAMPLE_RATE * CHANNELS * SAMPWIDTH)  # ~0.0232 s
 
 class Deck:
     def __init__(self, name):
@@ -56,56 +58,60 @@ class Deck:
 
     def _mix_loop(self):
         silence = b'\x00' * CHUNK_SIZE
+        next_tick = time.time()
         while True:
-            # Get track audio if available
+            # Real-time pacing: sleep until the next tick so we emit exactly one
+            # chunk per CHUNK_DURATION seconds. This keeps the RTMP stream stable
+            # and prevents the ffmpeg stdin pipe from being flooded when idle.
+            now = time.time()
+            sleep_for = next_tick - now
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            next_tick += CHUNK_DURATION
+
+            # Get track audio (block briefly so we don't busy-spin when playing)
             track_chunk = silence
-            if not self.track_q.empty():
-                try: track_chunk = self.track_q.get_nowait()
-                except queue.Empty: pass
-                
-            # Get announcement audio if available
+            try: track_chunk = self.track_q.get(timeout=CHUNK_DURATION * 0.5)
+            except queue.Empty: pass
+
+            # Get announcement audio
             ann_chunk = silence
-            if not self.ann_q.empty():
-                try: ann_chunk = self.ann_q.get_nowait()
-                except queue.Empty: pass
-                
-            # Get mic audio if available
+            try: ann_chunk = self.ann_q.get_nowait()
+            except queue.Empty: pass
+
+            # Get mic audio
             mic_chunk = silence
             mic_active = False
-            if not self.mic_q.empty():
-                try: 
-                    mic_chunk = self.mic_q.get_nowait()
-                    mic_active = True
-                except queue.Empty: pass
-            
-            # Combine volume control and ducking
-            current_vol = self.volume
+            try:
+                mic_chunk = self.mic_q.get_nowait()
+                mic_active = True
+            except queue.Empty: pass
+
+            # Volume + ducking
+            vol_factor = self.volume / 100.0
             if mic_active:
-                current_vol = (self.volume / 100.0) * (self.duck_volume / 100.0) * 100
-            
-            if current_vol != 100:
-                vol_factor = max(0.0, current_vol / 100.0)
-                try: 
-                    # If silence, multiplying it by volume still keeps it silence
-                    if track_chunk != silence:
-                        track_chunk = audioop.mul(track_chunk, SAMPWIDTH, vol_factor)
+                vol_factor *= (self.duck_volume / 100.0)
+            if vol_factor != 1.0 and track_chunk != silence:
+                try: track_chunk = audioop.mul(track_chunk, SAMPWIDTH, vol_factor)
                 except Exception: pass
-            
-            # Mix the tracks using audioop!
+
+            # Mix all three sources
             mixed = silence
             try:
                 mixed = audioop.add(track_chunk, ann_chunk, SAMPWIDTH)
                 mixed = audioop.add(mixed, mic_chunk, SAMPWIDTH)
             except Exception:
                 pass
-            
-            # Write to RTMP encoder. If encoder buffer is full, it blocks here, inherently matching real-time pace.
+
+            # Write to RTMP encoder
             try:
                 if self.stream_proc and self.stream_proc.stdin:
                     self.stream_proc.stdin.write(mixed)
+                    self.stream_proc.stdin.flush()
             except (BrokenPipeError, OSError):
                 print(f"Deck {self.name} connection broken, restarting master RTMP stream")
                 self._start_master_stream()
+                next_tick = time.time()
 
     def _reader_thread(self, proc, q, proc_name):
         try:

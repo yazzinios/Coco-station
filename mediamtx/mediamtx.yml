@@ -19,7 +19,8 @@ hls: yes
 hlsAddress: :8888
 hlsAlwaysRemux: yes
 hlsSegmentDuration: 1s
-hlsPartDuration: 200ms
+hlsPartDuration: 100ms
+hlsSegmentCount: 3
 
 ###############################################
 # WebRTC

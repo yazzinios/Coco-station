@@ -174,17 +174,36 @@ export default function DeckPanel({ id }) {
     try { await api.setVolume(id, v); } catch (_) {}
   }, [id, api]);
 
+  // RTSP gives VLC sub-500ms latency vs 5-8s with HLS.
+  // Port 8554 is exposed directly from the MediaMTX container.
+  const getRtspUrl = () => {
+    const host = window.location.hostname;
+    return `rtsp://${host}:8554/deck-${id}`;
+  };
+
+  const getHlsUrl = () => {
+    return `${window.location.origin}/deck-${id}/index.m3u8`;
+  };
+
   const copyStreamUrl = async () => {
-    // Use the public HTTPS domain — routed through nginx proxy
-    const base = window.location.origin;
-    const url = `${base}/deck-${id}/index.m3u8`;
+    const url = getRtspUrl();
     try {
       await copyToClipboard(url);
       setCopied(true);
-      toast.success(`Stream URL copied! Paste in VLC → deck-${id.toUpperCase()}`);
-      setTimeout(() => setCopied(false), 2000);
+      toast.success(`RTSP URL copied! Open VLC → Media → Open Network → paste`);
+      setTimeout(() => setCopied(false), 2500);
     } catch {
-      window.prompt('Copy this stream URL:', url);
+      window.prompt('RTSP stream URL (low latency, for VLC):', url);
+    }
+  };
+
+  const copyHlsUrl = async () => {
+    const url = getHlsUrl();
+    try {
+      await copyToClipboard(url);
+      toast.info(`HLS URL copied (browser/web players)`);
+    } catch {
+      window.prompt('HLS stream URL:', url);
     }
   };
 
@@ -307,18 +326,30 @@ export default function DeckPanel({ id }) {
       {/* Monitor (HLS inline player) */}
       <DeckMonitor id={id} color={color} />
 
-      {/* Copy Stream URL */}
-      <div onClick={copyStreamUrl} style={{
-        fontSize: '0.7rem', color: copied ? '#2ed573' : color.accent, textAlign: 'center',
-        cursor: 'pointer', padding: '0.35rem',
-        borderRadius: '5px',
-        background: copied ? 'rgba(46,213,115,0.08)' : 'rgba(0,0,0,0.15)',
-        border: `1px solid ${copied ? 'rgba(46,213,115,0.3)' : color.accent + '18'}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem',
-        transition: 'all 0.2s', opacity: 0.85,
-      }}>
-        {copied ? <Check size={11} /> : <Link size={11} />}
-        {copied ? 'Copied!' : 'Copy Stream URL'}
+      {/* Stream URLs: RTSP (low-latency VLC) + HLS (browser) */}
+      <div style={{ display: 'flex', gap: '0.4rem' }}>
+        <div onClick={copyStreamUrl} title="Low-latency stream for VLC" style={{
+          flex: 1, fontSize: '0.68rem', color: copied ? '#2ed573' : color.accent,
+          cursor: 'pointer', padding: '0.3rem 0.4rem', borderRadius: '5px',
+          background: copied ? 'rgba(46,213,115,0.08)' : 'rgba(0,0,0,0.15)',
+          border: `1px solid ${copied ? 'rgba(46,213,115,0.3)' : color.accent + '25'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem',
+          transition: 'all 0.2s',
+        }}>
+          {copied ? <Check size={10} /> : <Link size={10} />}
+          {copied ? 'Copied!' : 'RTSP — VLC'}
+        </div>
+        <div onClick={copyHlsUrl} title="HLS stream for browser/web players" style={{
+          flex: 1, fontSize: '0.68rem', color: 'rgba(255,255,255,0.35)',
+          cursor: 'pointer', padding: '0.3rem 0.4rem', borderRadius: '5px',
+          background: 'rgba(0,0,0,0.15)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem',
+          transition: 'all 0.2s',
+        }}>
+          <Link size={10} />
+          HLS — browser
+        </div>
       </div>
 
       <style>{`
