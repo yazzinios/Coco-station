@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat } from 'lucide-react';
+import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusic } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 const DECK_COLORS = {
@@ -187,8 +187,9 @@ function DeckMonitor({ id, color }) {
 
 // ── Main DeckPanel ──────────────────────────────────────────────────────────────
 export default function DeckPanel({ id }) {
-  const { decks, toast, api } = useApp();
-  const deck  = decks[id] || { id, name: `Deck ${id.toUpperCase()}`, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false };
+  const { decks, playlists, toast, api } = useApp();
+  const deck  = decks[id] || { id, name: `Deck ${id.toUpperCase()}`, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false, playlist_id: null, playlist_index: null, playlist_loop: false };
+  const activePlaylist = deck.playlist_id ? playlists.find(p => p.id === deck.playlist_id) : null;
   const color = DECK_COLORS[id] || DECK_COLORS.a;
 
   const [volumeLocal, setVolumeLocal] = useState(deck.volume);
@@ -344,9 +345,17 @@ export default function DeckPanel({ id }) {
                 fontWeight: '600', fontSize: '0.85rem', marginBottom: '0.2rem',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '140px',
               }} title={deck.track}>{trackDisplayName}</div>
+              {activePlaylist && (
+                <div style={{ fontSize: '0.68rem', color: color.accent, opacity: 0.8, marginBottom: '0.1rem',
+                  display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                  <ListMusic size={10} />
+                  {activePlaylist.name} · {(deck.playlist_index ?? 0) + 1}/{activePlaylist.tracks.length}
+                  {deck.playlist_loop && ' 🔁'}
+                </div>
+              )}
               <div style={{ fontSize: '0.75rem', color: color.accent }}>
                 {display.is_playing
-                  ? (deck.is_loop ? '🔁 Looping' : '▶ Playing')
+                  ? (activePlaylist ? '▶ Playlist' : deck.is_loop ? '🔁 Looping' : '▶ Playing')
                   : display.is_paused
                     ? '⏸ Paused'
                     : '⏹ Ready'}

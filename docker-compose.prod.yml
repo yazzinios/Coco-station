@@ -54,6 +54,7 @@ services:
     volumes:
       - cocostation-library:/app/data/library
       - cocostation-announcements:/app/data/announcements
+      - cocostation-chimes:/app/data/chimes
     depends_on:
       db:
         condition: service_healthy
@@ -72,6 +73,7 @@ services:
     volumes:
       - cocostation-library:/library
       - cocostation-announcements:/announcements
+      - cocostation-chimes:/chimes:ro
     environment:
       - MEDIAMTX_HOST=mediamtx
       - API_HOST=api
@@ -116,3 +118,5 @@ volumes:
     name: cocostation-library
   cocostation-announcements:
     name: cocostation-announcements
+  cocostation-chimes:
+    name: cocostation-chimes

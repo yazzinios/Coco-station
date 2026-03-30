@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Save } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Save, Upload, Trash2, Volume2, Bell } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 export default function SettingsPage() {
-  const { decks, toast, api } = useApp();
+  const { decks, toast, api, settings } = useApp();
   const [deckNames, setDeckNames] = useState({ a: '', b: '', c: '', d: '' });
   const [ducking, setDucking] = useState(5);
   const [micDucking, setMicDucking] = useState(20);
@@ -16,6 +16,12 @@ export default function SettingsPage() {
   const [dbTesting, setDbTesting] = useState(false);
   const [dbStatus, setDbStatus] = useState(null);
 
+  // Chime state
+  const [chimeEnabled,  setChimeEnabled]  = useState(settings?.on_air_chime_enabled ?? false);
+  const [chimeExists,   setChimeExists]   = useState(false);
+  const [chimeUploading, setChimeUploading] = useState(false);
+  const chimeInputRef = useRef(null);
+
   useEffect(() => {
     setDeckNames({
       a: decks.a?.name || 'Deck A',
@@ -26,12 +32,47 @@ export default function SettingsPage() {
   }, [decks]);
 
   useEffect(() => {
+    setChimeEnabled(settings?.on_air_chime_enabled ?? false);
+  }, [settings?.on_air_chime_enabled]);
+
+  // Load chime status on mount
+  useEffect(() => {
+    api.getChimeStatus().then(s => setChimeExists(s.exists)).catch(() => {});
     if (navigator.mediaDevices?.enumerateDevices) {
       navigator.mediaDevices.enumerateDevices()
         .then(devices => setMicDevices(devices.filter(d => d.kind === 'audioinput')))
         .catch(() => {});
     }
-  }, []);
+  }, []); // eslint-disable-line
+
+  const handleChimeUpload = async (file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().match(/\.(mp3|wav|ogg)$/)) {
+      toast.error('Only MP3, WAV, OGG allowed'); return;
+    }
+    setChimeUploading(true);
+    try {
+      await api.uploadChime(file);
+      setChimeExists(true);
+      toast.success('Chime uploaded!');
+    } catch (err) {
+      toast.error(`Upload failed: ${err.message}`);
+    } finally {
+      setChimeUploading(false);
+      if (chimeInputRef.current) chimeInputRef.current.value = '';
+    }
+  };
+
+  const handleDeleteChime = async () => {
+    if (!window.confirm('Delete the on-air chime?')) return;
+    try {
+      await api.deleteChime();
+      setChimeExists(false);
+      toast.info('Chime deleted');
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
 
   const handleTestDb = async () => {
     setDbTesting(true);
@@ -91,7 +132,12 @@ export default function SettingsPage() {
       for (const [id, name] of Object.entries(deckNames)) {
         if (name !== decks[id]?.name) await api.renameDeck(id, name);
       }
-      await api.saveSettings({ ducking_percent: ducking, mic_ducking_percent: micDucking, db_mode: dbMode });
+      await api.saveSettings({
+        ducking_percent: ducking,
+        mic_ducking_percent: micDucking,
+        db_mode: dbMode,
+        on_air_chime_enabled: chimeEnabled,
+      });
       toast.success('Settings saved!');
     } catch (err) {
       toast.error(`Save failed: ${err.message}`);
@@ -156,7 +202,6 @@ export default function SettingsPage() {
             }}>
               {dbTesting ? '⟳ Testing & migrating…' : '⚡ Test Connection'}
             </button>
-
             {dbStatus && (
               <span style={{
                 fontSize: '0.8rem', fontWeight: '600', padding: '0.3rem 0.75rem', borderRadius: '20px',
@@ -167,7 +212,6 @@ export default function SettingsPage() {
                 {dbStatus === 'ok' ? '✓ Connected' : '✕ Unreachable'}
               </span>
             )}
-
             <button onClick={handleSaveDb} disabled={dbSaving} style={{
               marginLeft: 'auto', padding: '0.5rem 1.1rem', fontSize: '0.85rem', fontFamily: 'inherit',
               background: 'rgba(46,213,115,0.15)', border: '1px solid rgba(46,213,115,0.4)',
@@ -232,6 +276,93 @@ export default function SettingsPage() {
             <input type="range" min="0" max="100" value={micDucking} onChange={e => setMicDucking(Number(e.target.value))}
               style={{ width: '100%', maxWidth: '380px', background: `linear-gradient(to right, #ff4757 ${micDucking}%, rgba(255,255,255,0.15) ${micDucking}%)`, height: '4px', appearance: 'none', borderRadius: '2px', cursor: 'pointer' }} />
             <div style={{ marginTop: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Volume music fades to when DJ mic is On Air. Default 20%.</div>
+          </div>
+        </div>
+
+        {/* On Air Chime */}
+        <div className="glass-panel" style={panel}>
+          <h3 style={{ marginBottom: '0.35rem', color: 'var(--accent-blue)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Bell size={16} /> On Air Chime
+          </h3>
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+            Play a short sound before every mic activation and announcement. Upload your own MP3 (the classic "ding ding ding" or any jingle).
+          </p>
+
+          {/* Enable toggle */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.25rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+              <div
+                onClick={() => setChimeEnabled(v => !v)}
+                style={{
+                  width: '42px', height: '24px', borderRadius: '12px', position: 'relative', cursor: 'pointer',
+                  background: chimeEnabled ? 'var(--accent-blue)' : 'rgba(255,255,255,0.15)',
+                  transition: 'background 0.2s',
+                }}
+              >
+                <div style={{
+                  position: 'absolute', top: '3px',
+                  left: chimeEnabled ? '21px' : '3px',
+                  width: '18px', height: '18px', borderRadius: '50%',
+                  background: 'white', transition: 'left 0.2s',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                }} />
+              </div>
+              <span style={{ fontSize: '0.9rem', color: chimeEnabled ? 'var(--accent-blue)' : 'var(--text-secondary)' }}>
+                {chimeEnabled ? 'Chime enabled' : 'Chime disabled'}
+              </span>
+            </label>
+            {!chimeExists && chimeEnabled && (
+              <span style={{ fontSize: '0.78rem', color: '#fd9644', background: 'rgba(253,150,68,0.1)', padding: '0.2rem 0.6rem', borderRadius: '10px', border: '1px solid rgba(253,150,68,0.3)' }}>
+                ⚠ No chime uploaded yet
+              </span>
+            )}
+          </div>
+
+          {/* Upload area */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => chimeInputRef.current?.click()}
+              disabled={chimeUploading}
+              style={{
+                padding: '0.55rem 1rem', borderRadius: '8px', border: '1px solid rgba(0,212,255,0.35)',
+                background: 'rgba(0,212,255,0.1)', color: 'var(--accent-blue)',
+                cursor: chimeUploading ? 'default' : 'pointer', fontSize: '0.85rem',
+                display: 'flex', alignItems: 'center', gap: '0.45rem', opacity: chimeUploading ? 0.6 : 1,
+                fontFamily: 'inherit',
+              }}
+            >
+              <Upload size={14} />
+              {chimeUploading ? 'Uploading…' : chimeExists ? 'Replace Chime' : 'Upload Chime MP3'}
+            </button>
+            <input
+              ref={chimeInputRef} type="file" accept=".mp3,.wav,.ogg"
+              style={{ display: 'none' }}
+              onChange={e => handleChimeUpload(e.target.files[0] || null)}
+            />
+
+            {chimeExists && (
+              <>
+                <span style={{ fontSize: '0.82rem', color: '#2ed573', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  ✓ Chime file ready
+                </span>
+                <button
+                  onClick={handleDeleteChime}
+                  style={{
+                    padding: '0.5rem 0.8rem', borderRadius: '8px',
+                    border: '1px solid rgba(255,71,87,0.3)', background: 'rgba(255,71,87,0.08)',
+                    color: '#ff4757', cursor: 'pointer', fontSize: '0.82rem',
+                    display: 'flex', alignItems: 'center', gap: '0.35rem', fontFamily: 'inherit',
+                  }}
+                >
+                  <Trash2 size={13} /> Delete
+                </button>
+              </>
+            )}
+          </div>
+
+          <div style={{ marginTop: '0.85rem', fontSize: '0.78rem', color: 'rgba(255,255,255,0.3)' }}>
+            Supports MP3, WAV, OGG. Keep it short — 1–3 seconds recommended.
+            The chime plays simultaneously on all target decks before the mic / announcement.
           </div>
         </div>
 

@@ -17,28 +17,34 @@ FFMPEG_URL  = f"http://{FFMPEG_HOST}:8001"
 
 from schemas import (
     DeckRenameRequest, VolumeRequest, LoopRequest, PlayRequest, MicControlRequest,
-    TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement
+    TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement,
+    Playlist, PlaylistCreateRequest, PlaylistLoadRequest
 )
 from tts import generate_tts
 from db_client import db
 
 MEDIA_DIR         = Path("data/library")
 ANNOUNCEMENTS_DIR = Path("data/announcements")
+CHIMES_DIR        = Path("data/chimes")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 ANNOUNCEMENTS_DIR.mkdir(parents=True, exist_ok=True)
+CHIMES_DIR.mkdir(parents=True, exist_ok=True)
+CHIME_FILENAME = "on_air_chime.mp3"
 
 START_TIME    = time.time()
 TRACKS_PLAYED = 0
 
 DECKS: Dict[str, dict] = {
-    "a": {"id": "a", "name": "Castle",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
-    "b": {"id": "b", "name": "Deck B",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
-    "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
-    "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
+    "a": {"id": "a", "name": "Castle",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
+    "b": {"id": "b", "name": "Deck B",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
+    "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
+    "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
 }
 ANNOUNCEMENTS: List[dict] = []
-SETTINGS: dict = {"ducking_percent": 5, "mic_ducking_percent": 20, "on_air_beep": "default", "db_mode": "local"}
+SETTINGS: dict = {"ducking_percent": 5, "mic_ducking_percent": 20, "on_air_beep": "default", "db_mode": "local", "on_air_chime_enabled": False}
 MIC_STATE: dict = {"active": False, "targets": []}
+PLAYLISTS: Dict[str, dict] = {}
+DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
 
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
@@ -105,7 +111,7 @@ def health():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    await websocket.send_json({"type": "FULL_STATE", "decks": list(DECKS.values()), "mic": MIC_STATE, "announcements": ANNOUNCEMENTS, "settings": SETTINGS})
+    await websocket.send_json({"type": "FULL_STATE", "decks": list(DECKS.values()), "mic": MIC_STATE, "announcements": ANNOUNCEMENTS, "settings": SETTINGS, "playlists": list(PLAYLISTS.values())})
     try:
         while True: await websocket.receive_text()
     except WebSocketDisconnect: manager.disconnect(websocket)
@@ -159,6 +165,41 @@ async def mic_audio_ws(websocket: WebSocket):
         if session_id: await close_ffmpeg_stream(session_id)
         MIC_STATE["active"] = False; MIC_STATE["targets"] = []
         await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
+
+# ── Chime helpers ───────────────────────────────────────────
+async def get_audio_duration(filepath: Path) -> float:
+    """Return audio duration in seconds using ffprobe."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(filepath),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        stdout, _ = await proc.communicate()
+        data = json.loads(stdout)
+        return float(data["format"]["duration"])
+    except Exception:
+        return 2.5  # safe fallback
+
+async def maybe_play_chime(deck_ids: list):
+    """Play on-air chime on deck_ids (if enabled + file exists) then wait for it to finish."""
+    if not SETTINGS.get("on_air_chime_enabled", False):
+        return
+    chime_path = CHIMES_DIR / CHIME_FILENAME
+    if not chime_path.exists():
+        return
+    filepath_in_container = str(Path("/chimes") / CHIME_FILENAME)
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            for did in deck_ids:
+                try:
+                    await c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
+                                 json={"filepath": filepath_in_container})
+                except Exception:
+                    pass
+        duration = await get_audio_duration(chime_path)
+        await asyncio.sleep(min(duration + 0.15, 12.0))
+    except Exception as e:
+        print(f"[chime] error: {e}")
 
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
@@ -305,8 +346,10 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest):
 # ── Mic ─────────────────────────────────────────────────────
 @app.post("/api/mic/on")
 async def mic_on(req: MicControlRequest):
-    MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
     deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
+    # Play chime first, wait for it to finish, then go live
+    await maybe_play_chime(deck_ids)
+    MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
     try:
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/on", json={"targets": deck_ids})
     except Exception: pass
@@ -387,6 +430,8 @@ async def play_announcement(ann_id: str):
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
     deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
+    # Play chime first, then the announcement
+    await maybe_play_chime(deck_ids)
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             for did in deck_ids:
@@ -413,6 +458,116 @@ async def delete_announcement(ann_id: str):
     p = ANNOUNCEMENTS_DIR / ann["filename"]
     if p.exists(): p.unlink()
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
+    return {"status": "ok"}
+
+# ── Playlists ───────────────────────────────────────────────
+@app.get("/api/playlists")
+def list_playlists():
+    return list(PLAYLISTS.values())
+
+@app.post("/api/playlists")
+async def create_playlist(req: PlaylistCreateRequest):
+    pid = str(uuid.uuid4())
+    playlist = {"id": pid, "name": req.name, "tracks": req.tracks}
+    PLAYLISTS[pid] = playlist
+    await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
+    return playlist
+
+@app.put("/api/playlists/{playlist_id}")
+async def update_playlist(playlist_id: str, req: PlaylistCreateRequest):
+    if playlist_id not in PLAYLISTS:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    PLAYLISTS[playlist_id].update({"name": req.name, "tracks": req.tracks})
+    await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
+    return PLAYLISTS[playlist_id]
+
+@app.delete("/api/playlists/{playlist_id}")
+async def delete_playlist(playlist_id: str):
+    if playlist_id not in PLAYLISTS:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    del PLAYLISTS[playlist_id]
+    await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
+    return {"status": "ok"}
+
+@app.post("/api/decks/{deck_id}/playlist")
+async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest):
+    if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
+    playlist = PLAYLISTS.get(req.playlist_id)
+    if not playlist: raise HTTPException(status_code=404, detail="Playlist not found")
+    tracks = [t for t in playlist["tracks"] if (MEDIA_DIR / t).exists()]
+    if not tracks: raise HTTPException(status_code=400, detail="No valid tracks in playlist")
+    # Stop current playback
+    if DECKS[deck_id]["is_playing"] or DECKS[deck_id]["is_paused"]:
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
+        except Exception: pass
+    # Activate playlist on deck
+    DECK_PLAYLISTS[deck_id] = {"playlist_id": req.playlist_id, "tracks": tracks, "index": 0, "loop": req.loop}
+    DECKS[deck_id].update({"track": tracks[0], "is_playing": True, "is_paused": False,
+                            "is_loop": False, "playlist_id": req.playlist_id,
+                            "playlist_index": 0, "playlist_loop": req.loop})
+    filepath = str(Path("/library") / tracks[0])
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
+    except Exception: pass
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    return {"status": "ok", "deck": deck_id, "playlist": playlist["name"], "track": tracks[0]}
+
+@app.post("/api/decks/{deck_id}/track_ended")
+async def track_ended(deck_id: str):
+    """Called by ffmpeg-mixer when a track finishes naturally (not via explicit stop)."""
+    if deck_id not in DECKS:
+        return {"status": "ignored"}
+    playlist_state = DECK_PLAYLISTS.get(deck_id)
+    if not playlist_state:
+        # No active playlist — just mark deck as stopped
+        DECKS[deck_id]["is_playing"] = False
+        DECKS[deck_id]["is_paused"]  = False
+        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+        return {"status": "ok", "action": "stopped"}
+    tracks     = playlist_state["tracks"]
+    next_index = playlist_state["index"] + 1
+    if next_index >= len(tracks):
+        if playlist_state["loop"]:
+            next_index = 0
+        else:
+            DECK_PLAYLISTS[deck_id] = None
+            DECKS[deck_id].update({"is_playing": False, "is_paused": False,
+                                    "playlist_id": None, "playlist_index": None})
+            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            return {"status": "ok", "action": "playlist_done"}
+    playlist_state["index"] = next_index
+    next_track = tracks[next_index]
+    DECKS[deck_id].update({"track": next_track, "is_playing": True, "playlist_index": next_index})
+    filepath = str(Path("/library") / next_track)
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
+    except Exception: pass
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    return {"status": "ok", "action": "next_track", "track": next_track}
+
+# ── Chime ────────────────────────────────────────────────────
+@app.post("/api/settings/chime/upload")
+async def upload_chime(file: UploadFile = File(...)):
+    if not any(file.filename.lower().endswith(e) for e in {".mp3", ".wav", ".ogg"}):
+        raise HTTPException(status_code=400, detail="Only audio files allowed")
+    dest = CHIMES_DIR / CHIME_FILENAME
+    content = await file.read()
+    await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+    return {"status": "ok", "filename": CHIME_FILENAME}
+
+@app.get("/api/settings/chime/status")
+def chime_status():
+    chime_path = CHIMES_DIR / CHIME_FILENAME
+    return {"exists": chime_path.exists(), "enabled": SETTINGS.get("on_air_chime_enabled", False)}
+
+@app.delete("/api/settings/chime")
+async def delete_chime():
+    chime_path = CHIMES_DIR / CHIME_FILENAME
+    if chime_path.exists(): chime_path.unlink()
     return {"status": "ok"}
 
 # ── Settings ────────────────────────────────────────────────

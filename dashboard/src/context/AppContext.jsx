@@ -38,9 +38,10 @@ export function AppProvider({ children }) {
   });
   const [library,       setLibrary]       = useState([]);
   const [announcements, setAnnouncements] = useState([]);
+  const [playlists,     setPlaylists]     = useState([]);
   const [mic,           setMic]           = useState({ active: false, targets: [] });
   const [wsConnected,   setWsConnected]   = useState(false);
-  const [settings,      setSettings]      = useState({ ducking_percent: 5, mic_ducking_percent: 20 });
+  const [settings,      setSettings]      = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
   const [toasts,        setToasts]        = useState([]);
   const wsRef   = useRef(null);
   const toastId = useRef(0);
@@ -91,12 +92,13 @@ export function AppProvider({ children }) {
       case 'FULL_STATE':
         if (msg.decks) {
           const m = {};
-          msg.decks.forEach(d => { m[d.id] = { is_loop: false, ...d }; });
+          msg.decks.forEach(d => { m[d.id] = { is_loop: false, playlist_id: null, playlist_index: null, playlist_loop: false, ...d }; });
           setDecks(m);
         }
         if (msg.mic)           setMic(msg.mic);
         if (msg.announcements) setAnnouncements(msg.announcements);
         if (msg.settings)      setSettings(prev => ({ ...prev, ...msg.settings }));
+        if (msg.playlists)     setPlaylists(msg.playlists);
         break;
       case 'DECK_STATE':
         if (msg.decks) {
@@ -109,6 +111,7 @@ export function AppProvider({ children }) {
       case 'ANNOUNCEMENTS_UPDATED': if (msg.announcements) setAnnouncements(msg.announcements); break;
       case 'SETTINGS_UPDATED':    if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings })); break;
       case 'LIBRARY_UPDATED':     fetchLibrary(); break;
+      case 'PLAYLISTS_UPDATED':   if (msg.playlists) setPlaylists(msg.playlists); break;
       default: break;
     }
   }
@@ -117,6 +120,7 @@ export function AppProvider({ children }) {
     connectWS();
     fetchLibrary();
     fetchAnnouncements();
+    fetchPlaylists();
     return () => { wsRef.current?.close(); };
   }, []); // eslint-disable-line
 
@@ -129,6 +133,9 @@ export function AppProvider({ children }) {
   }
   async function fetchAnnouncements() {
     try { const r = await fetch('/api/announcements'); if (r.ok) setAnnouncements(await r.json()); } catch (_) {}
+  }
+  async function fetchPlaylists() {
+    try { const r = await fetch('/api/playlists'); if (r.ok) setPlaylists(await r.json()); } catch (_) {}
   }
 
   const api = {
@@ -232,10 +239,55 @@ export function AppProvider({ children }) {
       if (!r.ok) throw new Error(await parseError(r));
     },
     buildWsUrl,
+    // ── Playlists ──
+    createPlaylist: async (name, tracks) => {
+      const r = await fetch('/api/playlists', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, tracks }),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      await fetchPlaylists(); return r.json();
+    },
+    updatePlaylist: async (id, name, tracks) => {
+      const r = await fetch(`/api/playlists/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, tracks }),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      await fetchPlaylists();
+    },
+    deletePlaylist: async (id) => {
+      const r = await fetch(`/api/playlists/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+      await fetchPlaylists();
+    },
+    loadPlaylist: async (deckId, playlistId, loop = false) => {
+      const r = await fetch(`/api/decks/${deckId}/playlist`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playlist_id: playlistId, loop }),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    // ── Chime ──
+    uploadChime: async (file) => {
+      const fd = new FormData(); fd.append('file', file);
+      const r = await fetch('/api/settings/chime/upload', { method: 'POST', body: fd });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    deleteChime: async () => {
+      const r = await fetch('/api/settings/chime', { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    getChimeStatus: async () => {
+      const r = await fetch('/api/settings/chime/status');
+      if (!r.ok) return { exists: false, enabled: false };
+      return r.json();
+    },
   };
 
   return (
-    <AppContext.Provider value={{ decks, library, announcements, mic, wsConnected, settings, toast, api }}>
+    <AppContext.Provider value={{ decks, library, announcements, playlists, mic, wsConnected, settings, toast, api }}>
       {children}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </AppContext.Provider>

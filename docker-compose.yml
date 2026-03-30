@@ -23,6 +23,7 @@ services:
     volumes:
       - ./data/library:/library:ro
       - ./data/announcements:/announcements:ro
+      - ./data/chimes:/chimes:ro
     environment:
       - MEDIAMTX_HOST=mediamtx
       - API_HOST=api
@@ -38,6 +39,7 @@ services:
     volumes:
       - ./data/library:/app/data/library
       - ./data/announcements:/app/data/announcements
+      - ./data/chimes:/app/data/chimes
       - ./api:/app  # For hot-reloading in dev
       - ./supabase/migrations:/app/supabase/migrations:ro
     environment:

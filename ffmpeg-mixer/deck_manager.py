@@ -13,7 +13,23 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
-RTMP_BASE_URL = f"rtmp://{MEDIAMTX_HOST}:1935"
+RTMP_BASE_URL  = f"rtmp://{MEDIAMTX_HOST}:1935"
+API_HOST       = os.getenv("API_HOST", "api")
+API_URL        = f"http://{API_HOST}:8000"
+
+
+def _notify_track_ended(deck_name: str):
+    """HTTP callback to main API when a track finishes naturally (no explicit stop)."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{API_URL}/api/decks/{deck_name}/track_ended",
+            data=b"", method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+    except Exception as e:
+        print(f"[deck {deck_name}] track_ended notify failed: {e}")
 
 CHUNK_SIZE     = 4096
 SAMPLE_RATE    = 44100
@@ -24,13 +40,14 @@ CHUNK_DURATION = CHUNK_SIZE / (SAMPLE_RATE * CHANNELS * SAMPWIDTH)  # ~0.0232 s
 
 class Deck:
     def __init__(self, name):
-        self.name       = name
-        self.lock       = threading.Lock()
-        self.volume     = 100
-        self.duck_volume = 100
-        self.is_playing = False
-        self.is_loop    = False
-        self.current_track = None
+        self.name            = name
+        self.lock            = threading.Lock()
+        self.volume          = 100
+        self.duck_volume     = 100
+        self.is_playing      = False
+        self.is_loop         = False
+        self.current_track   = None
+        self._stop_requested = False  # True when stop() was called explicitly
 
         self.track_proc = None
         self.ann_proc   = None
@@ -135,13 +152,20 @@ class Deck:
             pass
         finally:
             if proc_name == "track":
+                was_stopped_manually = self._stop_requested
                 with self.lock:
                     self.is_playing    = False
                     self.current_track = None
+                # Notify API if track ended naturally (not via explicit stop/play)
+                if not was_stopped_manually:
+                    threading.Thread(
+                        target=_notify_track_ended, args=(self.name,), daemon=True
+                    ).start()
 
     def play(self, filepath, loop: bool = False):
         """Start (or restart) playback of filepath. If loop=True, use -stream_loop -1."""
-        self.stop()
+        self.stop()  # sets _stop_requested=True for old track
+        self._stop_requested = False  # reset for new track
         with self.lock:
             self.is_playing    = True
             self.is_loop       = loop
@@ -182,6 +206,7 @@ class Deck:
 
     def stop(self):
         with self.lock:
+            self._stop_requested = True  # mark before terminating so reader won't notify
             if self.track_proc and self.track_proc.poll() is None:
                 try:
                     self.track_proc.terminate()
