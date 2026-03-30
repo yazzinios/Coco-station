@@ -18,7 +18,8 @@ FFMPEG_URL  = f"http://{FFMPEG_HOST}:8001"
 from schemas import (
     DeckRenameRequest, VolumeRequest, LoopRequest, PlayRequest, MicControlRequest,
     TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement,
-    Playlist, PlaylistCreateRequest, PlaylistLoadRequest
+    Playlist, PlaylistCreateRequest, PlaylistLoadRequest,
+    MusicScheduleCreateRequest, MusicSchedule
 )
 from tts import generate_tts
 from db_client import db
@@ -46,6 +47,7 @@ SETTINGS: dict = {"ducking_percent": 5, "mic_ducking_percent": 20, "on_air_beep"
 MIC_STATE: dict = {"active": False, "targets": []}
 PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
+MUSIC_SCHEDULES: List[dict] = []
 
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
@@ -62,10 +64,56 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+async def _trigger_music_schedule(s: dict):
+    """Load and play a track or playlist on the target deck."""
+    deck_id = s["deck_id"]
+    loop    = s.get("loop", False)
+    if s["type"] == "track":
+        filename = s["target_id"]
+        if not (MEDIA_DIR / filename).exists():
+            print(f"[scheduler] Track not found: {filename}")
+            return
+        DECKS[deck_id]["track"]      = filename
+        DECKS[deck_id]["is_playing"] = True
+        DECKS[deck_id]["is_paused"]  = False
+        DECKS[deck_id]["is_loop"]    = loop
+        DECKS[deck_id]["playlist_id"]    = None
+        DECKS[deck_id]["playlist_index"] = None
+        filepath = str(Path("/library") / filename)
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": loop})
+        except Exception as e:
+            print(f"[scheduler] play track error: {e}")
+    elif s["type"] == "playlist":
+        playlist = PLAYLISTS.get(s["target_id"])
+        if not playlist:
+            print(f"[scheduler] Playlist not found: {s['target_id']}")
+            return
+        tracks = [t for t in playlist["tracks"] if (MEDIA_DIR / t).exists()]
+        if not tracks:
+            print(f"[scheduler] No valid tracks in playlist: {playlist['name']}")
+            return
+        DECK_PLAYLISTS[deck_id] = {"playlist_id": s["target_id"], "tracks": tracks, "index": 0, "loop": loop}
+        DECKS[deck_id].update({
+            "track": tracks[0], "is_playing": True, "is_paused": False,
+            "is_loop": False, "playlist_id": s["target_id"],
+            "playlist_index": 0, "playlist_loop": loop,
+        })
+        filepath = str(Path("/library") / tracks[0])
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
+        except Exception as e:
+            print(f"[scheduler] play playlist error: {e}")
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
+
 async def scheduler_task():
     while True:
         await asyncio.sleep(10)
         now = datetime.now()
+        # ── Announcements ────────────────────────────────────────
         for ann in list(ANNOUNCEMENTS):
             if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
                 try:
@@ -73,15 +121,28 @@ async def scheduler_task():
                         ann["status"] = "Played"
                         filepath = str(Path("/announcements") / ann["filename"])
                         deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-                        # Fade out → jingle → announce → fade in (scheduled announcements)
                         await fade_and_play_announcement(deck_ids, filepath)
                         await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
                         await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
                 except Exception: pass
+        # ── Music Schedules ──────────────────────────────────────
+        for s in list(MUSIC_SCHEDULES):
+            if s.get("status") == "Scheduled" and s.get("scheduled_at"):
+                try:
+                    if datetime.fromisoformat(s["scheduled_at"]) <= now:
+                        s["status"] = "Played"
+                        await _trigger_music_schedule(s)
+                        try:
+                            await asyncio.get_event_loop().run_in_executor(
+                                None, db.update_music_schedule_status, s["id"], "Played"
+                            )
+                        except Exception: pass
+                except Exception as e:
+                    print(f"[scheduler] music schedule error: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS
+    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES
     print("CocoStation API Starting...")
 
     loop = asyncio.get_event_loop()
@@ -118,6 +179,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] Failed to load deck names: {e}")
 
+    try:
+        MUSIC_SCHEDULES = await loop.run_in_executor(None, db.get_music_schedules)
+        print(f"[startup] Loaded {len(MUSIC_SCHEDULES)} music schedule(s) from DB.")
+    except Exception as e:
+        print(f"[startup] Failed to load music schedules: {e}")
+
     task = asyncio.create_task(scheduler_task())
     yield
     task.cancel()
@@ -138,7 +205,7 @@ def health():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    await websocket.send_json({"type": "FULL_STATE", "decks": list(DECKS.values()), "mic": MIC_STATE, "announcements": ANNOUNCEMENTS, "settings": SETTINGS, "playlists": list(PLAYLISTS.values())})
+    await websocket.send_json({"type": "FULL_STATE", "decks": list(DECKS.values()), "mic": MIC_STATE, "announcements": ANNOUNCEMENTS, "settings": SETTINGS, "playlists": list(PLAYLISTS.values()), "music_schedules": MUSIC_SCHEDULES})
     try:
         while True: await websocket.receive_text()
     except WebSocketDisconnect: manager.disconnect(websocket)
@@ -770,6 +837,70 @@ async def test_db_connection(req: SettingUpdateRequest, _user=Depends(verify_tok
             return {"status": "ok", "mode": "cloud", "migrations_applied": ran}
         except HTTPException: raise
         except Exception as e: raise HTTPException(status_code=503, detail=f"Supabase unreachable: {e}")
+
+# ── Music Schedules ────────────────────────────────────────
+@app.get("/api/music-schedules")
+def list_music_schedules():
+    return MUSIC_SCHEDULES
+
+@app.post("/api/music-schedules")
+async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(verify_token)):
+    if req.deck_id not in DECKS:
+        raise HTTPException(status_code=400, detail="Invalid deck_id")
+    if req.type not in ("track", "playlist"):
+        raise HTTPException(status_code=400, detail="type must be 'track' or 'playlist'")
+    if req.type == "track" and not (MEDIA_DIR / req.target_id).exists():
+        raise HTTPException(status_code=404, detail=f"Track '{req.target_id}' not found in library")
+    if req.type == "playlist" and req.target_id not in PLAYLISTS:
+        raise HTTPException(status_code=404, detail=f"Playlist '{req.target_id}' not found")
+
+    sid = str(uuid.uuid4())
+    schedule = {
+        "id":           sid,
+        "name":         req.name,
+        "deck_id":      req.deck_id,
+        "type":         req.type,
+        "target_id":    req.target_id,
+        "scheduled_at": req.scheduled_at,
+        "loop":         req.loop,
+        "status":       "Scheduled",
+        "created_at":   datetime.now().isoformat(),
+    }
+    MUSIC_SCHEDULES.append(schedule)
+    MUSIC_SCHEDULES.sort(key=lambda x: x["scheduled_at"])
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.create_music_schedule, schedule)
+    except Exception as e:
+        print(f"[DB] Failed to persist music schedule: {e}")
+    await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
+    return schedule
+
+@app.delete("/api/music-schedules/{schedule_id}")
+async def delete_music_schedule(schedule_id: str, _user=Depends(verify_token)):
+    global MUSIC_SCHEDULES
+    s = next((x for x in MUSIC_SCHEDULES if x["id"] == schedule_id), None)
+    if not s:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    MUSIC_SCHEDULES = [x for x in MUSIC_SCHEDULES if x["id"] != schedule_id]
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.delete_music_schedule, schedule_id)
+    except Exception: pass
+    await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
+    return {"status": "ok"}
+
+@app.post("/api/music-schedules/{schedule_id}/trigger")
+async def trigger_music_schedule_now(schedule_id: str, _user=Depends(verify_token)):
+    """Immediately trigger a scheduled music event (for testing / manual override)."""
+    s = next((x for x in MUSIC_SCHEDULES if x["id"] == schedule_id), None)
+    if not s:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    s["status"] = "Played"
+    await _trigger_music_schedule(s)
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.update_music_schedule_status, schedule_id, "Played")
+    except Exception: pass
+    await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
+    return {"status": "ok"}
 
 # ── Stats ───────────────────────────────────────────────────
 @app.get("/api/stats")

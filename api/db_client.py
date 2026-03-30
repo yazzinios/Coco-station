@@ -383,4 +383,109 @@ class DBClient:
                 self._put_conn(conn)
 
 
+    # ── Music Schedules — READ ───────────────────────────────
+    def get_music_schedules(self) -> List[Dict]:
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("music_schedules").select("*").order("scheduled_at", desc=False).execute()
+                return [self._map_schedule_row(r) for r in res.data]
+            except Exception as e:
+                print(f"[DB] get_music_schedules (cloud) failed: {e}")
+                return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM music_schedules ORDER BY scheduled_at ASC")
+                    return [self._map_schedule_row(dict(r)) for r in cur.fetchall()]
+            except Exception as e:
+                print(f"[DB] get_music_schedules (local) failed: {e}")
+                return []
+            finally:
+                self._put_conn(conn)
+
+    def _map_schedule_row(self, row: dict) -> dict:
+        r = dict(row)
+        for key in ("scheduled_at", "created_at"):
+            if isinstance(r.get(key), datetime):
+                r[key] = r[key].isoformat()
+        return r
+
+    # ── Music Schedules — CREATE ─────────────────────────────
+    def create_music_schedule(self, s: Dict):
+        data = {
+            "id":           s["id"],
+            "name":         s["name"],
+            "deck_id":      s["deck_id"],
+            "type":         s["type"],
+            "target_id":    s["target_id"],
+            "scheduled_at": s["scheduled_at"],
+            "loop":         s.get("loop", False),
+            "status":       s.get("status", "Scheduled"),
+        }
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("music_schedules").insert(data).execute()
+            except Exception as e:
+                print(f"[DB] create_music_schedule (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO music_schedules (id, name, deck_id, type, target_id, scheduled_at, loop, status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (data["id"], data["name"], data["deck_id"], data["type"],
+                         data["target_id"], data["scheduled_at"], data["loop"], data["status"]),
+                    )
+            except Exception as e:
+                print(f"[DB] create_music_schedule (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Music Schedules — UPDATE STATUS ──────────────────────
+    def update_music_schedule_status(self, schedule_id: str, status: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("music_schedules").update({"status": status}).eq("id", schedule_id).execute()
+            except Exception as e:
+                print(f"[DB] update_music_schedule_status (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE music_schedules SET status = %s WHERE id = %s",
+                        (status, schedule_id),
+                    )
+            except Exception as e:
+                print(f"[DB] update_music_schedule_status (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Music Schedules — DELETE ──────────────────────────────
+    def delete_music_schedule(self, schedule_id: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("music_schedules").delete().eq("id", schedule_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_music_schedule (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM music_schedules WHERE id = %s", (schedule_id,))
+            except Exception as e:
+                print(f"[DB] delete_music_schedule (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+
 db = DBClient()

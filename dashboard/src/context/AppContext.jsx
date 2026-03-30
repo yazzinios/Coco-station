@@ -38,7 +38,8 @@ export function AppProvider({ children }) {
   });
   const [library,       setLibrary]       = useState([]);
   const [announcements, setAnnouncements] = useState([]);
-  const [playlists,     setPlaylists]     = useState([]);
+  const [playlists,       setPlaylists]       = useState([]);
+  const [musicSchedules,  setMusicSchedules]  = useState([]);
   const [mic,           setMic]           = useState({ active: false, targets: [] });
   const [wsConnected,   setWsConnected]   = useState(false);
   const [settings,      setSettings]      = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
@@ -90,8 +91,9 @@ export function AppProvider({ children }) {
         }
         if (msg.mic)           setMic(msg.mic);
         if (msg.announcements) setAnnouncements(msg.announcements);
-        if (msg.settings)      setSettings(prev => ({ ...prev, ...msg.settings }));
-        if (msg.playlists)     setPlaylists(msg.playlists);
+        if (msg.settings)        setSettings(prev => ({ ...prev, ...msg.settings }));
+        if (msg.playlists)        setPlaylists(msg.playlists);
+        if (msg.music_schedules)  setMusicSchedules(msg.music_schedules);
         break;
       case 'DECK_STATE':
         if (msg.decks) {
@@ -104,7 +106,8 @@ export function AppProvider({ children }) {
       case 'ANNOUNCEMENTS_UPDATED': if (msg.announcements) setAnnouncements(msg.announcements); break;
       case 'SETTINGS_UPDATED':      if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings })); break;
       case 'LIBRARY_UPDATED':       fetchLibrary(); break;
-      case 'PLAYLISTS_UPDATED':     if (msg.playlists) setPlaylists(msg.playlists); break;
+      case 'PLAYLISTS_UPDATED':        if (msg.playlists)  setPlaylists(msg.playlists); break;
+      case 'MUSIC_SCHEDULES_UPDATED': if (msg.schedules) setMusicSchedules(msg.schedules); break;
       default: break;
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -291,10 +294,27 @@ export function AppProvider({ children }) {
       if (!r.ok) return { exists: false, enabled: false };
       return r.json();
     },
+    // ── Music Schedules ──
+    createMusicSchedule: async (payload) => {
+      const r = await fetch('/api/music-schedules', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    deleteMusicSchedule: async (id) => {
+      const r = await fetch(`/api/music-schedules/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    triggerMusicSchedule: async (id) => {
+      const r = await fetch(`/api/music-schedules/${id}/trigger`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
   };
 
   return (
-    <AppContext.Provider value={{ decks, library, announcements, playlists, mic, wsConnected, settings, toast, api }}>
+    <AppContext.Provider value={{ decks, library, announcements, playlists, musicSchedules, mic, wsConnected, settings, toast, api }}>
       {children}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </AppContext.Provider>

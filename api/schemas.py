@@ -64,3 +64,22 @@ class PlaylistCreateRequest(BaseModel):
 class PlaylistLoadRequest(BaseModel):
     playlist_id: str
     loop: bool = False
+
+class MusicScheduleCreateRequest(BaseModel):
+    name: str
+    deck_id: str                  # 'a' | 'b' | 'c' | 'd'
+    type: str                     # 'track' | 'playlist'
+    target_id: str                # filename or playlist UUID
+    scheduled_at: str             # ISO datetime string
+    loop: bool = False
+
+class MusicSchedule(BaseModel):
+    id: str
+    name: str
+    deck_id: str
+    type: str
+    target_id: str
+    scheduled_at: str
+    loop: bool = False
+    status: str = 'Scheduled'
+    created_at: Optional[str] = None

@@ -1,6 +1,7 @@
 import LibraryManager from '../components/LibraryManager';
 import DeckPanel from '../components/DeckPanel';
 import OnAirButton from '../components/OnAirButton';
+import SchedulerPanel from '../components/SchedulerPanel';
 
 export default function MixerPage() {
   return (
@@ -20,6 +21,9 @@ export default function MixerPage() {
         <LibraryManager />
         <OnAirButton />
       </div>
+
+      {/* Music scheduler */}
+      <SchedulerPanel />
     </div>
   );
 }
