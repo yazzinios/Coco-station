@@ -7,19 +7,16 @@ export default function MixerPage() {
     <div>
       <h2 style={{ marginBottom: '1.5rem', fontSize: '1.5rem', fontWeight: '500' }}>Mixer Deck</h2>
 
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
-        gap: '1.25rem',
-        marginBottom: '2rem'
-      }}>
+      {/* 4 decks → 2 on tablet → 1 on mobile, via .deck-grid CSS class */}
+      <div className="deck-grid">
         <DeckPanel id="a" />
         <DeckPanel id="b" />
         <DeckPanel id="c" />
         <DeckPanel id="d" />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 310px', gap: '1.5rem' }}>
+      {/* Library + OnAir button: side-by-side → stacked on mobile */}
+      <div className="mixer-bottom">
         <LibraryManager />
         <OnAirButton />
       </div>

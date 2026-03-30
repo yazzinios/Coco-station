@@ -73,10 +73,8 @@ async def scheduler_task():
                         ann["status"] = "Played"
                         filepath = str(Path("/announcements") / ann["filename"])
                         deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-                        async with httpx.AsyncClient(timeout=5) as c:
-                            for did in deck_ids:
-                                try: await c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
-                                except Exception: pass
+                        # Fade out → jingle → announce → fade in (scheduled announcements)
+                        await fade_and_play_announcement(deck_ids, filepath)
                         await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
                         await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
                 except Exception: pass
@@ -88,7 +86,6 @@ async def lifespan(app: FastAPI):
 
     loop = asyncio.get_event_loop()
 
-    # Load announcements
     try:
         ANNOUNCEMENTS = await loop.run_in_executor(None, db.get_announcements)
         for a in ANNOUNCEMENTS:
@@ -97,7 +94,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] Failed to load announcements: {e}")
 
-    # Load playlists
     try:
         rows = await loop.run_in_executor(None, db.get_playlists)
         PLAYLISTS = {p["id"]: p for p in rows}
@@ -105,7 +101,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] Failed to load playlists: {e}")
 
-    # Load settings
     try:
         saved = await loop.run_in_executor(None, db.get_settings)
         if saved:
@@ -114,7 +109,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] Failed to load settings: {e}")
 
-    # Load deck names
     try:
         names = await loop.run_in_executor(None, db.get_deck_names)
         for deck_id, name in names.items():
@@ -199,7 +193,7 @@ async def mic_audio_ws(websocket: WebSocket):
         MIC_STATE["active"] = False; MIC_STATE["targets"] = []
         await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
 
-# ── Chime helpers ───────────────────────────────────────────
+# ── Audio duration helper ───────────────────────────────────
 async def get_audio_duration(filepath: Path) -> float:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -212,7 +206,65 @@ async def get_audio_duration(filepath: Path) -> float:
     except Exception:
         return 2.5
 
-async def maybe_play_chime(deck_ids: list):
+# ── Fade helpers ────────────────────────────────────────────
+FADE_STEPS      = 20          # number of volume steps
+FADE_STEP_MS    = 60          # ms between steps  → ~1.2 s total fade
+FADE_IN_STEP_MS = 80          # slightly slower fade-in → ~1.6 s
+
+async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int):
+    """Smoothly transition volume on the given decks from from_pct → to_pct."""
+    if from_pct == to_pct:
+        return
+    steps   = FADE_STEPS
+    delta   = (to_pct - from_pct) / steps
+    delay   = step_ms / 1000.0
+    current = float(from_pct)
+    async with httpx.AsyncClient(timeout=3) as c:
+        for _ in range(steps):
+            current += delta
+            vol = max(0, min(100, round(current)))
+            tasks = [
+                c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}")
+                for did in deck_ids
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(delay)
+        # Snap to exact target
+        final_tasks = [
+            c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}")
+            for did in deck_ids
+        ]
+        await asyncio.gather(*final_tasks, return_exceptions=True)
+
+async def _restore_volumes(deck_ids: list):
+    """Fade volumes back to each deck's stored volume level."""
+    # Group decks by target volume for efficiency
+    async with httpx.AsyncClient(timeout=3) as c:
+        steps   = FADE_STEPS
+        delay   = FADE_IN_STEP_MS / 1000.0
+        # Build per-deck fade: start from ducking level, end at stored volume
+        duck_pct = SETTINGS.get("ducking_percent", 5)
+        per_deck = {did: DECKS[did]["volume"] for did in deck_ids if did in DECKS}
+        current  = {did: float(duck_pct) for did in deck_ids}
+        deltas   = {did: (per_deck.get(did, 100) - duck_pct) / steps for did in deck_ids}
+        for _ in range(steps):
+            tasks = []
+            for did in deck_ids:
+                current[did] += deltas[did]
+                vol = max(0, min(100, round(current[did])))
+                tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}"))
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(delay)
+        # Snap to stored volumes
+        final_tasks = [
+            c.post(f"{FFMPEG_URL}/decks/{did}/volume/{per_deck.get(did, 100)}")
+            for did in deck_ids
+        ]
+        await asyncio.gather(*final_tasks, return_exceptions=True)
+
+# ── Chime (jingle) player ───────────────────────────────────
+async def _play_chime_and_wait(deck_ids: list):
+    """Play the on-air chime on all target decks and wait for it to finish."""
     if not SETTINGS.get("on_air_chime_enabled", False):
         return
     chime_path = CHIMES_DIR / CHIME_FILENAME
@@ -221,16 +273,81 @@ async def maybe_play_chime(deck_ids: list):
     filepath_in_container = str(Path("/chimes") / CHIME_FILENAME)
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            for did in deck_ids:
-                try:
-                    await c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
-                                 json={"filepath": filepath_in_container})
-                except Exception:
-                    pass
+            tasks = [
+                c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
+                       json={"filepath": filepath_in_container})
+                for did in deck_ids
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
         duration = await get_audio_duration(chime_path)
         await asyncio.sleep(min(duration + 0.15, 12.0))
     except Exception as e:
         print(f"[chime] error: {e}")
+
+# ── Master sequence: fade-out → jingle → content → fade-in ──
+async def fade_and_play_announcement(deck_ids: list, filepath: str):
+    """
+    Full announcement / mic-on sequence:
+      1. Fade music down to ducking_percent
+      2. Play jingle (if enabled) and wait for it to finish
+      3. Play the announcement audio on all target decks
+      4. Wait for announcement to finish
+      5. Fade music back up to original volumes
+    """
+    duck_pct = SETTINGS.get("ducking_percent", 5)
+
+    # Step 1 — fade out
+    playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
+    if playing_decks:
+        await _fade_volumes(playing_decks, 100, duck_pct, FADE_STEP_MS)
+
+    # Step 2 — jingle
+    await _play_chime_and_wait(deck_ids)
+
+    # Step 3 — play announcement
+    ann_path = Path(filepath)
+    # resolve local path for duration measurement
+    local_path = ANNOUNCEMENTS_DIR / ann_path.name
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            tasks = [
+                c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
+                       json={"filepath": filepath})
+                for did in deck_ids
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        print(f"[announcement] play error: {e}")
+
+    # Step 4 — wait for announcement duration
+    try:
+        duration = await get_audio_duration(local_path)
+        await asyncio.sleep(max(0.5, duration + 0.3))
+    except Exception:
+        await asyncio.sleep(3.0)
+
+    # Step 5 — fade music back in
+    if playing_decks:
+        await _restore_volumes(playing_decks)
+
+async def fade_and_enable_mic(deck_ids: list):
+    """
+    Mic-on sequence:
+      1. Fade music down to mic_ducking_percent
+      2. Play jingle (if enabled) and wait
+      Music stays ducked while mic is live; caller restores on mic-off.
+    """
+    duck_pct = SETTINGS.get("mic_ducking_percent", 20)
+    playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
+    if playing_decks:
+        await _fade_volumes(playing_decks, 100, duck_pct, FADE_STEP_MS)
+    await _play_chime_and_wait(deck_ids)
+
+async def fade_restore_after_mic(deck_ids: list):
+    """Fade music back up after mic goes off air."""
+    playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
+    if playing_decks:
+        await _restore_volumes(playing_decks)
 
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
@@ -379,7 +496,8 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(verify
 @app.post("/api/mic/on")
 async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
     deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
-    await maybe_play_chime(deck_ids)
+    # Fade music down + play jingle before opening mic
+    await fade_and_enable_mic(deck_ids)
     MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
     try:
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/on", json={"targets": deck_ids})
@@ -389,11 +507,15 @@ async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
 
 @app.post("/api/mic/off")
 async def mic_off(_user=Depends(verify_token)):
+    prev_targets = list(MIC_STATE.get("targets", []))
     MIC_STATE["active"] = False; MIC_STATE["targets"] = []
     try:
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/off")
     except Exception: pass
     await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
+    # Fade music back up after mic goes off
+    deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+    asyncio.create_task(fade_restore_after_mic(deck_ids))
     return {"status": "ok"}
 
 @app.get("/api/mic/status")
@@ -461,13 +583,8 @@ async def play_announcement(ann_id: str, _user=Depends(verify_token)):
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
     deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-    await maybe_play_chime(deck_ids)
-    try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            for did in deck_ids:
-                try: await c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
-                except Exception: pass
-    except Exception: pass
+    # Full sequence: fade → jingle → announce → fade back
+    asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
     except Exception as e:
@@ -557,7 +674,6 @@ async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, _user=De
 
 @app.post("/api/decks/{deck_id}/track_ended")
 async def track_ended(deck_id: str):
-    """Called by ffmpeg-mixer when a track finishes naturally (not via explicit stop)."""
     if deck_id not in DECKS:
         return {"status": "ignored"}
     playlist_state = DECK_PLAYLISTS.get(deck_id)

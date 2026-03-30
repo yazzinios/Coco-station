@@ -131,7 +131,7 @@ export default function AnnouncementsPage() {
   return (
     <div>
       <h2 style={{ marginBottom: '1.5rem', fontSize: '1.5rem', fontWeight: '500' }}>Announcements</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 420px) 1fr', gap: '2rem' }}>
+      <div className="announcements-grid">
 
         {/* ── Create Announcement ─────────────────────── */}
         <div className="glass-panel">

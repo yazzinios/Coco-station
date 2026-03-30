@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import Sidebar from './components/Sidebar';
@@ -8,7 +8,7 @@ import StatisticsPage from './pages/StatisticsPage';
 import SettingsPage from './pages/SettingsPage';
 import { useApp } from './context/AppContext';
 
-function AppHeader() {
+function AppHeader({ onMenuToggle }) {
   const { wsConnected } = useApp();
   return (
     <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -29,10 +29,34 @@ function AppHeader() {
 }
 
 function AppLayout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
   return (
     <div className="app-container">
-      <Sidebar />
-      <main className="main-content" style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>
+
+      {/* Hamburger toggle — only visible on mobile via CSS */}
+      <button
+        className="mobile-nav-toggle"
+        onClick={() => setSidebarOpen(v => !v)}
+        aria-label="Toggle navigation"
+      >
+        {sidebarOpen ? '✕' : '☰'}
+      </button>
+
+      {/* Dimmed overlay when sidebar is open on mobile */}
+      <div
+        className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`}
+        onClick={closeSidebar}
+      />
+
+      {/* Sidebar */}
+      <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
+        <Sidebar onNavClick={closeSidebar} />
+      </div>
+
+      {/* Main content */}
+      <main className="main-content">
         <AppHeader />
         <Routes>
           <Route path="/"              element={<MixerPage />} />

@@ -9,7 +9,7 @@ DB_MODE = os.getenv("DB_MODE", "local").lower()
 class DBClient:
     def __init__(self):
         self.mode = DB_MODE
-        self._pool = None  # psycopg2 SimpleConnectionPool for local mode
+        self._pool = None
 
         if self.mode == "cloud":
             try:
@@ -33,7 +33,6 @@ class DBClient:
 
     # ── Connection pool ────────────────────────────────────────
     def _get_conn(self):
-        """Return a connection from a small pool (min=1, max=3)."""
         import psycopg2
         from psycopg2 import pool as pg_pool
         from psycopg2.extras import RealDictCursor
@@ -47,7 +46,6 @@ class DBClient:
 
         conn = self._pool.getconn()
         conn.autocommit = True
-        # Ping — return broken connections to pool and open a fresh one
         try:
             conn.cursor().execute("SELECT 1")
         except Exception:
@@ -60,14 +58,46 @@ class DBClient:
         return conn
 
     def _put_conn(self, conn):
-        """Return a connection back to the pool."""
         if self._pool and conn:
             try:
                 self._pool.putconn(conn)
             except Exception:
                 pass
 
-    # ── Announcements ──────────────────────────────────────────
+    # ── Shared helpers ─────────────────────────────────────────
+    def _map_ann_row(self, row: dict) -> dict:
+        r = dict(row)
+        if "file_path" in r:
+            r["filename"] = r.pop("file_path")
+        if "schedule_at" in r:
+            r["scheduled_at"] = r.pop("schedule_at")
+        for key in ("created_at", "scheduled_at"):
+            if isinstance(r.get(key), datetime):
+                r[key] = r[key].isoformat()
+        if isinstance(r.get("targets"), str):
+            try:
+                r["targets"] = json.loads(r["targets"])
+            except Exception:
+                r["targets"] = ["ALL"]
+        if not r.get("status"):
+            r["status"] = "Scheduled" if r.get("scheduled_at") else "Ready"
+        if r.get("type"):
+            r["type"] = r["type"].upper()
+        return r
+
+    def _map_playlist_row(self, row: dict) -> dict:
+        r = dict(row)
+        if isinstance(r.get("tracks"), str):
+            try:
+                r["tracks"] = json.loads(r["tracks"])
+            except Exception:
+                r["tracks"] = []
+        for key in ("created_at", "updated_at"):
+            if isinstance(r.get(key), datetime):
+                r[key] = r[key].isoformat()
+        return r
+
+    # ── Announcements — READ ───────────────────────────────────
     def get_announcements(self) -> List[Dict]:
         if self.mode == "cloud":
             try:
@@ -89,27 +119,7 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
-    def _map_ann_row(self, row: dict) -> dict:
-        """Normalise DB column names → app field names."""
-        r = dict(row)
-        if "file_path" in r:
-            r["filename"] = r.pop("file_path")
-        if "schedule_at" in r:
-            r["scheduled_at"] = r.pop("schedule_at")
-        for key in ("created_at", "scheduled_at"):
-            if isinstance(r.get(key), datetime):
-                r[key] = r[key].isoformat()
-        if isinstance(r.get("targets"), str):
-            try:
-                r["targets"] = json.loads(r["targets"])
-            except Exception:
-                r["targets"] = ["ALL"]
-        if not r.get("status"):
-            r["status"] = "Scheduled" if r.get("scheduled_at") else "Ready"
-        if r.get("type"):
-            r["type"] = r["type"].upper()
-        return r
-
+    # ── Announcements — CREATE ─────────────────────────────────
     def create_announcement(self, ann: Dict):
         data = {
             "id":          ann["id"],
@@ -133,30 +143,19 @@ class DBClient:
                 with conn.cursor() as cur:
                     cols = list(data.keys())
                     vals = [data[c] for c in cols]
-                    sql  = f"INSERT INTO announcements ({', '.join(cols)}) VALUES ({', '.join(['%s']*len(vals))})"
+                    placeholders = ", ".join(["%s"] * len(vals))
+                    sql = (
+                        f"INSERT INTO announcements ({', '.join(cols)}) "
+                        f"VALUES ({placeholders}) "
+                        f"ON CONFLICT (id) DO NOTHING"
+                    )
                     cur.execute(sql, vals)
             except Exception as e:
                 print(f"[DB] create_announcement (local) failed: {e}")
             finally:
                 self._put_conn(conn)
 
-    def delete_announcement(self, ann_id: str):
-        if self.mode == "cloud":
-            try:
-                self.supabase.table("announcements").delete().eq("id", ann_id).execute()
-            except Exception as e:
-                print(f"[DB] delete_announcement (cloud) failed: {e}")
-        else:
-            conn = None
-            try:
-                conn = self._get_conn()
-                with conn.cursor() as cur:
-                    cur.execute("DELETE FROM announcements WHERE id = %s", (ann_id,))
-            except Exception as e:
-                print(f"[DB] delete_announcement (local) failed: {e}")
-            finally:
-                self._put_conn(conn)
-
+    # ── Announcements — UPDATE STATUS ──────────────────────────
     def update_announcement_status(self, ann_id: str, status: str):
         if self.mode == "cloud":
             try:
@@ -177,7 +176,25 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
-    # ── Playlists ──────────────────────────────────────────────
+    # ── Announcements — DELETE ─────────────────────────────────
+    def delete_announcement(self, ann_id: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("announcements").delete().eq("id", ann_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_announcement (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM announcements WHERE id = %s", (ann_id,))
+            except Exception as e:
+                print(f"[DB] delete_announcement (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Playlists — READ ───────────────────────────────────────
     def get_playlists(self) -> List[Dict]:
         if self.mode == "cloud":
             try:
@@ -199,20 +216,8 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
-    def _map_playlist_row(self, row: dict) -> dict:
-        r = dict(row)
-        if isinstance(r.get("tracks"), str):
-            try:
-                r["tracks"] = json.loads(r["tracks"])
-            except Exception:
-                r["tracks"] = []
-        for key in ("created_at", "updated_at"):
-            if isinstance(r.get(key), datetime):
-                r[key] = r[key].isoformat()
-        return r
-
+    # ── Playlists — UPSERT ─────────────────────────────────────
     def save_playlist(self, playlist: Dict):
-        """Upsert a playlist (insert or update)."""
         data = {
             "id":     playlist["id"],
             "name":   playlist["name"],
@@ -233,8 +238,8 @@ class DBClient:
                         INSERT INTO playlists (id, name, tracks)
                         VALUES (%s, %s, %s)
                         ON CONFLICT (id) DO UPDATE
-                            SET name = EXCLUDED.name,
-                                tracks = EXCLUDED.tracks,
+                            SET name       = EXCLUDED.name,
+                                tracks     = EXCLUDED.tracks,
                                 updated_at = CURRENT_TIMESTAMP
                         """,
                         (data["id"], data["name"], data["tracks"]),
@@ -244,6 +249,7 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
+    # ── Playlists — DELETE ─────────────────────────────────────
     def delete_playlist(self, playlist_id: str):
         if self.mode == "cloud":
             try:
@@ -261,13 +267,17 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
-    # ── Settings ───────────────────────────────────────────────
+    # ── Settings — READ ────────────────────────────────────────
     def get_settings(self) -> Dict:
-        """Return all settings as a flat dict."""
         if self.mode == "cloud":
             try:
                 res = self.supabase.table("settings").select("*").execute()
-                return {row["key"]: row["value"] for row in res.data}
+                result = {}
+                for row in res.data:
+                    v = row["value"]
+                    # Supabase returns JSONB as Python objects already
+                    result[row["key"]] = v
+                return result
             except Exception as e:
                 print(f"[DB] get_settings (cloud) failed: {e}")
                 return {}
@@ -281,7 +291,6 @@ class DBClient:
                     result = {}
                     for row in rows:
                         v = row["value"]
-                        # psycopg2 returns JSONB as Python objects already
                         if isinstance(v, str):
                             try:
                                 v = json.loads(v)
@@ -295,12 +304,12 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
+    # ── Settings — UPSERT ──────────────────────────────────────
     def save_settings(self, settings: Dict):
-        """Upsert each key/value pair in settings dict."""
         if self.mode == "cloud":
             try:
                 rows = [{"key": k, "value": v} for k, v in settings.items()]
-                self.supabase.table("settings").upsert(rows).execute()
+                self.supabase.table("settings").upsert(rows, on_conflict="key").execute()
             except Exception as e:
                 print(f"[DB] save_settings (cloud) failed: {e}")
         else:
@@ -322,9 +331,8 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
-    # ── Deck names ─────────────────────────────────────────────
+    # ── Deck names — READ ──────────────────────────────────────
     def get_deck_names(self) -> Dict[str, str]:
-        """Return {deck_id: name} from the decks table."""
         if self.mode == "cloud":
             try:
                 res = self.supabase.table("decks").select("id,name").execute()
@@ -345,10 +353,15 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
+    # ── Deck names — UPSERT ────────────────────────────────────
     def save_deck_name(self, deck_id: str, name: str):
         if self.mode == "cloud":
             try:
-                self.supabase.table("decks").update({"name": name}).eq("id", deck_id).execute()
+                # Try update first; if the row doesn't exist yet, upsert it
+                res = self.supabase.table("decks").update({"name": name}).eq("id", deck_id).execute()
+                if not res.data:
+                    # Row didn't exist — insert it
+                    self.supabase.table("decks").insert({"id": deck_id, "name": name}).execute()
             except Exception as e:
                 print(f"[DB] save_deck_name (cloud) failed: {e}")
         else:
@@ -357,7 +370,11 @@ class DBClient:
                 conn = self._get_conn()
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO decks (id, name) VALUES (%s, %s) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+                        """
+                        INSERT INTO decks (id, name)
+                        VALUES (%s, %s)
+                        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
+                        """,
                         (deck_id, name),
                     )
             except Exception as e:
