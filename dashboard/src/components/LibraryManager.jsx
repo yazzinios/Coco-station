@@ -33,6 +33,9 @@ export default function LibraryManager() {
       setUploading(false);
       setUploadProgress(0);
       toast.error(`Upload failed: ${err.message}`);
+    } finally {
+      // Reset so the same file can be selected again
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 

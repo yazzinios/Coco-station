@@ -8,6 +8,9 @@ class DeckRenameRequest(BaseModel):
 class VolumeRequest(BaseModel):
     volume: int  # 0-100
 
+class LoopRequest(BaseModel):
+    loop: bool = False
+
 class PlayRequest(BaseModel):
     track_id: str  # filename in data/library/
 
@@ -18,6 +21,7 @@ class TTSRequest(BaseModel):
     name: str
     text: str
     targets: List[str]
+    lang: str = "en"           # language code: en, fr, ar, es, de, it
     scheduled_at: Optional[str] = None  # ISO datetime string e.g. "2026-03-14T15:30:00"
 
 class LibraryItem(BaseModel):
@@ -35,6 +39,7 @@ class DeckState(BaseModel):
     volume: int = 100
     is_playing: bool = False
     is_paused: bool = False
+    is_loop: bool = False
 
 class Announcement(BaseModel):
     id: str

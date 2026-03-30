@@ -16,7 +16,7 @@ FFMPEG_HOST = os.getenv("FFMPEG_HOST", "ffmpeg-mixer")
 FFMPEG_URL  = f"http://{FFMPEG_HOST}:8001"
 
 from schemas import (
-    DeckRenameRequest, VolumeRequest, PlayRequest, MicControlRequest,
+    DeckRenameRequest, VolumeRequest, LoopRequest, PlayRequest, MicControlRequest,
     TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement
 )
 from tts import generate_tts
@@ -31,10 +31,10 @@ START_TIME    = time.time()
 TRACKS_PLAYED = 0
 
 DECKS: Dict[str, dict] = {
-    "a": {"id": "a", "name": "Castle",  "track": None, "volume": 100, "is_playing": False, "is_paused": False},
-    "b": {"id": "b", "name": "Deck B",  "track": None, "volume": 100, "is_playing": False, "is_paused": False},
-    "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False},
-    "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False},
+    "a": {"id": "a", "name": "Castle",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
+    "b": {"id": "b", "name": "Deck B",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
+    "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
+    "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False},
 }
 ANNOUNCEMENTS: List[dict] = []
 SETTINGS: dict = {"ducking_percent": 5, "mic_ducking_percent": 20, "on_air_beep": "default", "db_mode": "local"}
@@ -79,9 +79,7 @@ async def lifespan(app: FastAPI):
     global ANNOUNCEMENTS
     print("CocoStation API Starting...")
     try:
-        # Load announcements from DB
         ANNOUNCEMENTS = await asyncio.get_event_loop().run_in_executor(None, db.get_announcements)
-        # Initialize internal status
         for a in ANNOUNCEMENTS:
             if not a.get("status"):
                 a["status"] = "Scheduled" if a.get("scheduled_at") else "Ready"
@@ -175,11 +173,15 @@ def list_library():
 async def upload_track(file: UploadFile = File(...)):
     if not any(file.filename.lower().endswith(e) for e in ALLOWED_AUDIO):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
-    dest = MEDIA_DIR / file.filename
-    dest.write_bytes(await file.read())
-    item = LibraryItem(filename=file.filename, size=dest.stat().st_size)
+    safe_name = Path(file.filename).name  # strip any path traversal
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    dest = MEDIA_DIR / safe_name
+    content = await file.read()
+    await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+    item = LibraryItem(filename=safe_name, size=dest.stat().st_size)
     await manager.broadcast({"type": "LIBRARY_UPDATED", "action": "added", "item": item.model_dump()})
-    return {"status": "ok", "filename": file.filename, "size": dest.stat().st_size}
+    return {"status": "ok", "filename": safe_name, "size": dest.stat().st_size}
 
 @app.delete("/api/library/{filename}")
 async def delete_track(filename: str):
@@ -240,9 +242,10 @@ async def play_deck(deck_id: str):
     DECKS[deck_id]["is_playing"] = True; DECKS[deck_id]["is_paused"] = False
     TRACKS_PLAYED += 1
     filepath = str(Path("/library") / DECKS[deck_id]["track"])
+    loop = DECKS[deck_id].get("is_loop", False)
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath})
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": loop})
     except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
@@ -251,11 +254,13 @@ async def play_deck(deck_id: str):
 async def pause_deck(deck_id: str):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["is_playing"] and DECKS[deck_id]["is_paused"]:
+        # Currently paused → resume
         DECKS[deck_id]["is_playing"] = True; DECKS[deck_id]["is_paused"] = False
         try:
             async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/resume")
         except Exception: pass
     else:
+        # Currently playing → pause
         DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = True
         try:
             async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/pause")
@@ -272,6 +277,20 @@ async def stop_deck(deck_id: str):
     except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
+
+@app.post("/api/decks/{deck_id}/loop")
+async def set_loop(deck_id: str, req: LoopRequest):
+    if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
+    DECKS[deck_id]["is_loop"] = req.loop
+    # If currently playing, restart with the new loop setting applied
+    if DECKS[deck_id]["is_playing"] and DECKS[deck_id]["track"]:
+        filepath = str(Path("/library") / DECKS[deck_id]["track"])
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": req.loop})
+        except Exception: pass
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    return {"status": "ok", "deck": deck_id, "loop": req.loop}
 
 @app.post("/api/decks/{deck_id}/volume")
 async def set_deck_volume(deck_id: str, req: VolumeRequest):
@@ -312,14 +331,24 @@ def list_announcements(): return ANNOUNCEMENTS
 
 @app.post("/api/announcements/tts")
 async def create_tts_announcement(req: TTSRequest):
-    try: filepath = generate_tts(req.text); filename = Path(filepath).name
-    except Exception as e: raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
-    ann = {"id": uuid.uuid4().hex, "name": req.name, "type": "TTS", "filename": filename,
-           "targets": req.targets, "status": "Scheduled" if getattr(req,'scheduled_at',None) else "Ready",
-           "scheduled_at": getattr(req,'scheduled_at',None), "created_at": datetime.now().isoformat()}
+    try:
+        # generate_tts is now a proper async function — no asyncio.run() needed
+        filepath = await generate_tts(req.text, lang=getattr(req, 'lang', 'en'))
+        filename = Path(filepath).name
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
+    ann_id = str(uuid.uuid4())   # proper UUID with dashes — PostgreSQL UUID column compatible
+    ann = {
+        "id": ann_id, "name": req.name, "type": "TTS", "filename": filename,
+        "targets": req.targets,
+        "status": "Scheduled" if getattr(req, 'scheduled_at', None) else "Ready",
+        "scheduled_at": getattr(req, 'scheduled_at', None),
+        "created_at": datetime.now().isoformat(),
+    }
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.create_announcement, ann)
-    except Exception: pass
+    except Exception as e:
+        print(f"[DB] Failed to persist TTS announcement: {e}")
     ANNOUNCEMENTS.insert(0, ann)
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok", "announcement": ann}
@@ -329,15 +358,24 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
                                targets: str = "ALL", scheduled_at: Optional[str] = None):
     if not any(file.filename.lower().endswith(e) for e in {".mp3",".wav",".ogg"}):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
-    dest = ANNOUNCEMENTS_DIR / file.filename
-    dest.write_bytes(await file.read())
-    ann = {"id": uuid.uuid4().hex, "name": name or file.filename, "type": "MP3", "filename": file.filename,
-           "targets": targets.split(",") if isinstance(targets, str) else targets,
-           "status": "Scheduled" if scheduled_at else "Ready", "scheduled_at": scheduled_at,
-           "created_at": datetime.now().isoformat()}
+    safe_name = Path(file.filename).name  # strip any path traversal
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    dest = ANNOUNCEMENTS_DIR / safe_name
+    content = await file.read()
+    await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+    ann_id = str(uuid.uuid4())   # proper UUID with dashes
+    ann = {
+        "id": ann_id, "name": name or safe_name, "type": "MP3", "filename": safe_name,
+        "targets": targets.split(",") if isinstance(targets, str) else targets,
+        "status": "Scheduled" if scheduled_at else "Ready",
+        "scheduled_at": scheduled_at,
+        "created_at": datetime.now().isoformat(),
+    }
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.create_announcement, ann)
-    except Exception: pass
+    except Exception as e:
+        print(f"[DB] Failed to persist MP3 announcement: {e}")
     ANNOUNCEMENTS.insert(0, ann)
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok", "announcement": ann}
@@ -355,6 +393,10 @@ async def play_announcement(ann_id: str):
                 try: await c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
                 except Exception: pass
     except Exception: pass
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
+    except Exception as e:
+        print(f"[DB] Failed to update announcement status: {e}")
     await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok"}

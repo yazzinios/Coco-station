@@ -19,13 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source code
 COPY . .
 
-# Create non-root user and pre-create data dirs with correct ownership
-# Docker volumes mount over these dirs but inherit the uid/gid set here
-RUN adduser --disabled-password --gecos "" appuser \
-  && mkdir -p /app/data/library /app/data/announcements \
-  && chown -R appuser:appuser /app
+# Pre-create data dirs so volume mounts are always writable
+RUN mkdir -p /app/data/library /app/data/announcements
 
-USER appuser
-
-# Run database migrations and start the server
+# Run as root — this is an internal container on a private Docker network
+# Running as non-root caused volume permission errors with named volumes
 CMD ["sh", "-c", "python migrate.py && uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --log-level info"]

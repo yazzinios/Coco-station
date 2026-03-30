@@ -13,7 +13,8 @@ function ToastContainer({ toasts, onRemove }) {
           borderRadius: '10px', padding: '0.85rem 1.1rem',
           color: t.type === 'error' ? '#ff4757' : t.type === 'success' ? '#2ed573' : '#00d4ff',
           fontSize: '0.875rem', fontWeight: '500', backdropFilter: 'blur(12px)',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer', animation: 'slideIn 0.25s ease',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', gap: '0.75rem',
+          cursor: 'pointer', animation: 'slideIn 0.25s ease',
         }}>
           <span style={{ fontSize: '1.1rem' }}>{t.type === 'error' ? '✕' : t.type === 'success' ? '✓' : 'ℹ'}</span>
           {t.message}
@@ -24,12 +25,16 @@ function ToastContainer({ toasts, onRemove }) {
   );
 }
 
+const DEFAULT_DECK = (id, name) => ({
+  id, name, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false,
+});
+
 export function AppProvider({ children }) {
   const [decks, setDecks] = useState({
-    a: { id: 'a', name: 'Castle',  track: null, volume: 100, is_playing: false, is_paused: false },
-    b: { id: 'b', name: 'Deck B',  track: null, volume: 100, is_playing: false, is_paused: false },
-    c: { id: 'c', name: 'Karting', track: null, volume: 100, is_playing: false, is_paused: false },
-    d: { id: 'd', name: 'Deck D',  track: null, volume: 100, is_playing: false, is_paused: false },
+    a: DEFAULT_DECK('a', 'Castle'),
+    b: DEFAULT_DECK('b', 'Deck B'),
+    c: DEFAULT_DECK('c', 'Karting'),
+    d: DEFAULT_DECK('d', 'Deck D'),
   });
   const [library,       setLibrary]       = useState([]);
   const [announcements, setAnnouncements] = useState([]);
@@ -54,14 +59,11 @@ export function AppProvider({ children }) {
 
   function buildWsUrl(path = '/ws') {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const host = window.location.host; // includes port if any
+    const host     = window.location.host;
 
-    // If VITE_WS_URL is provided AND it's not just a local/internal IP, use it.
-    // Otherwise, always default to the current domain to avoid Mixed Content errors.
     if (import.meta.env.VITE_WS_URL) {
-      const envUrl = import.meta.env.VITE_WS_URL;
+      const envUrl    = import.meta.env.VITE_WS_URL;
       const isInternal = envUrl.includes('172.') || envUrl.includes('192.') || envUrl.includes('10.') || envUrl.includes('localhost');
-      
       if (!isInternal) {
         const base = envUrl.replace(/\/+$/, '');
         if (base.startsWith('ws://') || base.startsWith('wss://')) return `${base}${path}`;
@@ -70,8 +72,6 @@ export function AppProvider({ children }) {
         return `wss://${base}${path}`;
       }
     }
-    
-    // Default to the current page's origin
     return `${protocol}://${host}${path}`;
   }
 
@@ -80,32 +80,45 @@ export function AppProvider({ children }) {
     console.log('[WS] Connecting to', wsUrl);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    ws.onopen = () => { console.log('[WS] Connected'); setWsConnected(true); };
+    ws.onopen    = () => { console.log('[WS] Connected'); setWsConnected(true); };
     ws.onmessage = (evt) => { try { handleWsMessage(JSON.parse(evt.data)); } catch (_) {} };
-    ws.onclose = () => { setWsConnected(false); console.log('[WS] Disconnected – retrying in 3s'); setTimeout(connectWS, 3000); };
-    ws.onerror = () => ws.close();
+    ws.onclose   = () => { setWsConnected(false); console.log('[WS] Disconnected – retrying in 3s'); setTimeout(connectWS, 3000); };
+    ws.onerror   = () => ws.close();
   }, []); // eslint-disable-line
 
   function handleWsMessage(msg) {
     switch (msg.type) {
       case 'FULL_STATE':
-        if (msg.decks) { const m = {}; msg.decks.forEach(d => { m[d.id] = d; }); setDecks(m); }
-        if (msg.mic) setMic(msg.mic);
+        if (msg.decks) {
+          const m = {};
+          msg.decks.forEach(d => { m[d.id] = { is_loop: false, ...d }; });
+          setDecks(m);
+        }
+        if (msg.mic)           setMic(msg.mic);
         if (msg.announcements) setAnnouncements(msg.announcements);
-        if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings }));
+        if (msg.settings)      setSettings(prev => ({ ...prev, ...msg.settings }));
         break;
       case 'DECK_STATE':
-        if (msg.decks) { const m = {}; msg.decks.forEach(d => { m[d.id] = d; }); setDecks(m); }
+        if (msg.decks) {
+          const m = {};
+          msg.decks.forEach(d => { m[d.id] = { is_loop: false, ...d }; });
+          setDecks(m);
+        }
         break;
-      case 'MIC_STATUS': setMic({ active: msg.active, targets: msg.targets || [] }); break;
+      case 'MIC_STATUS':          setMic({ active: msg.active, targets: msg.targets || [] }); break;
       case 'ANNOUNCEMENTS_UPDATED': if (msg.announcements) setAnnouncements(msg.announcements); break;
-      case 'SETTINGS_UPDATED': if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings })); break;
-      case 'LIBRARY_UPDATED': fetchLibrary(); break;
+      case 'SETTINGS_UPDATED':    if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings })); break;
+      case 'LIBRARY_UPDATED':     fetchLibrary(); break;
       default: break;
     }
   }
 
-  useEffect(() => { connectWS(); fetchLibrary(); fetchAnnouncements(); return () => { wsRef.current?.close(); }; }, []); // eslint-disable-line
+  useEffect(() => {
+    connectWS();
+    fetchLibrary();
+    fetchAnnouncements();
+    return () => { wsRef.current?.close(); };
+  }, []); // eslint-disable-line
 
   async function parseError(res) {
     try { const d = await res.json(); return d?.detail || d?.message || JSON.stringify(d); }
@@ -131,31 +144,66 @@ export function AppProvider({ children }) {
       await fetchLibrary();
     },
     loadTrack: async (deckId, filename) => {
-      const r = await fetch(`/api/decks/${deckId}/load`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: filename }) });
+      const r = await fetch(`/api/decks/${deckId}/load`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: filename }),
+      });
       if (!r.ok) throw new Error(await parseError(r));
     },
-    // ── NEW: unload track from deck ──
     unloadTrack: async (deckId) => {
       const r = await fetch(`/api/decks/${deckId}/unload`, { method: 'POST' });
       if (!r.ok) throw new Error(await parseError(r));
     },
-    play:  async (deckId) => { const r = await fetch(`/api/decks/${deckId}/play`,  { method: 'POST' }); if (!r.ok) throw new Error(await parseError(r)); },
-    pause: async (deckId) => { const r = await fetch(`/api/decks/${deckId}/pause`, { method: 'POST' }); if (!r.ok) throw new Error(await parseError(r)); },
-    stop:  async (deckId) => { const r = await fetch(`/api/decks/${deckId}/stop`,  { method: 'POST' }); if (!r.ok) throw new Error(await parseError(r)); },
+    play:  async (deckId) => {
+      const r = await fetch(`/api/decks/${deckId}/play`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    pause: async (deckId) => {
+      const r = await fetch(`/api/decks/${deckId}/pause`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    stop:  async (deckId) => {
+      const r = await fetch(`/api/decks/${deckId}/stop`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    loop: async (deckId, loopEnabled) => {
+      const r = await fetch(`/api/decks/${deckId}/loop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ loop: loopEnabled }),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      // Optimistically update local state so the button reflects instantly
+      setDecks(prev => ({ ...prev, [deckId]: { ...prev[deckId], is_loop: loopEnabled } }));
+    },
     setVolume: async (deckId, volume) => {
-      await fetch(`/api/decks/${deckId}/volume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ volume: Math.round(volume) }) });
+      await fetch(`/api/decks/${deckId}/volume`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ volume: Math.round(volume) }),
+      });
     },
     renameDeck: async (deckId, name) => {
-      const r = await fetch(`/api/decks/${deckId}/name`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      const r = await fetch(`/api/decks/${deckId}/name`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
       if (!r.ok) throw new Error(await parseError(r));
     },
     micOn: async (targets) => {
-      const r = await fetch('/api/mic/on', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targets }) });
+      const r = await fetch('/api/mic/on', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets }),
+      });
       if (!r.ok) throw new Error(await parseError(r));
     },
-    micOff: async () => { const r = await fetch('/api/mic/off', { method: 'POST' }); if (!r.ok) throw new Error(await parseError(r)); },
+    micOff: async () => {
+      const r = await fetch('/api/mic/off', { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
     createTTS: async (payload) => {
-      const r = await fetch('/api/announcements/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const r = await fetch('/api/announcements/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
       if (!r.ok) throw new Error(await parseError(r));
       await fetchAnnouncements(); return r.json();
     },
@@ -177,7 +225,10 @@ export function AppProvider({ children }) {
       await fetchAnnouncements();
     },
     saveSettings: async (s) => {
-      const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: s }) });
+      const r = await fetch('/api/settings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: s }),
+      });
       if (!r.ok) throw new Error(await parseError(r));
     },
     buildWsUrl,

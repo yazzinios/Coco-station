@@ -3,30 +3,40 @@ import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio } 
 import { useApp } from '../context/AppContext';
 
 const ORIGIN = window.location.origin;
-const HOST = window.location.hostname;
+const HOST   = window.location.hostname;
 
 function getStreamLinks(deckId) {
   return [
-    { label: 'HLS', desc: 'Secure Browser / VLC', url: `${ORIGIN}/${deckId}/index.m3u8` },
-    { label: 'WebRTC', desc: 'Low Latency Browser', url: `${ORIGIN}/${deckId}/whep` },
-    { label: 'RTSP', desc: 'VLC / OBS (Internal)', url: `rtsp://${HOST}:8554/${deckId}` },
-    { label: 'RTMP', desc: 'Streaming Software (Internal)', url: `rtmp://${HOST}:1935/${deckId}` },
+    { label: 'HLS',   desc: 'Browser / VLC',        url: `${ORIGIN}/${deckId}/index.m3u8` },
+    { label: 'WebRTC',desc: 'Low Latency Browser',   url: `${ORIGIN}/${deckId}/whep` },
+    { label: 'RTSP',  desc: 'VLC / OBS (Internal)',  url: `rtsp://${HOST}:8554/${deckId}` },
+    { label: 'RTMP',  desc: 'Streaming Software',    url: `rtmp://${HOST}:1935/${deckId}` },
   ];
 }
 
 const DECK_IDS = ['deck-a', 'deck-b', 'deck-c', 'deck-d'];
 
+const TTS_LANGUAGES = [
+  { code: 'en', label: '🇺🇸 English',  voice: 'en-US-AriaNeural' },
+  { code: 'fr', label: '🇫🇷 Français', voice: 'fr-FR-DeniseNeural' },
+  { code: 'ar', label: '🇸🇦 عربي',    voice: 'ar-SA-ZariyahNeural' },
+  { code: 'es', label: '🇪🇸 Español',  voice: 'es-ES-ElviraNeural' },
+  { code: 'de', label: '🇩🇪 Deutsch',  voice: 'de-DE-KatjaNeural' },
+  { code: 'it', label: '🇮🇹 Italiano', voice: 'it-IT-ElsaNeural' },
+];
+
 export default function AnnouncementsPage() {
   const { announcements, toast, api } = useApp();
-  const [type, setType] = useState('TTS');
-  const [name, setName] = useState('');
-  const [text, setText] = useState('');
+  const [type,          setType]          = useState('TTS');
+  const [name,          setName]          = useState('');
+  const [text,          setText]          = useState('');
+  const [lang,          setLang]          = useState('en');
   const [selectedDecks, setSelectedDecks] = useState(['ALL']);
-  const [submitting, setSubmitting] = useState(false);
-  const [annFile, setAnnFile] = useState(null);
-  const [scheduledAt, setScheduledAt] = useState('');
-  const [copiedIdx, setCopiedIdx] = useState(null);
-  const [streamDeck, setStreamDeck] = useState('deck-a');
+  const [submitting,    setSubmitting]    = useState(false);
+  const [annFile,       setAnnFile]       = useState(null);
+  const [scheduledAt,   setScheduledAt]   = useState('');
+  const [copiedIdx,     setCopiedIdx]     = useState(null);
+  const [streamDeck,    setStreamDeck]    = useState('deck-a');
   const fileRef = useRef(null);
 
   const copyLink = async (url, idx) => {
@@ -35,16 +45,14 @@ export default function AnnouncementsPage() {
         await navigator.clipboard.writeText(url);
       } else {
         const ta = document.createElement('textarea');
-        ta.value = url;
-        ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select(); document.execCommand('copy');
+        ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy');
         document.body.removeChild(ta);
       }
       setCopiedIdx(idx);
       toast.success('Link copied to clipboard!');
       setTimeout(() => setCopiedIdx(null), 2000);
-    } catch (err) {
+    } catch {
       toast.error('Failed to copy link');
     }
   };
@@ -67,13 +75,19 @@ export default function AnnouncementsPage() {
     try {
       if (type === 'TTS') {
         if (!text.trim()) { toast.error('Please enter TTS text'); setSubmitting(false); return; }
-        await api.createTTS({ name, text, targets: selectedDecks, scheduled_at: scheduledAt || null });
+        await api.createTTS({
+          name,
+          text,
+          lang,                                      // ← pass language to backend
+          targets: selectedDecks,
+          scheduled_at: scheduledAt || null,
+        });
         toast.success(scheduledAt ? 'TTS announcement scheduled!' : 'TTS announcement created!');
         setName(''); setText(''); setScheduledAt('');
       } else {
-        if (!annFile) { toast.error('Please select an MP3 file'); setSubmitting(false); return; }
+        if (!annFile) { toast.error('Please select an audio file'); setSubmitting(false); return; }
         await api.uploadAnnouncement(annFile, name, selectedDecks, scheduledAt || null);
-        toast.success(scheduledAt ? `"${annFile.name}" scheduled!` : `"${annFile.name}" announcement uploaded`);
+        toast.success(scheduledAt ? `"${annFile.name}" scheduled!` : `"${annFile.name}" uploaded`);
         setName(''); setAnnFile(null); setScheduledAt('');
       }
     } catch (err) {
@@ -102,8 +116,8 @@ export default function AnnouncementsPage() {
   };
 
   const statusColor = (status) => {
-    if (status === 'Played')    return { bg: 'rgba(46,213,115,0.1)',  color: '#2ed573' };
-    if (status === 'Scheduled') return { bg: 'rgba(0,212,255,0.1)',   color: '#00d4ff' };
+    if (status === 'Played')    return { bg: 'rgba(46,213,115,0.1)',   color: '#2ed573' };
+    if (status === 'Scheduled') return { bg: 'rgba(0,212,255,0.1)',    color: '#00d4ff' };
     return                             { bg: 'rgba(255,255,255,0.06)', color: '#a0a0a0' };
   };
 
@@ -111,8 +125,7 @@ export default function AnnouncementsPage() {
     width: '100%', padding: '0.7rem 0.9rem', borderRadius: '8px',
     background: 'rgba(0,0,0,0.3)', color: 'white',
     border: '1px solid var(--panel-border)', fontFamily: 'inherit',
-    fontSize: '0.9rem', outline: 'none',
-    boxSizing: 'border-box',
+    fontSize: '0.9rem', outline: 'none', boxSizing: 'border-box',
   };
 
   return (
@@ -156,18 +169,43 @@ export default function AnnouncementsPage() {
               />
             </div>
 
-            {/* Content area */}
+            {/* TTS fields */}
             {type === 'TTS' ? (
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Text</label>
-                <textarea
-                  value={text} onChange={e => setText(e.target.value)}
-                  placeholder="Type what you want the robot to say..."
-                  rows="4"
-                  style={{ ...inputStyle, resize: 'vertical' }}
-                />
-              </div>
+              <>
+                {/* Language selector */}
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Language / Voice</label>
+                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    {TTS_LANGUAGES.map(l => (
+                      <button key={l.code} type="button" onClick={() => setLang(l.code)} style={{
+                        padding: '0.3rem 0.6rem', borderRadius: '6px', border: 'none', fontSize: '0.78rem',
+                        background: lang === l.code ? 'rgba(0,212,255,0.2)' : 'rgba(255,255,255,0.05)',
+                        color: lang === l.code ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                        outline: lang === l.code ? '1px solid rgba(0,212,255,0.4)' : '1px solid var(--panel-border)',
+                        cursor: 'pointer', transition: 'all 0.15s',
+                      }}>
+                        {l.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)' }}>
+                    Voice: {TTS_LANGUAGES.find(l => l.code === lang)?.voice}
+                  </div>
+                </div>
+
+                {/* Text */}
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Text</label>
+                  <textarea
+                    value={text} onChange={e => setText(e.target.value)}
+                    placeholder="Type what you want the robot to say…"
+                    rows="4"
+                    style={{ ...inputStyle, resize: 'vertical' }}
+                  />
+                </div>
+              </>
             ) : (
+              /* MP3 upload */
               <div>
                 <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Audio File</label>
                 <div
@@ -176,13 +214,13 @@ export default function AnnouncementsPage() {
                     padding: '1.5rem', border: '2px dashed var(--panel-border)',
                     borderRadius: '8px', textAlign: 'center', cursor: 'pointer',
                     background: annFile ? 'rgba(0,212,255,0.05)' : 'rgba(255,255,255,0.01)',
-                    transition: 'all 0.2s',
                     borderColor: annFile ? 'rgba(0,212,255,0.4)' : 'var(--panel-border)',
+                    transition: 'all 0.2s',
                   }}
                 >
                   <Upload size={22} style={{ marginBottom: '0.5rem', opacity: 0.4 }} />
                   <div style={{ fontSize: '0.85rem' }}>
-                    {annFile ? annFile.name : 'Click to select MP3'}
+                    {annFile ? annFile.name : 'Click to select MP3 / WAV / OGG'}
                   </div>
                 </div>
                 <input
@@ -193,14 +231,13 @@ export default function AnnouncementsPage() {
               </div>
             )}
 
-            {/* Schedule Time */}
+            {/* Schedule */}
             <div>
               <label style={{ marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 <Clock size={11} /> Schedule (optional)
               </label>
               <input
-                type="datetime-local"
-                value={scheduledAt}
+                type="datetime-local" value={scheduledAt}
                 onChange={e => setScheduledAt(e.target.value)}
                 style={{ ...inputStyle, colorScheme: 'dark' }}
               />
@@ -255,16 +292,14 @@ export default function AnnouncementsPage() {
             </span>
             <span style={{
               fontSize: '0.75rem', fontWeight: '400',
-              background: 'rgba(255,255,255,0.06)', padding: '0.1rem 0.5rem',
-              borderRadius: '10px',
+              background: 'rgba(255,255,255,0.06)', padding: '0.1rem 0.5rem', borderRadius: '10px',
             }}>{announcements.length}</span>
           </h3>
 
           {announcements.length === 0 ? (
             <div style={{
               display: 'flex', flexDirection: 'column', alignItems: 'center',
-              justifyContent: 'center', gap: '0.75rem', paddingTop: '3rem',
-              color: 'var(--text-secondary)',
+              justifyContent: 'center', gap: '0.75rem', paddingTop: '3rem', color: 'var(--text-secondary)',
             }}>
               <Mic size={36} style={{ opacity: 0.2 }} />
               <p style={{ fontStyle: 'italic', fontSize: '0.9rem' }}>No announcements yet</p>
@@ -285,7 +320,7 @@ export default function AnnouncementsPage() {
                         <span style={{
                           background: a.type === 'TTS' ? 'rgba(165,94,234,0.15)' : 'rgba(0,212,255,0.1)',
                           color: a.type === 'TTS' ? '#a55eea' : '#00d4ff',
-                          padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.7rem'
+                          padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.7rem',
                         }}>{a.type}</span>
                         <span>→ {a.targets?.join(', ')}</span>
                         {a.scheduled_at && (
@@ -299,28 +334,20 @@ export default function AnnouncementsPage() {
                       padding: '0.2rem 0.6rem', borderRadius: '10px', fontSize: '0.72rem',
                       background: sc.bg, color: sc.color, whiteSpace: 'nowrap', flexShrink: 0,
                     }}>{a.status}</span>
-                    <button
-                      onClick={() => handlePlay(a)}
-                      title="Play announcement"
-                      style={{
-                        width: '30px', height: '30px', borderRadius: '50%', border: 'none',
-                        background: 'rgba(46,213,115,0.15)', color: '#2ed573',
-                        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        flexShrink: 0, transition: 'all 0.2s',
-                      }}
-                    >
+                    <button onClick={() => handlePlay(a)} title="Play announcement" style={{
+                      width: '30px', height: '30px', borderRadius: '50%', border: 'none',
+                      background: 'rgba(46,213,115,0.15)', color: '#2ed573',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0, transition: 'all 0.2s',
+                    }}>
                       <Play size={12} fill="currentColor" />
                     </button>
-                    <button
-                      onClick={() => handleDelete(a)}
-                      title="Delete announcement"
-                      style={{
-                        width: '30px', height: '30px', borderRadius: '50%', border: 'none',
-                        background: 'rgba(255,71,87,0.1)', color: '#ff4757',
-                        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        flexShrink: 0, transition: 'all 0.2s',
-                      }}
-                    >
+                    <button onClick={() => handleDelete(a)} title="Delete announcement" style={{
+                      width: '30px', height: '30px', borderRadius: '50%', border: 'none',
+                      background: 'rgba(255,71,87,0.1)', color: '#ff4757',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0, transition: 'all 0.2s',
+                    }}>
                       <Trash2 size={12} />
                     </button>
                   </div>
@@ -385,7 +412,6 @@ export default function AnnouncementsPage() {
           ))}
         </div>
       </div>
-
     </div>
   );
 }
