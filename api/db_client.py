@@ -1,14 +1,15 @@
 import os
 import json
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 DB_MODE = os.getenv("DB_MODE", "local").lower()
+
 
 class DBClient:
     def __init__(self):
         self.mode = DB_MODE
-        self.conn = None
+        self._pool = None  # psycopg2 SimpleConnectionPool for local mode
 
         if self.mode == "cloud":
             try:
@@ -30,19 +31,41 @@ class DBClient:
             self.db_url = f"postgresql://{user}:{password}@{host}:5432/{dbname}"
             print(f"[DB] Local mode — {self.db_url}")
 
-    # ── Connection helper ──────────────────────────────────────
+    # ── Connection pool ────────────────────────────────────────
     def _get_conn(self):
+        """Return a connection from a small pool (min=1, max=3)."""
         import psycopg2
+        from psycopg2 import pool as pg_pool
         from psycopg2.extras import RealDictCursor
+
+        if self._pool is None:
+            self._pool = pg_pool.SimpleConnectionPool(
+                1, 3, self.db_url,
+                cursor_factory=RealDictCursor,
+                options="-c statement_timeout=5000",
+            )
+
+        conn = self._pool.getconn()
+        conn.autocommit = True
+        # Ping — return broken connections to pool and open a fresh one
         try:
-            if self.conn is None or self.conn.closed:
-                raise Exception("reconnect")
-            # Ping to detect stale connection
-            self.conn.cursor().execute("SELECT 1")
+            conn.cursor().execute("SELECT 1")
         except Exception:
-            self.conn = psycopg2.connect(self.db_url, cursor_factory=RealDictCursor)
-            self.conn.autocommit = True
-        return self.conn
+            try:
+                self._pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            conn = self._pool.getconn()
+            conn.autocommit = True
+        return conn
+
+    def _put_conn(self, conn):
+        """Return a connection back to the pool."""
+        if self._pool and conn:
+            try:
+                self._pool.putconn(conn)
+            except Exception:
+                pass
 
     # ── Announcements ──────────────────────────────────────────
     def get_announcements(self) -> List[Dict]:
@@ -54,6 +77,7 @@ class DBClient:
                 print(f"[DB] get_announcements (cloud) failed: {e}")
                 return []
         else:
+            conn = None
             try:
                 conn = self._get_conn()
                 with conn.cursor() as cur:
@@ -62,40 +86,31 @@ class DBClient:
             except Exception as e:
                 print(f"[DB] get_announcements (local) failed: {e}")
                 return []
+            finally:
+                self._put_conn(conn)
 
     def _map_ann_row(self, row: dict) -> dict:
         """Normalise DB column names → app field names."""
         r = dict(row)
-        # DB column is 'file_path', app uses 'filename'
         if "file_path" in r:
             r["filename"] = r.pop("file_path")
-        # DB column is 'schedule_at', app uses 'scheduled_at'
         if "schedule_at" in r:
             r["scheduled_at"] = r.pop("schedule_at")
-        # Serialise datetimes
         for key in ("created_at", "scheduled_at"):
             if isinstance(r.get(key), datetime):
                 r[key] = r[key].isoformat()
-        # Targets stored as JSON string or already a list
         if isinstance(r.get("targets"), str):
             try:
                 r["targets"] = json.loads(r["targets"])
             except Exception:
                 r["targets"] = ["ALL"]
-        # Ensure status present
         if not r.get("status"):
             r["status"] = "Scheduled" if r.get("scheduled_at") else "Ready"
-        # Normalise type casing (DB stores lowercase)
         if r.get("type"):
             r["type"] = r["type"].upper()
         return r
 
     def create_announcement(self, ann: Dict):
-        """
-        Persist a new announcement.
-        ann['id'] must be a proper UUID string (with dashes),
-        e.g. str(uuid.uuid4()) — NOT uuid.uuid4().hex.
-        """
         data = {
             "id":          ann["id"],
             "name":        ann["name"],
@@ -112,15 +127,18 @@ class DBClient:
             except Exception as e:
                 print(f"[DB] create_announcement (cloud) failed: {e}")
         else:
+            conn = None
             try:
                 conn = self._get_conn()
                 with conn.cursor() as cur:
-                    cols   = list(data.keys())
-                    vals   = [data[c] for c in cols]
-                    sql    = f"INSERT INTO announcements ({', '.join(cols)}) VALUES ({', '.join(['%s']*len(vals))})"
+                    cols = list(data.keys())
+                    vals = [data[c] for c in cols]
+                    sql  = f"INSERT INTO announcements ({', '.join(cols)}) VALUES ({', '.join(['%s']*len(vals))})"
                     cur.execute(sql, vals)
             except Exception as e:
                 print(f"[DB] create_announcement (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
 
     def delete_announcement(self, ann_id: str):
         if self.mode == "cloud":
@@ -129,12 +147,15 @@ class DBClient:
             except Exception as e:
                 print(f"[DB] delete_announcement (cloud) failed: {e}")
         else:
+            conn = None
             try:
                 conn = self._get_conn()
                 with conn.cursor() as cur:
                     cur.execute("DELETE FROM announcements WHERE id = %s", (ann_id,))
             except Exception as e:
                 print(f"[DB] delete_announcement (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
 
     def update_announcement_status(self, ann_id: str, status: str):
         if self.mode == "cloud":
@@ -143,6 +164,7 @@ class DBClient:
             except Exception as e:
                 print(f"[DB] update_announcement_status (cloud) failed: {e}")
         else:
+            conn = None
             try:
                 conn = self._get_conn()
                 with conn.cursor() as cur:
@@ -152,5 +174,196 @@ class DBClient:
                     )
             except Exception as e:
                 print(f"[DB] update_announcement_status (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Playlists ──────────────────────────────────────────────
+    def get_playlists(self) -> List[Dict]:
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("playlists").select("*").order("created_at", desc=True).execute()
+                return [self._map_playlist_row(r) for r in res.data]
+            except Exception as e:
+                print(f"[DB] get_playlists (cloud) failed: {e}")
+                return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM playlists ORDER BY created_at DESC")
+                    return [self._map_playlist_row(dict(row)) for row in cur.fetchall()]
+            except Exception as e:
+                print(f"[DB] get_playlists (local) failed: {e}")
+                return []
+            finally:
+                self._put_conn(conn)
+
+    def _map_playlist_row(self, row: dict) -> dict:
+        r = dict(row)
+        if isinstance(r.get("tracks"), str):
+            try:
+                r["tracks"] = json.loads(r["tracks"])
+            except Exception:
+                r["tracks"] = []
+        for key in ("created_at", "updated_at"):
+            if isinstance(r.get(key), datetime):
+                r[key] = r[key].isoformat()
+        return r
+
+    def save_playlist(self, playlist: Dict):
+        """Upsert a playlist (insert or update)."""
+        data = {
+            "id":     playlist["id"],
+            "name":   playlist["name"],
+            "tracks": json.dumps(playlist.get("tracks", [])),
+        }
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("playlists").upsert(data).execute()
+            except Exception as e:
+                print(f"[DB] save_playlist (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO playlists (id, name, tracks)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                            SET name = EXCLUDED.name,
+                                tracks = EXCLUDED.tracks,
+                                updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (data["id"], data["name"], data["tracks"]),
+                    )
+            except Exception as e:
+                print(f"[DB] save_playlist (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def delete_playlist(self, playlist_id: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("playlists").delete().eq("id", playlist_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_playlist (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM playlists WHERE id = %s", (playlist_id,))
+            except Exception as e:
+                print(f"[DB] delete_playlist (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Settings ───────────────────────────────────────────────
+    def get_settings(self) -> Dict:
+        """Return all settings as a flat dict."""
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("settings").select("*").execute()
+                return {row["key"]: row["value"] for row in res.data}
+            except Exception as e:
+                print(f"[DB] get_settings (cloud) failed: {e}")
+                return {}
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT key, value FROM settings")
+                    rows = cur.fetchall()
+                    result = {}
+                    for row in rows:
+                        v = row["value"]
+                        # psycopg2 returns JSONB as Python objects already
+                        if isinstance(v, str):
+                            try:
+                                v = json.loads(v)
+                            except Exception:
+                                pass
+                        result[row["key"]] = v
+                    return result
+            except Exception as e:
+                print(f"[DB] get_settings (local) failed: {e}")
+                return {}
+            finally:
+                self._put_conn(conn)
+
+    def save_settings(self, settings: Dict):
+        """Upsert each key/value pair in settings dict."""
+        if self.mode == "cloud":
+            try:
+                rows = [{"key": k, "value": v} for k, v in settings.items()]
+                self.supabase.table("settings").upsert(rows).execute()
+            except Exception as e:
+                print(f"[DB] save_settings (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    for k, v in settings.items():
+                        cur.execute(
+                            """
+                            INSERT INTO settings (key, value)
+                            VALUES (%s, %s::jsonb)
+                            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                            """,
+                            (k, json.dumps(v)),
+                        )
+            except Exception as e:
+                print(f"[DB] save_settings (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Deck names ─────────────────────────────────────────────
+    def get_deck_names(self) -> Dict[str, str]:
+        """Return {deck_id: name} from the decks table."""
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("decks").select("id,name").execute()
+                return {row["id"]: row["name"] for row in res.data}
+            except Exception as e:
+                print(f"[DB] get_deck_names (cloud) failed: {e}")
+                return {}
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id, name FROM decks")
+                    return {row["id"]: row["name"] for row in cur.fetchall()}
+            except Exception as e:
+                print(f"[DB] get_deck_names (local) failed: {e}")
+                return {}
+            finally:
+                self._put_conn(conn)
+
+    def save_deck_name(self, deck_id: str, name: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("decks").update({"name": name}).eq("id", deck_id).execute()
+            except Exception as e:
+                print(f"[DB] save_deck_name (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO decks (id, name) VALUES (%s, %s) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+                        (deck_id, name),
+                    )
+            except Exception as e:
+                print(f"[DB] save_deck_name (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
 
 db = DBClient()

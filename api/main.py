@@ -6,7 +6,7 @@ import time
 import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import List, Dict, Optional
@@ -22,6 +22,7 @@ from schemas import (
 )
 from tts import generate_tts
 from db_client import db
+from auth import verify_token
 
 MEDIA_DIR         = Path("data/library")
 ANNOUNCEMENTS_DIR = Path("data/announcements")
@@ -82,15 +83,47 @@ async def scheduler_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ANNOUNCEMENTS
+    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS
     print("CocoStation API Starting...")
+
+    loop = asyncio.get_event_loop()
+
+    # Load announcements
     try:
-        ANNOUNCEMENTS = await asyncio.get_event_loop().run_in_executor(None, db.get_announcements)
+        ANNOUNCEMENTS = await loop.run_in_executor(None, db.get_announcements)
         for a in ANNOUNCEMENTS:
             if not a.get("status"):
                 a["status"] = "Scheduled" if a.get("scheduled_at") else "Ready"
     except Exception as e:
-        print(f"Failed to load announcements from DB: {e}")
+        print(f"[startup] Failed to load announcements: {e}")
+
+    # Load playlists
+    try:
+        rows = await loop.run_in_executor(None, db.get_playlists)
+        PLAYLISTS = {p["id"]: p for p in rows}
+        print(f"[startup] Loaded {len(PLAYLISTS)} playlist(s) from DB.")
+    except Exception as e:
+        print(f"[startup] Failed to load playlists: {e}")
+
+    # Load settings
+    try:
+        saved = await loop.run_in_executor(None, db.get_settings)
+        if saved:
+            SETTINGS.update(saved)
+            print(f"[startup] Loaded settings from DB: {list(saved.keys())}")
+    except Exception as e:
+        print(f"[startup] Failed to load settings: {e}")
+
+    # Load deck names
+    try:
+        names = await loop.run_in_executor(None, db.get_deck_names)
+        for deck_id, name in names.items():
+            if deck_id in DECKS:
+                DECKS[deck_id]["name"] = name
+        print(f"[startup] Loaded deck names from DB.")
+    except Exception as e:
+        print(f"[startup] Failed to load deck names: {e}")
+
     task = asyncio.create_task(scheduler_task())
     yield
     task.cancel()
@@ -168,7 +201,6 @@ async def mic_audio_ws(websocket: WebSocket):
 
 # ── Chime helpers ───────────────────────────────────────────
 async def get_audio_duration(filepath: Path) -> float:
-    """Return audio duration in seconds using ffprobe."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(filepath),
@@ -178,10 +210,9 @@ async def get_audio_duration(filepath: Path) -> float:
         data = json.loads(stdout)
         return float(data["format"]["duration"])
     except Exception:
-        return 2.5  # safe fallback
+        return 2.5
 
 async def maybe_play_chime(deck_ids: list):
-    """Play on-air chime on deck_ids (if enabled + file exists) then wait for it to finish."""
     if not SETTINGS.get("on_air_chime_enabled", False):
         return
     chime_path = CHIMES_DIR / CHIME_FILENAME
@@ -211,10 +242,10 @@ def list_library():
     return sorted(items, key=lambda x: x.filename)
 
 @app.post("/api/library/upload")
-async def upload_track(file: UploadFile = File(...)):
+async def upload_track(file: UploadFile = File(...), _user=Depends(verify_token)):
     if not any(file.filename.lower().endswith(e) for e in ALLOWED_AUDIO):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
-    safe_name = Path(file.filename).name  # strip any path traversal
+    safe_name = Path(file.filename).name
     if not safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
     dest = MEDIA_DIR / safe_name
@@ -225,7 +256,7 @@ async def upload_track(file: UploadFile = File(...)):
     return {"status": "ok", "filename": safe_name, "size": dest.stat().st_size}
 
 @app.delete("/api/library/{filename}")
-async def delete_track(filename: str):
+async def delete_track(filename: str, _user=Depends(verify_token)):
     path = MEDIA_DIR / filename
     if not path.exists(): raise HTTPException(status_code=404, detail="File not found")
     path.unlink()
@@ -247,14 +278,18 @@ async def serve_file(filename: str):
 def get_decks(): return list(DECKS.values())
 
 @app.put("/api/decks/{deck_id}/name")
-async def rename_deck(deck_id: str, req: DeckRenameRequest):
+async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["name"] = req.name
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_deck_name, deck_id, req.name)
+    except Exception as e:
+        print(f"[DB] Failed to persist deck name: {e}")
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "name": req.name}
 
 @app.post("/api/decks/{deck_id}/load")
-async def load_track(deck_id: str, req: PlayRequest):
+async def load_track(deck_id: str, req: PlayRequest, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not (MEDIA_DIR / req.track_id).exists(): raise HTTPException(status_code=404, detail="Track not found")
     DECKS[deck_id]["track"] = req.track_id
@@ -263,7 +298,7 @@ async def load_track(deck_id: str, req: PlayRequest):
     return {"status": "ok", "deck": deck_id, "track": req.track_id}
 
 @app.post("/api/decks/{deck_id}/unload")
-async def unload_track(deck_id: str):
+async def unload_track(deck_id: str, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if DECKS[deck_id]["is_playing"] or DECKS[deck_id]["is_paused"]:
         try:
@@ -276,7 +311,7 @@ async def unload_track(deck_id: str):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/play")
-async def play_deck(deck_id: str):
+async def play_deck(deck_id: str, _user=Depends(verify_token)):
     global TRACKS_PLAYED
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["track"]: raise HTTPException(status_code=400, detail="No track loaded")
@@ -292,16 +327,14 @@ async def play_deck(deck_id: str):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/pause")
-async def pause_deck(deck_id: str):
+async def pause_deck(deck_id: str, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["is_playing"] and DECKS[deck_id]["is_paused"]:
-        # Currently paused → resume
         DECKS[deck_id]["is_playing"] = True; DECKS[deck_id]["is_paused"] = False
         try:
             async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/resume")
         except Exception: pass
     else:
-        # Currently playing → pause
         DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = True
         try:
             async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/pause")
@@ -310,7 +343,7 @@ async def pause_deck(deck_id: str):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/stop")
-async def stop_deck(deck_id: str):
+async def stop_deck(deck_id: str, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
     try:
@@ -320,10 +353,9 @@ async def stop_deck(deck_id: str):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/loop")
-async def set_loop(deck_id: str, req: LoopRequest):
+async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["is_loop"] = req.loop
-    # If currently playing, restart with the new loop setting applied
     if DECKS[deck_id]["is_playing"] and DECKS[deck_id]["track"]:
         filepath = str(Path("/library") / DECKS[deck_id]["track"])
         try:
@@ -334,7 +366,7 @@ async def set_loop(deck_id: str, req: LoopRequest):
     return {"status": "ok", "deck": deck_id, "loop": req.loop}
 
 @app.post("/api/decks/{deck_id}/volume")
-async def set_deck_volume(deck_id: str, req: VolumeRequest):
+async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     vol = max(0, min(100, req.volume)); DECKS[deck_id]["volume"] = vol
     try:
@@ -345,9 +377,8 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest):
 
 # ── Mic ─────────────────────────────────────────────────────
 @app.post("/api/mic/on")
-async def mic_on(req: MicControlRequest):
+async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
     deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
-    # Play chime first, wait for it to finish, then go live
     await maybe_play_chime(deck_ids)
     MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
     try:
@@ -357,7 +388,7 @@ async def mic_on(req: MicControlRequest):
     return {"status": "ok"}
 
 @app.post("/api/mic/off")
-async def mic_off():
+async def mic_off(_user=Depends(verify_token)):
     MIC_STATE["active"] = False; MIC_STATE["targets"] = []
     try:
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/off")
@@ -373,14 +404,13 @@ def mic_status(): return MIC_STATE
 def list_announcements(): return ANNOUNCEMENTS
 
 @app.post("/api/announcements/tts")
-async def create_tts_announcement(req: TTSRequest):
+async def create_tts_announcement(req: TTSRequest, _user=Depends(verify_token)):
     try:
-        # generate_tts is now a proper async function — no asyncio.run() needed
         filepath = await generate_tts(req.text, lang=getattr(req, 'lang', 'en'))
         filename = Path(filepath).name
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
-    ann_id = str(uuid.uuid4())   # proper UUID with dashes — PostgreSQL UUID column compatible
+    ann_id = str(uuid.uuid4())
     ann = {
         "id": ann_id, "name": req.name, "type": "TTS", "filename": filename,
         "targets": req.targets,
@@ -398,16 +428,17 @@ async def create_tts_announcement(req: TTSRequest):
 
 @app.post("/api/announcements/upload")
 async def upload_announcement(file: UploadFile = File(...), name: str = "Announcement",
-                               targets: str = "ALL", scheduled_at: Optional[str] = None):
+                               targets: str = "ALL", scheduled_at: Optional[str] = None,
+                               _user=Depends(verify_token)):
     if not any(file.filename.lower().endswith(e) for e in {".mp3",".wav",".ogg"}):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
-    safe_name = Path(file.filename).name  # strip any path traversal
+    safe_name = Path(file.filename).name
     if not safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
     dest = ANNOUNCEMENTS_DIR / safe_name
     content = await file.read()
     await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
-    ann_id = str(uuid.uuid4())   # proper UUID with dashes
+    ann_id = str(uuid.uuid4())
     ann = {
         "id": ann_id, "name": name or safe_name, "type": "MP3", "filename": safe_name,
         "targets": targets.split(",") if isinstance(targets, str) else targets,
@@ -424,13 +455,12 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
     return {"status": "ok", "announcement": ann}
 
 @app.post("/api/announcements/{ann_id}/play")
-async def play_announcement(ann_id: str):
+async def play_announcement(ann_id: str, _user=Depends(verify_token)):
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
     deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-    # Play chime first, then the announcement
     await maybe_play_chime(deck_ids)
     try:
         async with httpx.AsyncClient(timeout=5) as c:
@@ -447,7 +477,7 @@ async def play_announcement(ann_id: str):
     return {"status": "ok"}
 
 @app.delete("/api/announcements/{ann_id}")
-async def delete_announcement(ann_id: str):
+async def delete_announcement(ann_id: str, _user=Depends(verify_token)):
     global ANNOUNCEMENTS
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
@@ -466,43 +496,53 @@ def list_playlists():
     return list(PLAYLISTS.values())
 
 @app.post("/api/playlists")
-async def create_playlist(req: PlaylistCreateRequest):
+async def create_playlist(req: PlaylistCreateRequest, _user=Depends(verify_token)):
     pid = str(uuid.uuid4())
     playlist = {"id": pid, "name": req.name, "tracks": req.tracks}
     PLAYLISTS[pid] = playlist
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_playlist, playlist)
+    except Exception as e:
+        print(f"[DB] Failed to persist playlist: {e}")
     await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
     return playlist
 
 @app.put("/api/playlists/{playlist_id}")
-async def update_playlist(playlist_id: str, req: PlaylistCreateRequest):
+async def update_playlist(playlist_id: str, req: PlaylistCreateRequest, _user=Depends(verify_token)):
     if playlist_id not in PLAYLISTS:
         raise HTTPException(status_code=404, detail="Playlist not found")
     PLAYLISTS[playlist_id].update({"name": req.name, "tracks": req.tracks})
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_playlist, PLAYLISTS[playlist_id])
+    except Exception as e:
+        print(f"[DB] Failed to persist playlist update: {e}")
     await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
     return PLAYLISTS[playlist_id]
 
 @app.delete("/api/playlists/{playlist_id}")
-async def delete_playlist(playlist_id: str):
+async def delete_playlist(playlist_id: str, _user=Depends(verify_token)):
     if playlist_id not in PLAYLISTS:
         raise HTTPException(status_code=404, detail="Playlist not found")
     del PLAYLISTS[playlist_id]
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.delete_playlist, playlist_id)
+    except Exception as e:
+        print(f"[DB] Failed to delete playlist from DB: {e}")
     await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
     return {"status": "ok"}
 
 @app.post("/api/decks/{deck_id}/playlist")
-async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest):
+async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     playlist = PLAYLISTS.get(req.playlist_id)
     if not playlist: raise HTTPException(status_code=404, detail="Playlist not found")
     tracks = [t for t in playlist["tracks"] if (MEDIA_DIR / t).exists()]
     if not tracks: raise HTTPException(status_code=400, detail="No valid tracks in playlist")
-    # Stop current playback
     if DECKS[deck_id]["is_playing"] or DECKS[deck_id]["is_paused"]:
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
         except Exception: pass
-    # Activate playlist on deck
     DECK_PLAYLISTS[deck_id] = {"playlist_id": req.playlist_id, "tracks": tracks, "index": 0, "loop": req.loop}
     DECKS[deck_id].update({"track": tracks[0], "is_playing": True, "is_paused": False,
                             "is_loop": False, "playlist_id": req.playlist_id,
@@ -522,7 +562,6 @@ async def track_ended(deck_id: str):
         return {"status": "ignored"}
     playlist_state = DECK_PLAYLISTS.get(deck_id)
     if not playlist_state:
-        # No active playlist — just mark deck as stopped
         DECKS[deck_id]["is_playing"] = False
         DECKS[deck_id]["is_paused"]  = False
         await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
@@ -551,7 +590,7 @@ async def track_ended(deck_id: str):
 
 # ── Chime ────────────────────────────────────────────────────
 @app.post("/api/settings/chime/upload")
-async def upload_chime(file: UploadFile = File(...)):
+async def upload_chime(file: UploadFile = File(...), _user=Depends(verify_token)):
     if not any(file.filename.lower().endswith(e) for e in {".mp3", ".wav", ".ogg"}):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
     dest = CHIMES_DIR / CHIME_FILENAME
@@ -565,7 +604,7 @@ def chime_status():
     return {"exists": chime_path.exists(), "enabled": SETTINGS.get("on_air_chime_enabled", False)}
 
 @app.delete("/api/settings/chime")
-async def delete_chime():
+async def delete_chime(_user=Depends(verify_token)):
     chime_path = CHIMES_DIR / CHIME_FILENAME
     if chime_path.exists(): chime_path.unlink()
     return {"status": "ok"}
@@ -575,13 +614,17 @@ async def delete_chime():
 def get_settings(): return SETTINGS
 
 @app.post("/api/settings")
-async def update_settings(req: SettingUpdateRequest):
+async def update_settings(req: SettingUpdateRequest, _user=Depends(verify_token)):
     SETTINGS.update(req.value)
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_settings, req.value)
+    except Exception as e:
+        print(f"[DB] Failed to persist settings: {e}")
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
     return {"status": "ok", "settings": SETTINGS}
 
 @app.post("/api/settings/db-test")
-async def test_db_connection(req: SettingUpdateRequest):
+async def test_db_connection(req: SettingUpdateRequest, _user=Depends(verify_token)):
     mode = req.value.get("db_mode", SETTINGS.get("db_mode", "local"))
     supabase_url = req.value.get("supabase_url") or os.getenv("SUPABASE_URL", "")
     supabase_key = req.value.get("supabase_key") or os.getenv("SUPABASE_SERVICE_KEY", "")

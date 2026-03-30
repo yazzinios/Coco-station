@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Save, Upload, Trash2, Volume2, Bell } from 'lucide-react';
+import { Save, Upload, Trash2, Bell } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 export default function SettingsPage() {
@@ -10,15 +10,14 @@ export default function SettingsPage() {
   const [dbMode, setDbMode] = useState('local');
   const [supabaseUrl, setSupabaseUrl] = useState('');
   const [supabaseKey, setSupabaseKey] = useState('');
-  const [micDevices, setMicDevices] = useState([]);
   const [saving, setSaving] = useState(false);
   const [dbSaving, setDbSaving] = useState(false);
   const [dbTesting, setDbTesting] = useState(false);
   const [dbStatus, setDbStatus] = useState(null);
 
   // Chime state
-  const [chimeEnabled,  setChimeEnabled]  = useState(settings?.on_air_chime_enabled ?? false);
-  const [chimeExists,   setChimeExists]   = useState(false);
+  const [chimeEnabled,   setChimeEnabled]   = useState(settings?.on_air_chime_enabled ?? false);
+  const [chimeExists,    setChimeExists]    = useState(false);
   const [chimeUploading, setChimeUploading] = useState(false);
   const chimeInputRef = useRef(null);
 
@@ -33,16 +32,14 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setChimeEnabled(settings?.on_air_chime_enabled ?? false);
-  }, [settings?.on_air_chime_enabled]);
+    if (settings?.ducking_percent   != null) setDucking(settings.ducking_percent);
+    if (settings?.mic_ducking_percent != null) setMicDucking(settings.mic_ducking_percent);
+    if (settings?.db_mode)                    setDbMode(settings.db_mode);
+  }, [settings]);
 
   // Load chime status on mount
   useEffect(() => {
     api.getChimeStatus().then(s => setChimeExists(s.exists)).catch(() => {});
-    if (navigator.mediaDevices?.enumerateDevices) {
-      navigator.mediaDevices.enumerateDevices()
-        .then(devices => setMicDevices(devices.filter(d => d.kind === 'audioinput')))
-        .catch(() => {});
-    }
   }, []); // eslint-disable-line
 
   const handleChimeUpload = async (file) => {
@@ -243,24 +240,6 @@ export default function SettingsPage() {
           <h3 style={{ marginBottom: '1.1rem', color: 'var(--accent-blue)', fontSize: '1rem' }}>Audio Preferences</h3>
 
           <div style={{ marginBottom: '1.5rem' }}>
-            <label style={lbl}>Microphone Device</label>
-            <select style={{ ...inp, maxWidth: '380px' }}>
-              {micDevices.length > 0
-                ? micDevices.map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)
-                : <option>Default (grant mic permission to see options)</option>}
-            </select>
-            {micDevices.length === 0 && (
-              <button onClick={() => navigator.mediaDevices?.getUserMedia({ audio: true })
-                .then(s => { s.getTracks().forEach(t => t.stop()); return navigator.mediaDevices.enumerateDevices(); })
-                .then(devs => setMicDevices(devs.filter(d => d.kind === 'audioinput')))
-                .catch(() => toast.error('Microphone permission denied'))}
-                style={{ marginTop: '0.5rem', padding: '0.35rem 0.8rem', fontSize: '0.8rem', background: 'rgba(0,212,255,0.1)', border: '1px solid rgba(0,212,255,0.3)', color: 'var(--accent-blue)', borderRadius: '6px', cursor: 'pointer' }}>
-                Grant permission & detect
-              </button>
-            )}
-          </div>
-
-          <div style={{ marginBottom: '1.5rem' }}>
             <label style={{ ...lbl, display: 'flex', justifyContent: 'space-between' }}>
               <span>📢 Announcement Ducking</span><span style={{ color: 'var(--accent-blue)' }}>{ducking}%</span>
             </label>
@@ -288,7 +267,6 @@ export default function SettingsPage() {
             Play a short sound before every mic activation and announcement. Upload your own MP3 (the classic "ding ding ding" or any jingle).
           </p>
 
-          {/* Enable toggle */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.25rem' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
               <div
@@ -318,7 +296,6 @@ export default function SettingsPage() {
             )}
           </div>
 
-          {/* Upload area */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
             <button
               onClick={() => chimeInputRef.current?.click()}
@@ -339,7 +316,6 @@ export default function SettingsPage() {
               style={{ display: 'none' }}
               onChange={e => handleChimeUpload(e.target.files[0] || null)}
             />
-
             {chimeExists && (
               <>
                 <span style={{ fontSize: '0.82rem', color: '#2ed573', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>

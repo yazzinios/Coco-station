@@ -48,6 +48,17 @@ CREATE TABLE IF NOT EXISTS announcements (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Add 'status' column to announcements if it was created without it
+ALTER TABLE announcements ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'Ready';
+
+CREATE TABLE IF NOT EXISTS playlists (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    tracks JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key VARCHAR(255) PRIMARY KEY,
     value JSONB NOT NULL
@@ -68,10 +79,8 @@ INSERT INTO decks (id, name, volume, is_playing) VALUES
     ('c', 'Karting', 100, false),
     ('d', 'Deck D',  100, false)
 ON CONFLICT (id) DO NOTHING;
-
--- Add 'status' column to announcements if it was created without it
-ALTER TABLE announcements ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'Ready';
 """
+
 
 def run_migrations_local(db_url: str):
     print(f"[migrate] Connecting to Local DB: {db_url}")
@@ -109,20 +118,72 @@ def run_migrations_local(db_url: str):
 
 
 def run_migrations_cloud(supabase_url: str, supabase_key: str):
+    """
+    Run migrations via the Supabase Management API.
+    Requires the service_role key and the project ref from the URL.
+    Falls back to a best-effort REST approach if Management API is unavailable.
+    """
     import httpx
+    import re
 
     print(f"[migrate] Running cloud migrations against {supabase_url}...")
 
+    # Extract project ref from URL: https://<ref>.supabase.co
+    match = re.search(r"https://([^.]+)\.supabase\.co", supabase_url)
+    project_ref = match.group(1) if match else None
+
+    mgmt_headers = {
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": "application/json",
+    }
+
+    def run_sql(sql: str) -> bool:
+        """Try Management API first, then fall back to RPC exec_sql."""
+        if project_ref:
+            try:
+                r = httpx.post(
+                    f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
+                    headers=mgmt_headers,
+                    json={"query": sql},
+                    timeout=30,
+                )
+                if r.status_code < 300:
+                    return True
+                print(f"[migrate] Management API returned {r.status_code}: {r.text[:200]}")
+            except Exception as e:
+                print(f"[migrate] Management API error: {e}")
+
+        # Fallback: custom RPC function exec_sql (user must create this manually)
+        try:
+            r = httpx.post(
+                f"{supabase_url}/rest/v1/rpc/exec_sql",
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"sql": sql},
+                timeout=15,
+            )
+            if r.status_code < 300:
+                return True
+            print(f"[migrate] exec_sql RPC returned {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"[migrate] exec_sql RPC error: {e}")
+
+        print("[migrate] WARNING: Could not run SQL via Management API or exec_sql RPC.")
+        print("[migrate] Run migrations manually in the Supabase dashboard SQL editor.")
+        return False
+
+    run_sql(BASE_SCHEMA_SQL)
+
+    # Check applied migrations via REST (table must exist first)
     headers = {
         "apikey": supabase_key,
         "Authorization": f"Bearer {supabase_key}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
-
-    # Ensure base schema (includes status column + ALTER TABLE guard)
-    _run_sql_supabase(supabase_url, supabase_key, BASE_SCHEMA_SQL)
-
     try:
         r = httpx.get(
             f"{supabase_url}/rest/v1/_migrations?select=name",
@@ -141,41 +202,13 @@ def run_migrations_cloud(supabase_url: str, supabase_key: str):
             print(f"[migrate] Applying cloud migration: {filename}...")
             with open(filepath, "r") as f:
                 sql = f.read()
-            _run_sql_supabase(supabase_url, supabase_key, sql)
-            _run_sql_supabase(supabase_url, supabase_key,
-                f"INSERT INTO _migrations (name) VALUES ('{filename}') ON CONFLICT DO NOTHING;")
-            print(f"[migrate] Cloud migration {filename} applied.")
-            ran += 1
+            if run_sql(sql):
+                run_sql(f"INSERT INTO _migrations (name) VALUES ('{filename}') ON CONFLICT DO NOTHING;")
+                print(f"[migrate] Cloud migration {filename} applied.")
+                ran += 1
 
     print(f"[migrate] Done. {ran} new migration(s) applied.")
     return ran
-
-
-def _run_sql_supabase(supabase_url: str, supabase_key: str, sql: str):
-    import httpx
-
-    response = httpx.post(
-        f"{supabase_url}/rest/v1/rpc/exec_sql",
-        headers={
-            "apikey": supabase_key,
-            "Authorization": f"Bearer {supabase_key}",
-            "Content-Type": "application/json",
-        },
-        json={"sql": sql},
-        timeout=15,
-    )
-    if response.status_code == 404:
-        response = httpx.post(
-            f"{supabase_url}/pg/query",
-            headers={
-                "apikey": supabase_key,
-                "Authorization": f"Bearer {supabase_key}",
-                "Content-Type": "application/json",
-            },
-            json={"query": sql},
-            timeout=15,
-        )
-    return response
 
 
 def run_migrations():

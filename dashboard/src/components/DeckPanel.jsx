@@ -22,30 +22,23 @@ function copyToClipboard(text) {
 }
 
 // ── Browser-native monitor via WHEP (WebRTC) or HLS fallback ──────────────────
-// Uses the browser's own audio engine — no external app, no VLC needed.
 function DeckMonitor({ id, color }) {
   const audioRef   = useRef(null);
   const hlsRef     = useRef(null);
-  const pcRef      = useRef(null);   // RTCPeerConnection for WHEP
+  const pcRef      = useRef(null);
   const [listening, setListening] = useState(false);
   const [monVol,    setMonVol]    = useState(80);
-  const [protocol,  setProtocol]  = useState('—'); // shows which protocol is active
+  const [protocol,  setProtocol]  = useState('—');
 
-  // HLS URL via nginx reverse proxy — no direct port exposure needed
   const hlsUrl  = `${window.location.origin}/deck-${id}/index.m3u8`;
-  // WHEP URL via nginx reverse proxy
   const whepUrl = `${window.location.origin}/deck-${id}/whep`;
 
-  // ── Try WebRTC/WHEP first (lowest latency, browser-native) ─────────────────
   const startWhep = useCallback(async () => {
     const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
     pcRef.current = pc;
-
     pc.addTransceiver('audio', { direction: 'recvonly' });
-
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
     try {
       const res = await fetch(whepUrl, {
         method: 'POST',
@@ -55,7 +48,6 @@ function DeckMonitor({ id, color }) {
       if (!res.ok) throw new Error(`WHEP ${res.status}`);
       const answerSdp = await res.text();
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
       pc.ontrack = (evt) => {
         const audio = audioRef.current;
         if (!audio) return;
@@ -73,21 +65,17 @@ function DeckMonitor({ id, color }) {
     }
   }, [id, whepUrl, monVol]);
 
-  // ── HLS fallback using hls.js or native (Safari) ───────────────────────────
   const startHls = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.srcObject = null; // clear any WebRTC stream
-
+    audio.srcObject = null;
     if (audio.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari native HLS
       audio.src = hlsUrl;
       audio.volume = monVol / 100;
       await audio.play().catch(() => {});
       setProtocol('HLS (native)');
       return;
     }
-
     if (window.Hls?.isSupported()) {
       const hls = new window.Hls({ lowLatencyMode: true, backBufferLength: 4 });
       hlsRef.current = hls;
@@ -100,8 +88,6 @@ function DeckMonitor({ id, color }) {
       setProtocol('HLS');
       return;
     }
-
-    // Last resort
     audio.src = hlsUrl;
     audio.volume = monVol / 100;
     audio.play().catch(() => {});
@@ -115,31 +101,18 @@ function DeckMonitor({ id, color }) {
   }, [startWhep, startHls]);
 
   const stopListening = useCallback(() => {
-    // Stop WebRTC
     if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
-    // Stop HLS
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-    // Stop audio element
     const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.srcObject = null;
-      audio.src = '';
-    }
+    if (audio) { audio.pause(); audio.srcObject = null; audio.src = ''; }
     setListening(false);
     setProtocol('—');
   }, []);
 
-  const toggleMonitor = () => {
-    if (listening) stopListening();
-    else startListening();
-  };
+  const toggleMonitor = () => { if (listening) stopListening(); else startListening(); };
 
-  useEffect(() => {
-    if (audioRef.current) audioRef.current.volume = monVol / 100;
-  }, [monVol]);
-
-  useEffect(() => () => stopListening(), []); // cleanup on unmount // eslint-disable-line
+  useEffect(() => { if (audioRef.current) audioRef.current.volume = monVol / 100; }, [monVol]);
+  useEffect(() => () => stopListening(), []); // eslint-disable-line
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem' }}>
@@ -158,7 +131,6 @@ function DeckMonitor({ id, color }) {
       >
         <Headphones size={14} />
       </button>
-
       {listening ? (
         <>
           <input
@@ -178,8 +150,6 @@ function DeckMonitor({ id, color }) {
       ) : (
         <span style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.25)' }}>Monitor</span>
       )}
-
-      {/* Hidden audio element — driven by hls.js or WebRTC srcObject */}
       <audio ref={audioRef} style={{ display: 'none' }} playsInline />
     </div>
   );
@@ -192,17 +162,16 @@ export default function DeckPanel({ id }) {
   const activePlaylist = deck.playlist_id ? playlists.find(p => p.id === deck.playlist_id) : null;
   const color = DECK_COLORS[id] || DECK_COLORS.a;
 
+  // volumeLocal tracks the slider visually; the API call only fires on pointer release.
   const [volumeLocal, setVolumeLocal] = useState(deck.volume);
   const [copied,      setCopied]      = useState(false);
 
-  // Optimistic state — reflects the desired state immediately on click,
-  // before the server WebSocket update confirms it.
-  const [optimistic, setOptimistic] = useState(null);
+  // Sync local volume when server state updates (e.g. on initial FULL_STATE)
+  useEffect(() => { setVolumeLocal(deck.volume); }, [deck.volume]);
 
-  // Merge server state with optimistic override
+  const [optimistic, setOptimistic] = useState(null);
   const display = optimistic ? { ...deck, ...optimistic } : deck;
 
-  // Clear optimistic state once the server confirms the change
   useEffect(() => {
     if (
       optimistic &&
@@ -216,19 +185,15 @@ export default function DeckPanel({ id }) {
   // ── Play / Pause / Resume ────────────────────────────────────────────────────
   const handlePlay = async () => {
     if (!deck.track) { toast.error('Load a track first'); return; }
-
     if (deck.is_playing) {
-      // Currently playing → pause
       setOptimistic({ is_playing: false, is_paused: true });
       try { await api.pause(id); }
       catch (err) { setOptimistic(null); toast.error(err.message); }
     } else if (deck.is_paused) {
-      // Currently paused → resume from where it stopped (NOT a fresh play)
       setOptimistic({ is_playing: true, is_paused: false });
-      try { await api.pause(id); }   // backend pause endpoint toggles pause→resume
+      try { await api.pause(id); }
       catch (err) { setOptimistic(null); toast.error(err.message); }
     } else {
-      // Stopped → fresh play
       setOptimistic({ is_playing: true, is_paused: false });
       try { await api.play(id); }
       catch (err) { setOptimistic(null); toast.error(err.message); }
@@ -241,7 +206,6 @@ export default function DeckPanel({ id }) {
     catch (err) { setOptimistic(null); toast.error(err.message); }
   };
 
-  // ── Loop toggle ─────────────────────────────────────────────────────────────
   const handleLoop = async () => {
     const newLoop = !deck.is_loop;
     try {
@@ -252,8 +216,14 @@ export default function DeckPanel({ id }) {
     }
   };
 
-  const handleVolumeChange = useCallback(async (val) => {
-    const v = Number(val);
+  // Volume: update local state immediately (responsive slider),
+  // but only send the HTTP request when the user releases the pointer.
+  const handleVolumeChange = (e) => {
+    setVolumeLocal(Number(e.target.value));
+  };
+
+  const handleVolumeCommit = useCallback(async (e) => {
+    const v = Number(e.target.value);
     setVolumeLocal(v);
     try { await api.setVolume(id, v); } catch (_) {}
   }, [id, api]);
@@ -372,8 +342,6 @@ export default function DeckPanel({ id }) {
 
       {/* Controls: Play | Stop | Loop */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-
-        {/* Play / Pause button */}
         <button onClick={handlePlay} disabled={!deck.track} title={display.is_playing ? 'Pause' : display.is_paused ? 'Resume' : 'Play'} style={{
           width: '44px', height: '44px', borderRadius: '50%', border: 'none',
           background: deck.track ? (display.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
@@ -388,7 +356,6 @@ export default function DeckPanel({ id }) {
             : <Play  size={18} fill="currentColor" style={{ marginLeft: '2px' }} />}
         </button>
 
-        {/* Stop button */}
         <button onClick={handleStop} disabled={!isActive} title="Stop" style={{
           width: '44px', height: '44px', borderRadius: '50%', border: 'none',
           background: isActive ? 'rgba(255,71,87,0.15)' : 'rgba(255,255,255,0.05)',
@@ -400,7 +367,6 @@ export default function DeckPanel({ id }) {
           <Square size={16} fill="currentColor" />
         </button>
 
-        {/* Loop button */}
         <button
           onClick={handleLoop}
           disabled={!deck.track}
@@ -422,11 +388,14 @@ export default function DeckPanel({ id }) {
         </button>
       </div>
 
-      {/* Volume */}
+      {/* Volume — visual update on every drag, HTTP request only on release */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
         <Volume2 size={14} color="var(--text-secondary)" />
-        <input type="range" min="0" max="100" value={volumeLocal}
-          onChange={(e) => handleVolumeChange(e.target.value)}
+        <input
+          type="range" min="0" max="100" value={volumeLocal}
+          onChange={handleVolumeChange}
+          onPointerUp={handleVolumeCommit}
+          onMouseUp={handleVolumeCommit}
           style={{
             flex: 1, height: '3px', appearance: 'none',
             background: `linear-gradient(to right, ${color.accent} ${volumeLocal}%, rgba(255,255,255,0.15) ${volumeLocal}%)`,

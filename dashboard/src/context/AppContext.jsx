@@ -76,18 +76,11 @@ export function AppProvider({ children }) {
     return `${protocol}://${host}${path}`;
   }
 
-  const connectWS = useCallback(() => {
-    const wsUrl = buildWsUrl('/ws');
-    console.log('[WS] Connecting to', wsUrl);
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    ws.onopen    = () => { console.log('[WS] Connected'); setWsConnected(true); };
-    ws.onmessage = (evt) => { try { handleWsMessage(JSON.parse(evt.data)); } catch (_) {} };
-    ws.onclose   = () => { setWsConnected(false); console.log('[WS] Disconnected – retrying in 3s'); setTimeout(connectWS, 3000); };
-    ws.onerror   = () => ws.close();
-  }, []); // eslint-disable-line
+  // Use a ref for the message handler so connectWS never goes stale.
+  // The ref is always up to date — no closure capture issue.
+  const handleWsMessageRef = useRef(null);
 
-  function handleWsMessage(msg) {
+  const handleWsMessage = useCallback((msg) => {
     switch (msg.type) {
       case 'FULL_STATE':
         if (msg.decks) {
@@ -107,14 +100,29 @@ export function AppProvider({ children }) {
           setDecks(m);
         }
         break;
-      case 'MIC_STATUS':          setMic({ active: msg.active, targets: msg.targets || [] }); break;
+      case 'MIC_STATUS':            setMic({ active: msg.active, targets: msg.targets || [] }); break;
       case 'ANNOUNCEMENTS_UPDATED': if (msg.announcements) setAnnouncements(msg.announcements); break;
-      case 'SETTINGS_UPDATED':    if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings })); break;
-      case 'LIBRARY_UPDATED':     fetchLibrary(); break;
-      case 'PLAYLISTS_UPDATED':   if (msg.playlists) setPlaylists(msg.playlists); break;
+      case 'SETTINGS_UPDATED':      if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings })); break;
+      case 'LIBRARY_UPDATED':       fetchLibrary(); break;
+      case 'PLAYLISTS_UPDATED':     if (msg.playlists) setPlaylists(msg.playlists); break;
       default: break;
     }
-  }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep the ref in sync with the latest handler every render.
+  handleWsMessageRef.current = handleWsMessage;
+
+  const connectWS = useCallback(() => {
+    const wsUrl = buildWsUrl('/ws');
+    console.log('[WS] Connecting to', wsUrl);
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    ws.onopen    = () => { console.log('[WS] Connected'); setWsConnected(true); };
+    // Always call through the ref so we always use the latest handler.
+    ws.onmessage = (evt) => { try { handleWsMessageRef.current(JSON.parse(evt.data)); } catch (_) {} };
+    ws.onclose   = () => { setWsConnected(false); console.log('[WS] Disconnected – retrying in 3s'); setTimeout(connectWS, 3000); };
+    ws.onerror   = () => ws.close();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     connectWS();
@@ -122,7 +130,7 @@ export function AppProvider({ children }) {
     fetchAnnouncements();
     fetchPlaylists();
     return () => { wsRef.current?.close(); };
-  }, []); // eslint-disable-line
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function parseError(res) {
     try { const d = await res.json(); return d?.detail || d?.message || JSON.stringify(d); }
@@ -179,7 +187,6 @@ export function AppProvider({ children }) {
         body: JSON.stringify({ loop: loopEnabled }),
       });
       if (!r.ok) throw new Error(await parseError(r));
-      // Optimistically update local state so the button reflects instantly
       setDecks(prev => ({ ...prev, [deckId]: { ...prev[deckId], is_loop: loopEnabled } }));
     },
     setVolume: async (deckId, volume) => {
