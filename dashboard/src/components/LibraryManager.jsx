@@ -1,10 +1,73 @@
-import React, { useState, useRef } from 'react';
-import { Music, Upload, Trash2, ListMusic, Plus, ChevronUp, ChevronDown, Play } from 'lucide-react';
+import React, { useState, useRef, useCallback } from 'react';
+import { Music, Upload, Trash2, ListMusic, Plus, ChevronUp, ChevronDown, Play, CheckCircle, XCircle, Loader, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644' };
+const ALLOWED_EXTS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
 
-// ── Playlist Editor ────────────────────────────────────────────────────────────
+/* ─────────────────────── Upload Queue Item ─────────────────────── */
+// status: 'pending' | 'uploading' | 'done' | 'error'
+function UploadQueueItem({ item, onRemove }) {
+  const statusIcon = {
+    pending:   <div style={{ width: 16, height: 16, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)' }} />,
+    uploading: <Loader size={16} style={{ color: 'var(--accent-blue)', animation: 'spin 1s linear infinite' }} />,
+    done:      <CheckCircle size={16} style={{ color: '#2ed573' }} />,
+    error:     <XCircle size={16} style={{ color: '#ff4757' }} />,
+  }[item.status];
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: '0.6rem',
+      padding: '0.45rem 0.7rem', borderRadius: '8px',
+      background: item.status === 'done'
+        ? 'rgba(46,213,115,0.06)'
+        : item.status === 'error'
+        ? 'rgba(255,71,87,0.06)'
+        : item.status === 'uploading'
+        ? 'rgba(0,212,255,0.06)'
+        : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${
+        item.status === 'done' ? 'rgba(46,213,115,0.2)' :
+        item.status === 'error' ? 'rgba(255,71,87,0.2)' :
+        item.status === 'uploading' ? 'rgba(0,212,255,0.2)' :
+        'var(--panel-border)'
+      }`,
+      transition: 'all 0.2s',
+    }}>
+      <div style={{ flexShrink: 0 }}>{statusIcon}</div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: '0.8rem', fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginBottom: item.status === 'uploading' ? '0.3rem' : 0 }}>
+          {item.file.name}
+        </div>
+        {item.status === 'uploading' && (
+          <div style={{ height: '3px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
+            <div style={{ width: `${item.progress}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.1s ease', borderRadius: '2px' }} />
+          </div>
+        )}
+        {item.status === 'error' && (
+          <div style={{ fontSize: '0.7rem', color: '#ff6b7a', marginTop: '0.15rem' }}>{item.error}</div>
+        )}
+      </div>
+
+      <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', flexShrink: 0 }}>
+        {(item.file.size / 1048576).toFixed(1)} MB
+      </div>
+
+      {(item.status === 'pending' || item.status === 'error') && (
+        <button onClick={() => onRemove(item.id)} style={{
+          background: 'none', border: 'none', color: 'rgba(255,255,255,0.25)',
+          cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center',
+          flexShrink: 0,
+        }}>
+          <X size={13} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────── Playlist Editor ─────────────────────── */
 function PlaylistEditor({ playlist, library, onSave, onCancel }) {
   const [name, setName] = useState(playlist?.name ?? '');
   const [tracks, setTracks] = useState(playlist?.tracks ?? []);
@@ -29,7 +92,6 @@ function PlaylistEditor({ playlist, library, onSave, onCancel }) {
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Castle Ambient" style={inp} />
       </div>
 
-      {/* Track list (ordered) */}
       <div>
         <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.35rem' }}>
           Tracks in order — {tracks.length} selected
@@ -53,7 +115,6 @@ function PlaylistEditor({ playlist, library, onSave, onCancel }) {
         )}
       </div>
 
-      {/* Library picker */}
       <div>
         <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.35rem' }}>Add from Library</label>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: '130px', overflowY: 'auto' }}>
@@ -91,45 +152,97 @@ function PlaylistEditor({ playlist, library, onSave, onCancel }) {
   );
 }
 
-// ── Main LibraryManager ────────────────────────────────────────────────────────
+/* ─────────────────────── Main Component ─────────────────────── */
+let _queueIdCounter = 0;
+const newId = () => ++_queueIdCounter;
+
 export default function LibraryManager() {
   const { library, playlists, decks, toast, api } = useApp();
-  const [tab,            setTab]           = useState('library'); // 'library' | 'playlists'
-  const [uploading,      setUploading]     = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [dragging,       setDragging]      = useState(false);
-  const [editingPlaylist, setEditingPlaylist] = useState(null); // null | 'new' | {playlist object}
-  const [playlistLoop,   setPlaylistLoop]  = useState({});  // {playlistId: bool}
+  const [tab,             setTab]            = useState('library');
+  const [dragging,        setDragging]       = useState(false);
+  const [queue,           setQueue]          = useState([]);   // upload queue
+  const [uploadRunning,   setUploadRunning]  = useState(false);
+  const [editingPlaylist, setEditingPlaylist] = useState(null);
+  const [playlistLoop,    setPlaylistLoop]   = useState({});
   const fileInputRef = useRef(null);
 
-  // ── Library tab handlers ────────────────────────────────────────────────────
-  const handleFileSelect = async (files) => {
-    if (!files || files.length === 0) return;
-    const file = files[0];
-    const allowed = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
-    if (!allowed.some(ext => file.name.toLowerCase().endsWith(ext))) {
-      toast.error('Only audio files are supported (mp3, wav, ogg, flac, aac, m4a)');
-      return;
-    }
-    setUploading(true);
-    setUploadProgress(0);
-    const interval = setInterval(() => setUploadProgress(p => Math.min(p + 12, 90)), 100);
-    try {
-      await api.uploadTrack(file);
-      clearInterval(interval);
-      setUploadProgress(100);
-      toast.success(`"${file.name}" uploaded`);
-      setTimeout(() => { setUploading(false); setUploadProgress(0); }, 600);
-    } catch (err) {
-      clearInterval(interval);
-      setUploading(false);
-      setUploadProgress(0);
-      toast.error(`Upload failed: ${err.message}`);
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
+  /* ── Queue helpers ─────────────────────────────────────────── */
+  const updateItem = useCallback((id, patch) => {
+    setQueue(q => q.map(item => item.id === id ? { ...item, ...patch } : item));
+  }, []);
+
+  const removeItem = useCallback((id) => {
+    setQueue(q => q.filter(item => item.id !== id));
+  }, []);
+
+  const clearDone = () => {
+    setQueue(q => q.filter(item => item.status !== 'done' && item.status !== 'error'));
   };
 
+  /* ── Validate & enqueue files ──────────────────────────────── */
+  const enqueueFiles = useCallback((files) => {
+    if (!files || files.length === 0) return;
+    const newItems = [];
+    for (const file of Array.from(files)) {
+      const isValid = ALLOWED_EXTS.some(ext => file.name.toLowerCase().endsWith(ext));
+      if (!isValid) {
+        toast.error(`"${file.name}" is not a supported audio file`);
+        continue;
+      }
+      newItems.push({ id: newId(), file, status: 'pending', progress: 0, error: null });
+    }
+    if (newItems.length > 0) setQueue(q => [...q, ...newItems]);
+  }, [toast]);
+
+  /* ── Process queue sequentially ───────────────────────────── */
+  const runQueue = useCallback(async (currentQueue) => {
+    setUploadRunning(true);
+    let q = currentQueue;
+    for (const item of q) {
+      if (item.status !== 'pending') continue;
+      updateItem(item.id, { status: 'uploading', progress: 0 });
+
+      // Fake progress ticker
+      let prog = 0;
+      const ticker = setInterval(() => {
+        prog = Math.min(prog + 10, 88);
+        updateItem(item.id, { progress: prog });
+      }, 120);
+
+      try {
+        await api.uploadTrack(item.file);
+        clearInterval(ticker);
+        updateItem(item.id, { status: 'done', progress: 100 });
+      } catch (err) {
+        clearInterval(ticker);
+        updateItem(item.id, { status: 'error', error: err.message });
+      }
+    }
+    setUploadRunning(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [api, updateItem]);
+
+  /* ── Start upload ──────────────────────────────────────────── */
+  const startUpload = useCallback(() => {
+    setQueue(q => {
+      const pending = q.filter(i => i.status === 'pending');
+      if (pending.length === 0) return q;
+      // run async after state flush
+      setTimeout(() => runQueue(q), 0);
+      return q;
+    });
+  }, [runQueue]);
+
+  /* ── Drag & Drop ───────────────────────────────────────────── */
+  const onDragOver  = (e) => { e.preventDefault(); setDragging(true); };
+  const onDragLeave = ()  => setDragging(false);
+  const onDrop      = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    enqueueFiles(e.dataTransfer.files);
+  };
+
+  /* ── Library handlers ──────────────────────────────────────── */
   const handleDeckToggle = async (track, deckId) => {
     const deck = decks[deckId];
     const isLoaded = deck?.track === track.filename;
@@ -142,9 +255,7 @@ export default function LibraryManager() {
         await api.loadTrack(deckId, track.filename);
         toast.success(`"${track.filename.replace(/\.[^.]+$/, '')}" → Deck ${deckId.toUpperCase()}`);
       }
-    } catch (err) {
-      toast.error(err.message);
-    }
+    } catch (err) { toast.error(err.message); }
   };
 
   const handleDelete = async (filename) => {
@@ -152,12 +263,10 @@ export default function LibraryManager() {
     try {
       await api.deleteTrack(filename);
       toast.success(`"${filename}" removed`);
-    } catch (err) {
-      toast.error(`Delete failed: ${err.message}`);
-    }
+    } catch (err) { toast.error(`Delete failed: ${err.message}`); }
   };
 
-  // ── Playlist tab handlers ───────────────────────────────────────────────────
+  /* ── Playlist handlers ─────────────────────────────────────── */
   const handleSavePlaylist = async (name, tracks) => {
     try {
       if (editingPlaylist === 'new') {
@@ -168,9 +277,7 @@ export default function LibraryManager() {
         toast.success(`Playlist "${name}" updated`);
       }
       setEditingPlaylist(null);
-    } catch (err) {
-      toast.error(err.message);
-    }
+    } catch (err) { toast.error(err.message); }
   };
 
   const handleDeletePlaylist = async (id, name) => {
@@ -178,20 +285,15 @@ export default function LibraryManager() {
     try {
       await api.deletePlaylist(id);
       toast.info(`Playlist "${name}" deleted`);
-    } catch (err) {
-      toast.error(err.message);
-    }
+    } catch (err) { toast.error(err.message); }
   };
 
   const handleLoadPlaylist = async (playlistId, deckId) => {
     const loop = playlistLoop[playlistId] ?? false;
     try {
       await api.loadPlaylist(deckId, playlistId, loop);
-      const pl = playlists.find(p => p.id === playlistId);
       toast.success(`Playlist → Deck ${deckId.toUpperCase()}${loop ? ' 🔁' : ''}`);
-    } catch (err) {
-      toast.error(err.message);
-    }
+    } catch (err) { toast.error(err.message); }
   };
 
   const formatSize = (bytes) => {
@@ -199,7 +301,13 @@ export default function LibraryManager() {
     return `${(bytes / 1024).toFixed(0)} KB`;
   };
 
-  // ── Shared tab bar ──────────────────────────────────────────────────────────
+  /* ── Queue stats ───────────────────────────────────────────── */
+  const pendingCount  = queue.filter(i => i.status === 'pending').length;
+  const doneCount     = queue.filter(i => i.status === 'done').length;
+  const errorCount    = queue.filter(i => i.status === 'error').length;
+  const totalCount    = queue.length;
+
+  /* ── Shared tab bar ────────────────────────────────────────── */
   const tabStyle = (active) => ({
     padding: '0.4rem 0.9rem', borderRadius: '6px', border: 'none', cursor: 'pointer',
     background: active ? 'rgba(0,212,255,0.15)' : 'transparent',
@@ -209,27 +317,39 @@ export default function LibraryManager() {
     transition: 'all 0.15s', fontFamily: 'inherit',
   });
 
+  /* ── CSS keyframes injection (spin) ───────────────────────── */
+  // Injected once via a <style> tag in the render
   return (
     <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: '380px' }}>
-      {/* Header with tabs */}
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+
+      {/* ── Header ────────────────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <div style={{ display: 'flex', gap: '0.25rem' }}>
           <button style={tabStyle(tab === 'library')} onClick={() => setTab('library')}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}><Music size={14} /> Library <span style={{ fontSize: '0.7rem', opacity: 0.7 }}>({library.length})</span></span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Music size={14} /> Library <span style={{ fontSize: '0.7rem', opacity: 0.7 }}>({library.length})</span>
+            </span>
           </button>
           <button style={tabStyle(tab === 'playlists')} onClick={() => setTab('playlists')}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}><ListMusic size={14} /> Playlists <span style={{ fontSize: '0.7rem', opacity: 0.7 }}>({playlists.length})</span></span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <ListMusic size={14} /> Playlists <span style={{ fontSize: '0.7rem', opacity: 0.7 }}>({playlists.length})</span>
+            </span>
           </button>
         </div>
 
         {tab === 'library' && (
-          <button onClick={() => fileInputRef.current?.click()} disabled={uploading} style={{
-            background: uploading ? 'rgba(0,212,255,0.3)' : 'var(--accent-blue)',
-            color: '#000', border: 'none', borderRadius: '6px', padding: '0.45rem 0.9rem',
-            fontSize: '0.85rem', fontWeight: '600', cursor: uploading ? 'default' : 'pointer',
-            display: 'flex', alignItems: 'center', gap: '0.4rem', transition: 'all 0.2s',
-          }}>
-            <Upload size={14} /> {uploading ? 'Uploading…' : 'Upload'}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadRunning}
+            style={{
+              background: uploadRunning ? 'rgba(0,212,255,0.25)' : 'var(--accent-blue)',
+              color: '#000', border: 'none', borderRadius: '6px', padding: '0.45rem 0.9rem',
+              fontSize: '0.85rem', fontWeight: '600', cursor: uploadRunning ? 'default' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: '0.4rem', transition: 'all 0.2s',
+            }}
+          >
+            <Upload size={14} /> Upload Files
           </button>
         )}
         {tab === 'playlists' && !editingPlaylist && (
@@ -245,26 +365,110 @@ export default function LibraryManager() {
         )}
       </div>
 
-      <input ref={fileInputRef} type="file" accept=".mp3,.wav,.ogg,.flac,.aac,.m4a"
-        style={{ display: 'none' }} onChange={(e) => handleFileSelect(e.target.files)} />
+      {/* Hidden file input — multiple */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".mp3,.wav,.ogg,.flac,.aac,.m4a"
+        multiple
+        style={{ display: 'none' }}
+        onChange={e => {
+          enqueueFiles(e.target.files);
+          e.target.value = '';
+        }}
+      />
 
-      {/* Upload progress */}
-      {uploading && tab === 'library' && (
-        <div style={{ marginBottom: '0.85rem' }}>
-          <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-            <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.1s ease', borderRadius: '2px' }} />
+      {/* ── Upload Queue Panel ────────────────────────────────── */}
+      {tab === 'library' && queue.length > 0 && (
+        <div style={{
+          background: 'rgba(0,0,0,0.25)', border: '1px solid var(--panel-border)',
+          borderRadius: '10px', padding: '0.85rem', marginBottom: '1rem',
+        }}>
+          {/* Queue header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.65rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Upload Queue
+              </span>
+              <span style={{ fontSize: '0.72rem', padding: '0.1rem 0.45rem', borderRadius: '10px', background: 'rgba(255,255,255,0.06)', color: 'var(--text-secondary)' }}>
+                {totalCount} file{totalCount !== 1 ? 's' : ''}
+              </span>
+              {doneCount > 0 && (
+                <span style={{ fontSize: '0.72rem', color: '#2ed573' }}>
+                  {doneCount} done
+                </span>
+              )}
+              {errorCount > 0 && (
+                <span style={{ fontSize: '0.72rem', color: '#ff4757' }}>
+                  {errorCount} failed
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: '0.4rem' }}>
+              {(doneCount > 0 || errorCount > 0) && !uploadRunning && (
+                <button onClick={clearDone} style={{
+                  background: 'rgba(255,255,255,0.06)', border: '1px solid var(--panel-border)',
+                  color: 'var(--text-secondary)', borderRadius: '5px', padding: '0.2rem 0.55rem',
+                  cursor: 'pointer', fontSize: '0.72rem', fontFamily: 'inherit',
+                }}>
+                  Clear finished
+                </button>
+              )}
+              {pendingCount > 0 && !uploadRunning && (
+                <button
+                  onClick={startUpload}
+                  style={{
+                    background: 'var(--accent-blue)', color: '#000',
+                    border: 'none', borderRadius: '5px', padding: '0.25rem 0.7rem',
+                    cursor: 'pointer', fontSize: '0.78rem', fontWeight: '700',
+                    display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit',
+                  }}
+                >
+                  <Upload size={12} /> Upload {pendingCount} file{pendingCount !== 1 ? 's' : ''}
+                </button>
+              )}
+              {uploadRunning && (
+                <span style={{ fontSize: '0.78rem', color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <Loader size={13} style={{ animation: 'spin 1s linear infinite' }} />
+                  Uploading…
+                </span>
+              )}
+            </div>
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.3rem', textAlign: 'right' }}>{uploadProgress}%</div>
+
+          {/* Queue items */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', maxHeight: '220px', overflowY: 'auto' }}>
+            {queue.map(item => (
+              <UploadQueueItem key={item.id} item={item} onRemove={removeItem} />
+            ))}
+          </div>
+
+          {/* Add more button */}
+          {!uploadRunning && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                marginTop: '0.6rem', width: '100%', padding: '0.4rem',
+                background: 'transparent', border: '1px dashed rgba(255,255,255,0.15)',
+                borderRadius: '7px', color: 'rgba(255,255,255,0.3)', cursor: 'pointer',
+                fontSize: '0.78rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
+                fontFamily: 'inherit', transition: 'all 0.15s',
+              }}
+            >
+              <Plus size={12} /> Add more files
+            </button>
+          )}
         </div>
       )}
 
-      {/* ── LIBRARY TAB ─────────────────────────────────────────────────────── */}
+      {/* ── LIBRARY TAB ──────────────────────────────────────── */}
       {tab === 'library' && (
-        library.length === 0 ? (
+        library.length === 0 && queue.length === 0 ? (
+          /* Empty state drop zone */
           <div
-            onDragOver={e => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={e => { e.preventDefault(); setDragging(false); handleFileSelect(e.dataTransfer.files); }}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
             onClick={() => fileInputRef.current?.click()}
             style={{
               flex: 1, display: 'flex', flexDirection: 'column',
@@ -275,76 +479,103 @@ export default function LibraryManager() {
             }}
           >
             <Upload size={32} style={{ opacity: 0.3 }} />
-            <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Drag & drop audio files or click to browse</div>
-            <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.2)' }}>MP3, WAV, OGG, FLAC, AAC, M4A</div>
+            <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              Drag & drop <strong>multiple</strong> audio files or click to browse
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.2)' }}>MP3 · WAV · OGG · FLAC · AAC · M4A</div>
           </div>
         ) : (
-          <div style={{ flex: 1, overflowY: 'auto', paddingRight: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-            {library.map((track) => {
-              const loadedOnDecks = Object.values(decks).filter(d => d.track === track.filename);
-              return (
-                <div key={track.filename} style={{
-                  background: loadedOnDecks.length > 0 ? 'rgba(0,212,255,0.05)' : 'rgba(255,255,255,0.02)',
-                  border: `1px solid ${loadedOnDecks.length > 0 ? 'rgba(0,212,255,0.2)' : 'var(--panel-border)'}`,
-                  borderRadius: '8px', padding: '0.65rem 0.85rem',
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  transition: 'all 0.2s',
-                }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '0.875rem', fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>
-                      {track.filename.replace(/\.[^.]+$/, '')}
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.5rem', marginTop: '0.15rem', flexWrap: 'wrap' }}>
-                      <span>{formatSize(track.size)}</span>
-                      {loadedOnDecks.map(d => (
-                        <span key={d.id} style={{ color: DECK_COLORS[d.id] }}>
-                          ● {d.name || `Deck ${d.id.toUpperCase()}`}
-                          {d.is_playing ? ' ▶' : d.is_paused ? ' ⏸' : ''}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', flexShrink: 0 }}>
-                    {['a', 'b', 'c', 'd'].map(deckId => {
-                      const isLoaded = decks[deckId]?.track === track.filename;
-                      const isPlaying = decks[deckId]?.is_playing && isLoaded;
-                      const color = DECK_COLORS[deckId];
-                      return (
-                        <button key={deckId} title={isLoaded ? `Unload from Deck ${deckId.toUpperCase()}` : `Load to Deck ${deckId.toUpperCase()}`}
-                          onClick={() => handleDeckToggle(track, deckId)} style={{
-                            width: '28px', height: '28px', borderRadius: '5px',
-                            border: isLoaded ? `1px solid ${color}` : '1px solid rgba(255,255,255,0.12)',
-                            background: isLoaded ? `${color}30` : 'rgba(255,255,255,0.05)',
-                            color: isLoaded ? color : 'var(--text-secondary)',
-                            fontSize: '0.65rem', fontWeight: '700', cursor: 'pointer',
-                            transition: 'all 0.15s', boxShadow: isPlaying ? `0 0 8px ${color}60` : 'none',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          }}>
-                          {isLoaded ? '✕' : deckId.toUpperCase()}
-                        </button>
-                      );
-                    })}
-                    <button title="Delete from library" onClick={() => handleDelete(track.filename)} style={{
-                      width: '28px', height: '28px', borderRadius: '5px',
-                      border: '1px solid rgba(255,71,87,0.2)', background: 'rgba(255,71,87,0.08)',
-                      color: 'rgba(255,71,87,0.6)', cursor: 'pointer',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      transition: 'all 0.15s', marginLeft: '0.1rem',
-                    }}>
-                      <Trash2 size={11} />
-                    </button>
-                  </div>
+          /* Library list with drop zone overlay */
+          <div
+            style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+          >
+            {/* Drag overlay */}
+            {dragging && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 10,
+                background: 'rgba(0,212,255,0.08)',
+                border: '2px dashed var(--accent-blue)',
+                borderRadius: '8px', display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+                pointerEvents: 'none',
+              }}>
+                <div style={{ textAlign: 'center', color: 'var(--accent-blue)' }}>
+                  <Upload size={28} style={{ marginBottom: '0.4rem' }} />
+                  <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>Drop files to add</div>
                 </div>
-              );
-            })}
+              </div>
+            )}
+
+            <div style={{ overflowY: 'auto', paddingRight: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              {library.map((track) => {
+                const loadedOnDecks = Object.values(decks).filter(d => d.track === track.filename);
+                return (
+                  <div key={track.filename} style={{
+                    background: loadedOnDecks.length > 0 ? 'rgba(0,212,255,0.05)' : 'rgba(255,255,255,0.02)',
+                    border: `1px solid ${loadedOnDecks.length > 0 ? 'rgba(0,212,255,0.2)' : 'var(--panel-border)'}`,
+                    borderRadius: '8px', padding: '0.65rem 0.85rem',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    transition: 'all 0.2s',
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '0.875rem', fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>
+                        {track.filename.replace(/\.[^.]+$/, '')}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.5rem', marginTop: '0.15rem', flexWrap: 'wrap' }}>
+                        <span>{formatSize(track.size)}</span>
+                        {loadedOnDecks.map(d => (
+                          <span key={d.id} style={{ color: DECK_COLORS[d.id] }}>
+                            ● {d.name || `Deck ${d.id.toUpperCase()}`}
+                            {d.is_playing ? ' ▶' : d.is_paused ? ' ⏸' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', flexShrink: 0 }}>
+                      {['a', 'b', 'c', 'd'].map(deckId => {
+                        const isLoaded  = decks[deckId]?.track === track.filename;
+                        const isPlaying = decks[deckId]?.is_playing && isLoaded;
+                        const color     = DECK_COLORS[deckId];
+                        return (
+                          <button key={deckId}
+                            title={isLoaded ? `Unload from Deck ${deckId.toUpperCase()}` : `Load to Deck ${deckId.toUpperCase()}`}
+                            onClick={() => handleDeckToggle(track, deckId)} style={{
+                              width: '28px', height: '28px', borderRadius: '5px',
+                              border: isLoaded ? `1px solid ${color}` : '1px solid rgba(255,255,255,0.12)',
+                              background: isLoaded ? `${color}30` : 'rgba(255,255,255,0.05)',
+                              color: isLoaded ? color : 'var(--text-secondary)',
+                              fontSize: '0.65rem', fontWeight: '700', cursor: 'pointer',
+                              transition: 'all 0.15s', boxShadow: isPlaying ? `0 0 8px ${color}60` : 'none',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }}>
+                            {isLoaded ? '✕' : deckId.toUpperCase()}
+                          </button>
+                        );
+                      })}
+                      <button title="Delete from library" onClick={() => handleDelete(track.filename)} style={{
+                        width: '28px', height: '28px', borderRadius: '5px',
+                        border: '1px solid rgba(255,71,87,0.2)', background: 'rgba(255,71,87,0.08)',
+                        color: 'rgba(255,71,87,0.6)', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'all 0.15s', marginLeft: '0.1rem',
+                      }}>
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )
       )}
 
-      {/* ── PLAYLISTS TAB ────────────────────────────────────────────────────── */}
+      {/* ── PLAYLISTS TAB ────────────────────────────────────── */}
       {tab === 'playlists' && (
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {/* Inline editor */}
           {editingPlaylist && (
             <div style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '10px', padding: '1rem', marginBottom: '1rem' }}>
               <div style={{ fontSize: '0.78rem', color: 'var(--accent-blue)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.75rem' }}>
@@ -359,7 +590,6 @@ export default function LibraryManager() {
             </div>
           )}
 
-          {/* Playlist list */}
           {playlists.length === 0 && !editingPlaylist ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', padding: '3rem 1rem', color: 'var(--text-secondary)' }}>
               <ListMusic size={36} style={{ opacity: 0.2 }} />
@@ -372,14 +602,12 @@ export default function LibraryManager() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
               {playlists.map(pl => (
                 <div key={pl.id} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '9px', padding: '0.75rem 0.9rem' }}>
-                  {/* Playlist header */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.55rem' }}>
                     <ListMusic size={15} style={{ color: 'var(--accent-blue)', flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: '600', fontSize: '0.88rem' }}>{pl.name}</div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>{pl.tracks.length} track{pl.tracks.length !== 1 ? 's' : ''}</div>
                     </div>
-                    {/* Loop toggle */}
                     <label title="Loop playlist" style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }}>
                       <div onClick={() => setPlaylistLoop(prev => ({ ...prev, [pl.id]: !prev[pl.id] }))} style={{
                         width: '32px', height: '18px', borderRadius: '9px', position: 'relative', cursor: 'pointer',
@@ -390,14 +618,12 @@ export default function LibraryManager() {
                       </div>
                       <span style={{ fontSize: '0.7rem', color: playlistLoop[pl.id] ? 'var(--accent-blue)' : 'var(--text-secondary)' }}>🔁</span>
                     </label>
-                    {/* Edit & Delete */}
                     <button onClick={() => setEditingPlaylist(pl)} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-secondary)', borderRadius: '5px', cursor: 'pointer', fontSize: '0.72rem', padding: '0.2rem 0.5rem', fontFamily: 'inherit' }}>Edit</button>
                     <button onClick={() => handleDeletePlaylist(pl.id, pl.name)} style={{ background: 'rgba(255,71,87,0.08)', border: '1px solid rgba(255,71,87,0.2)', color: 'rgba(255,71,87,0.7)', borderRadius: '5px', cursor: 'pointer', padding: '0.2rem 0.35rem', display: 'flex', alignItems: 'center' }}>
                       <Trash2 size={11} />
                     </button>
                   </div>
 
-                  {/* Track preview */}
                   {pl.tracks.length > 0 && (
                     <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.3)', marginBottom: '0.6rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                       {pl.tracks.slice(0, 4).map((t, i) => (
@@ -409,7 +635,6 @@ export default function LibraryManager() {
                     </div>
                   )}
 
-                  {/* Load to deck buttons */}
                   <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                     <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)', marginRight: '0.1rem' }}>Send to:</span>
                     {['a', 'b', 'c', 'd'].map(deckId => (
