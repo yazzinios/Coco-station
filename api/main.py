@@ -19,7 +19,8 @@ from schemas import (
     DeckRenameRequest, VolumeRequest, LoopRequest, PlayRequest, MicControlRequest,
     TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement,
     Playlist, PlaylistCreateRequest, PlaylistLoadRequest,
-    MusicScheduleCreateRequest, MusicSchedule
+    MusicScheduleCreateRequest, MusicSchedule,
+    RecurringSchedule, RecurringScheduleCreateRequest
 )
 from tts import generate_tts
 from db_client import db
@@ -48,6 +49,7 @@ MIC_STATE: dict = {"active": False, "targets": []}
 PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
 MUSIC_SCHEDULES: List[dict] = []
+RECURRING_SCHEDULES: List[dict] = []
 
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
@@ -139,10 +141,40 @@ async def scheduler_task():
                         except Exception: pass
                 except Exception as e:
                     print(f"[scheduler] music schedule error: {e}")
+        # ── Recurring Schedules ──────────────────────────────────
+        day_of_week = now.weekday() # 0-6 (Mon-Sun)
+        current_time_str = now.strftime("%H:%M")
+        today_str = now.strftime("%Y-%m-%d")
+
+        for rs in RECURRING_SCHEDULES:
+            if not rs.get("enabled"): continue
+            if day_of_week not in rs.get("active_days", []): continue
+            
+            # Check Start
+            if rs.get("start_time") == current_time_str and rs.get("last_run_date") != today_str:
+                rs["last_run_date"] = today_str
+                asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
+                
+                deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
+                if rs["type"] == "announcement":
+                    ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs["announcement_id"]), None)
+                    if ann:
+                        filepath = str(Path("/announcements") / ann["filename"])
+                        asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
+                        await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
+                elif rs["type"] == "microphone":
+                    # For mic, we turn it on at start_time and off at stop_time
+                    await mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids]), _user=None)
+
+            # Check Stop (only for Microphone type)
+            if rs["type"] == "microphone" and rs.get("stop_time") == current_time_str:
+                # To prevent flickering, we only stop if it was likely turned on by this scheduler
+                if MIC_STATE["active"]:
+                    await mic_off(_user=None)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES
+    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES
     print("CocoStation API Starting...")
 
     loop = asyncio.get_event_loop()
@@ -185,6 +217,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] Failed to load music schedules: {e}")
 
+    try:
+        RECURRING_SCHEDULES = await loop.run_in_executor(None, db.get_recurring_schedules)
+        print(f"[startup] Loaded {len(RECURRING_SCHEDULES)} recurring schedule(s) from DB.")
+    except Exception as e:
+        print(f"[startup] Failed to load recurring schedules: {e}")
+
     task = asyncio.create_task(scheduler_task())
     yield
     task.cancel()
@@ -205,7 +243,7 @@ def health():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    await websocket.send_json({"type": "FULL_STATE", "decks": list(DECKS.values()), "mic": MIC_STATE, "announcements": ANNOUNCEMENTS, "settings": SETTINGS, "playlists": list(PLAYLISTS.values()), "music_schedules": MUSIC_SCHEDULES})
+    await websocket.send_json({"type": "FULL_STATE", "decks": list(DECKS.values()), "mic": MIC_STATE, "announcements": ANNOUNCEMENTS, "settings": SETTINGS, "playlists": list(PLAYLISTS.values()), "music_schedules": MUSIC_SCHEDULES, "recurring_schedules": RECURRING_SCHEDULES})
     try:
         while True: await websocket.receive_text()
     except WebSocketDisconnect: manager.disconnect(websocket)
@@ -900,6 +938,74 @@ async def trigger_music_schedule_now(schedule_id: str, _user=Depends(verify_toke
         await asyncio.get_event_loop().run_in_executor(None, db.update_music_schedule_status, schedule_id, "Played")
     except Exception: pass
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
+    return {"status": "ok"}
+
+# ── Recurring Schedules ──────────────────────────────────
+@app.get("/api/recurring-schedules")
+def list_recurring_schedules():
+    return RECURRING_SCHEDULES
+
+@app.post("/api/recurring-schedules")
+async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=Depends(verify_token)):
+    sid = str(uuid.uuid4())
+    schedule = {
+        "id":              sid,
+        "name":            req.name,
+        "type":            req.type,
+        "announcement_id": req.announcement_id,
+        "start_time":      req.start_time,
+        "stop_time":       req.stop_time,
+        "active_days":     req.active_days,
+        "fade_duration":   req.fade_duration,
+        "music_volume":    req.music_volume,
+        "target_decks":    req.target_decks,
+        "enabled":         req.enabled,
+        "last_run_date":   None,
+        "created_at":      datetime.now().isoformat(),
+    }
+    RECURRING_SCHEDULES.append(schedule)
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, schedule)
+    except Exception as e:
+        print(f"[DB] Failed to persist recurring schedule: {e}")
+    await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
+    return schedule
+
+@app.put("/api/recurring-schedules/{schedule_id}")
+async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCreateRequest, _user=Depends(verify_token)):
+    idx = next((i for i, x in enumerate(RECURRING_SCHEDULES) if x["id"] == schedule_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    updated = RECURRING_SCHEDULES[idx].copy()
+    updated.update({
+        "name":            req.name,
+        "type":            req.type,
+        "announcement_id": req.announcement_id,
+        "start_time":      req.start_time,
+        "stop_time":       req.stop_time,
+        "active_days":     req.active_days,
+        "fade_duration":   req.fade_duration,
+        "music_volume":    req.music_volume,
+        "target_decks":    req.target_decks,
+        "enabled":         req.enabled,
+    })
+    RECURRING_SCHEDULES[idx] = updated
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, updated)
+    except Exception as e:
+        print(f"[DB] Failed to persist recurring schedule update: {e}")
+    await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
+    return updated
+
+@app.delete("/api/recurring-schedules/{schedule_id}")
+async def delete_recurring_schedule(schedule_id: str, _user=Depends(verify_token)):
+    global RECURRING_SCHEDULES
+    RECURRING_SCHEDULES = [x for x in RECURRING_SCHEDULES if x["id"] != schedule_id]
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.delete_recurring_schedule, schedule_id)
+    except Exception: pass
+    await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
     return {"status": "ok"}
 
 # ── Stats ───────────────────────────────────────────────────

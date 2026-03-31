@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import AnnouncementSchedules from '../components/AnnouncementSchedules';
 
 const ORIGIN = window.location.origin;
 const HOST   = window.location.hostname;
@@ -356,8 +357,9 @@ export default function AnnouncementsPage() {
             </div>
           )}
         </div>
-
       </div>
+
+      <AnnouncementSchedules />
 
       {/* ── Stream Links ──────────────────────────────────────── */}
       <div className="glass-panel" style={{ marginTop: '2rem' }}>

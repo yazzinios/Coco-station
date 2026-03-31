@@ -97,6 +97,18 @@ class DBClient:
                 r[key] = r[key].isoformat()
         return r
 
+    def _map_recurring_schedule_row(self, row: dict) -> dict:
+        r = dict(row)
+        if isinstance(r.get("active_days"), str):
+            try: r["active_days"] = json.loads(r["active_days"])
+            except: r["active_days"] = []
+        if isinstance(r.get("target_decks"), str):
+            try: r["target_decks"] = json.loads(r["target_decks"])
+            except: r["target_decks"] = []
+        if isinstance(r.get("created_at"), datetime):
+            r["created_at"] = r["created_at"].isoformat()
+        return r
+
     # ── Announcements — READ ───────────────────────────────────
     def get_announcements(self) -> List[Dict]:
         if self.mode == "cloud":
@@ -484,6 +496,108 @@ class DBClient:
                     cur.execute("DELETE FROM music_schedules WHERE id = %s", (schedule_id,))
             except Exception as e:
                 print(f"[DB] delete_music_schedule (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Recurring Schedules ──────────────────────────────────
+    def get_recurring_schedules(self) -> List[Dict]:
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("recurring_schedules").select("*").execute()
+                return [self._map_recurring_schedule_row(r) for r in res.data]
+            except Exception as e:
+                print(f"[DB] get_recurring_schedules (cloud) failed: {e}")
+                return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM recurring_schedules")
+                    return [self._map_recurring_schedule_row(dict(r)) for r in cur.fetchall()]
+            except Exception as e:
+                print(f"[DB] get_recurring_schedules (local) failed: {e}")
+                return []
+            finally:
+                self._put_conn(conn)
+
+    def save_recurring_schedule(self, s: Dict):
+        data = {
+            "id":              s["id"],
+            "name":            s["name"],
+            "type":            s["type"].lower(),
+            "announcement_id": s.get("announcement_id"),
+            "start_time":      s["start_time"],
+            "stop_time":       s["stop_time"],
+            "active_days":     json.dumps(s.get("active_days", [])),
+            "fade_duration":   s.get("fade_duration", 5),
+            "music_volume":    s.get("music_volume", 10),
+            "target_decks":    json.dumps(s.get("target_decks", [])),
+            "enabled":         s.get("enabled", True),
+        }
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("recurring_schedules").upsert(data).execute()
+            except Exception as e:
+                print(f"[DB] save_recurring_schedule (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO recurring_schedules (id, name, type, announcement_id, start_time, stop_time, active_days, fade_duration, music_volume, target_decks, enabled)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name, type = EXCLUDED.type, announcement_id = EXCLUDED.announcement_id,
+                            start_time = EXCLUDED.start_time, stop_time = EXCLUDED.stop_time, active_days = EXCLUDED.active_days,
+                            fade_duration = EXCLUDED.fade_duration, music_volume = EXCLUDED.music_volume, target_decks = EXCLUDED.target_decks,
+                            enabled = EXCLUDED.enabled
+                        """,
+                        (data["id"], data["name"], data["type"], data["announcement_id"],
+                         data["start_time"], data["stop_time"], data["active_days"],
+                         data["fade_duration"], data["music_volume"], data["target_decks"], data["enabled"]),
+                    )
+            except Exception as e:
+                print(f"[DB] save_recurring_schedule (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def update_recurring_last_run(self, schedule_id: str, last_run_date: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("recurring_schedules").update({"last_run_date": last_run_date}).eq("id", schedule_id).execute()
+            except Exception as e:
+                print(f"[DB] update_recurring_last_run (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE recurring_schedules SET last_run_date = %s WHERE id = %s",
+                        (last_run_date, schedule_id),
+                    )
+            except Exception as e:
+                print(f"[DB] update_recurring_last_run (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def delete_recurring_schedule(self, schedule_id: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("recurring_schedules").delete().eq("id", schedule_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_recurring_schedule (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM recurring_schedules WHERE id = %s", (schedule_id,))
+            except Exception as e:
+                print(f"[DB] delete_recurring_schedule (local) failed: {e}")
             finally:
                 self._put_conn(conn)
 

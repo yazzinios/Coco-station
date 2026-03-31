@@ -83,3 +83,30 @@ class MusicSchedule(BaseModel):
     loop: bool = False
     status: str = 'Scheduled'
     created_at: Optional[str] = None
+
+class RecurringScheduleCreateRequest(BaseModel):
+    name: str
+    type: str             # 'Announcement' | 'Microphone'
+    announcement_id: Optional[str] = None
+    start_time: str       # "HH:MM"
+    stop_time: str        # "HH:MM"
+    active_days: List[int] # [0, 1, 2, 3, 4, 5, 6]
+    fade_duration: int = 5
+    music_volume: int = 10
+    target_decks: List[str]
+    enabled: bool = True
+
+class RecurringSchedule(BaseModel):
+    id: str
+    name: str
+    type: str
+    announcement_id: Optional[str] = None
+    start_time: str
+    stop_time: str
+    active_days: List[int]
+    fade_duration: int = 5
+    music_volume: int = 10
+    target_decks: List[str]
+    enabled: bool = True
+    last_run_date: Optional[str] = None
+    created_at: Optional[str] = None

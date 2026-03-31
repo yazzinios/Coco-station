@@ -40,6 +40,7 @@ export function AppProvider({ children }) {
   const [announcements, setAnnouncements] = useState([]);
   const [playlists,       setPlaylists]       = useState([]);
   const [musicSchedules,  setMusicSchedules]  = useState([]);
+  const [recurringSchedules, setRecurringSchedules] = useState([]);
   const [mic,           setMic]           = useState({ active: false, targets: [] });
   const [wsConnected,   setWsConnected]   = useState(false);
   const [settings,      setSettings]      = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
@@ -94,6 +95,7 @@ export function AppProvider({ children }) {
         if (msg.settings)        setSettings(prev => ({ ...prev, ...msg.settings }));
         if (msg.playlists)        setPlaylists(msg.playlists);
         if (msg.music_schedules)  setMusicSchedules(msg.music_schedules);
+        if (msg.recurring_schedules) setRecurringSchedules(msg.recurring_schedules);
         break;
       case 'DECK_STATE':
         if (msg.decks) {
@@ -108,6 +110,7 @@ export function AppProvider({ children }) {
       case 'LIBRARY_UPDATED':       fetchLibrary(); break;
       case 'PLAYLISTS_UPDATED':        if (msg.playlists)  setPlaylists(msg.playlists); break;
       case 'MUSIC_SCHEDULES_UPDATED': if (msg.schedules) setMusicSchedules(msg.schedules); break;
+      case 'RECURRING_SCHEDULES_UPDATED': if (msg.schedules) setRecurringSchedules(msg.schedules); break;
       default: break;
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -132,6 +135,7 @@ export function AppProvider({ children }) {
     fetchLibrary();
     fetchAnnouncements();
     fetchPlaylists();
+    fetchRecurringSchedules();
     return () => { wsRef.current?.close(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -147,6 +151,9 @@ export function AppProvider({ children }) {
   }
   async function fetchPlaylists() {
     try { const r = await fetch('/api/playlists'); if (r.ok) setPlaylists(await r.json()); } catch (_) {}
+  }
+  async function fetchRecurringSchedules() {
+    try { const r = await fetch('/api/recurring-schedules'); if (r.ok) setRecurringSchedules(await r.json()); } catch (_) {}
   }
 
   const api = {
@@ -311,10 +318,31 @@ export function AppProvider({ children }) {
       const r = await fetch(`/api/music-schedules/${id}/trigger`, { method: 'POST' });
       if (!r.ok) throw new Error(await parseError(r));
     },
+    // ── Recurring Schedules ──
+    createRecurringSchedule: async (payload) => {
+      const r = await fetch('/api/recurring-schedules', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    updateRecurringSchedule: async (id, payload) => {
+      const r = await fetch(`/api/recurring-schedules/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    deleteRecurringSchedule: async (id) => {
+      const r = await fetch(`/api/recurring-schedules/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
   };
 
   return (
-    <AppContext.Provider value={{ decks, library, announcements, playlists, musicSchedules, mic, wsConnected, settings, toast, api }}>
+    <AppContext.Provider value={{ decks, library, announcements, playlists, musicSchedules, recurringSchedules, mic, wsConnected, settings, toast, api }}>
       {children}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </AppContext.Provider>
