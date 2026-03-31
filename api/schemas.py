@@ -52,6 +52,12 @@ class Announcement(BaseModel):
     status: str = 'Ready'
     created_at: Optional[str] = None
 
+class AnnouncementUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    targets: Optional[List[str]] = None
+    scheduled_at: Optional[str] = None
+    status: Optional[str] = None
+
 class Playlist(BaseModel):
     id: str
     name: str

@@ -224,6 +224,39 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
+    # ── Announcements — UPDATE ─────────────────────────────────
+    def update_announcement(self, ann_id: str, updates: Dict):
+        """Update mutable fields: name, targets, scheduled_at, status."""
+        allowed = {"name", "targets", "schedule_at", "status"}
+        data = {}
+        if "name" in updates and updates["name"] is not None:
+            data["name"] = updates["name"]
+        if "targets" in updates and updates["targets"] is not None:
+            data["targets"] = json.dumps(updates["targets"])
+        if "scheduled_at" in updates and updates["scheduled_at"] is not None:
+            data["schedule_at"] = updates["scheduled_at"]
+        if "status" in updates and updates["status"] is not None:
+            data["status"] = updates["status"]
+        if not data:
+            return
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("announcements").update(data).eq("id", ann_id).execute()
+            except Exception as e:
+                print(f"[DB] update_announcement (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    set_clauses = ", ".join([f"{k} = %s" for k in data.keys()])
+                    vals = list(data.values()) + [ann_id]
+                    cur.execute(f"UPDATE announcements SET {set_clauses} WHERE id = %s", vals)
+            except Exception as e:
+                print(f"[DB] update_announcement (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
     # ── Playlists — READ ───────────────────────────────────────
     def get_playlists(self) -> List[Dict]:
         if self.mode == "cloud":

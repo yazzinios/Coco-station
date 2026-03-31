@@ -12,12 +12,15 @@ from fastapi.responses import FileResponse
 from typing import List, Dict, Optional
 from pathlib import Path
 
-FFMPEG_HOST = os.getenv("FFMPEG_HOST", "ffmpeg-mixer")
-FFMPEG_URL  = f"http://{FFMPEG_HOST}:8001"
+FFMPEG_HOST    = os.getenv("FFMPEG_HOST", "ffmpeg-mixer")
+FFMPEG_URL     = f"http://{FFMPEG_HOST}:8001"
+MEDIAMTX_HOST  = os.getenv("MEDIAMTX_HOST", "mediamtx")
+MEDIAMTX_API   = f"http://{MEDIAMTX_HOST}:9997"
 
 from schemas import (
     DeckRenameRequest, VolumeRequest, LoopRequest, PlayRequest, MicControlRequest,
     TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement,
+    AnnouncementUpdateRequest,
     Playlist, PlaylistCreateRequest, PlaylistLoadRequest,
     MusicScheduleCreateRequest, MusicSchedule,
     RecurringSchedule, RecurringScheduleCreateRequest,
@@ -546,6 +549,7 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
         for did in playing_decks:
             current_vol = DECKS[did]["volume"]
             await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
+    # Jingle BEFORE announcement
     await _play_chime_and_wait(deck_ids)
     ann_path = Path(filepath)
     local_path = ANNOUNCEMENTS_DIR / ann_path.name
@@ -563,8 +567,10 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
         await asyncio.sleep(max(0.5, duration + 0.3))
     except Exception:
         await asyncio.sleep(3.0)
+    # Jingle AFTER announcement
+    await _play_chime_and_wait(deck_ids)
     if playing_decks:
-        await _restore_volumes(playing_decks)
+        await _restore_volumes(playing_decks, duck_pct)
 
 async def fade_and_enable_mic(deck_ids: list):
     duck_pct = SETTINGS.get("mic_ducking_percent", 5)
@@ -573,9 +579,12 @@ async def fade_and_enable_mic(deck_ids: list):
         for did in playing_decks:
             current_vol = DECKS[did]["volume"]
             await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
+    # Jingle BEFORE mic feed
     await _play_chime_and_wait(deck_ids)
 
 async def fade_restore_after_mic(deck_ids: list):
+    # Jingle AFTER mic feed
+    await _play_chime_and_wait(deck_ids)
     duck_pct = SETTINGS.get("mic_ducking_percent", 5)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
@@ -822,6 +831,33 @@ async def play_announcement(ann_id: str, _user=Depends(verify_token)):
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok"}
 
+@app.put("/api/announcements/{ann_id}")
+async def update_announcement(ann_id: str, req: AnnouncementUpdateRequest, _user=Depends(verify_token)):
+    ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
+    if not ann: raise HTTPException(status_code=404, detail="Not found")
+    updates = {}
+    if req.name is not None:
+        ann["name"] = req.name
+        updates["name"] = req.name
+    if req.targets is not None:
+        ann["targets"] = req.targets
+        updates["targets"] = req.targets
+    if req.scheduled_at is not None:
+        ann["scheduled_at"] = req.scheduled_at or None
+        ann["status"] = "Scheduled" if req.scheduled_at else "Ready"
+        updates["scheduled_at"] = req.scheduled_at
+        updates["status"] = ann["status"]
+    if req.status is not None:
+        ann["status"] = req.status
+        updates["status"] = req.status
+    if updates:
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, db.update_announcement, ann_id, updates)
+        except Exception as e:
+            print(f"[DB] Failed to update announcement: {e}")
+    await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
+    return {"status": "ok", "announcement": ann}
+
 @app.delete("/api/announcements/{ann_id}")
 async def delete_announcement(ann_id: str, _user=Depends(verify_token)):
     global ANNOUNCEMENTS
@@ -835,6 +871,43 @@ async def delete_announcement(ann_id: str, _user=Depends(verify_token)):
     if p.exists(): p.unlink()
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok"}
+
+# ── Live Listeners (MediaMTX) ───────────────────────────────
+@app.get("/api/listeners")
+async def get_listeners():
+    """Query mediamtx API for active readers (VLC, HLS, RTSP, WebRTC listeners) per deck."""
+    result = {}
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            resp = await c.get(f"{MEDIAMTX_API}/v3/paths/list")
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("items", []):
+                    path_name = item.get("name", "")
+                    readers = item.get("readers", [])
+                    reader_count = len(readers) if isinstance(readers, list) else 0
+                    # Also check readyState and readers from the source
+                    if reader_count == 0:
+                        reader_count = item.get("readersCount", 0)
+                    result[path_name] = {
+                        "path": path_name,
+                        "listeners": reader_count,
+                        "ready": item.get("ready", False),
+                        "source": item.get("source", {}).get("type", "unknown") if item.get("source") else "none",
+                    }
+    except Exception as e:
+        print(f"[listeners] Failed to query mediamtx: {e}")
+    # Summarize per deck
+    decks_summary = {}
+    total = 0
+    for deck_id in ["deck-a", "deck-b", "deck-c", "deck-d"]:
+        count = 0
+        for path_name, info in result.items():
+            if path_name.startswith(deck_id):
+                count += info["listeners"]
+        decks_summary[deck_id] = count
+        total += count
+    return {"total": total, "decks": decks_summary, "paths": result}
 
 # ── Playlists ───────────────────────────────────────────────
 @app.get("/api/playlists")

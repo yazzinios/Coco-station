@@ -252,6 +252,20 @@ export function AppProvider({ children }) {
       if (!r.ok) throw new Error(await parseError(r));
       await fetchAnnouncements();
     },
+    updateAnnouncement: async (id, payload) => {
+      const r = await fetch(`/api/announcements/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      await fetchAnnouncements();
+      return r.json();
+    },
+    getListeners: async () => {
+      const r = await fetch('/api/listeners');
+      if (!r.ok) return { total: 0, decks: {}, paths: {} };
+      return r.json();
+    },
     saveSettings: async (s) => {
       const r = await fetch('/api/settings', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
