@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   Calendar, Clock, Music, ListMusic, Mic, Play, Trash2, Edit3,
   Plus, Save, X, Check, Pause, Volume2, Settings2, TriangleAlert,
-  Radio, ChevronDown, ChevronUp
+  Radio, Music2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
@@ -54,22 +54,52 @@ const tabBtn = (active) => ({
   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.45rem',
 });
 
+/* ─────────────────────── Jingle Picker ─────────────────── */
+function JinglePicker({ label: lbl, value, onChange, library }) {
+  return (
+    <div>
+      <label style={labelStyle}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <Music2 size={11} /> {lbl}
+        </span>
+      </label>
+      <select
+        value={value || ''}
+        onChange={e => onChange(e.target.value || null)}
+        style={{ ...inputStyle, cursor: 'pointer' }}
+      >
+        <option value="">— None —</option>
+        {library.map(f => (
+          <option key={f.filename} value={f.filename}>{f.filename.replace(/\.[^.]+$/, '')}</option>
+        ))}
+      </select>
+      {value && (
+        <div style={{ marginTop: '0.25rem', fontSize: '0.7rem', color: '#a55eea', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+          <Music2 size={10} /> {value.replace(/\.[^.]+$/, '')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════
    MIXER DECK SCHEDULES — recurring music / playlist
 ════════════════════════════════════════════════════════════ */
 const MIXER_DEFAULT = {
   name: '',
-  type: 'track',        // 'track' | 'playlist'
+  type: 'track',
   target_id: '',
   deck_id: 'a',
   start_time: '09:00',
   stop_time: '10:00',
   active_days: [0, 1, 2, 3, 4, 5, 6],
-  excluded_days: [],    // specific YYYY-MM-DD dates to skip
+  excluded_days: [],
   fade_in: 3,
   fade_out: 3,
   volume: 80,
   loop: true,
+  jingle_start: null,   // ← NEW: track filename or null
+  jingle_end: null,     // ← NEW: track filename or null
   enabled: true,
 };
 
@@ -81,8 +111,7 @@ function MixerSchedules() {
   const [excludeInput, setExcludeInput] = useState('');
 
   const reset = () => { setForm(MIXER_DEFAULT); setEditingId(null); setIsAdding(false); setExcludeInput(''); };
-
-  const startEdit = (s) => { setForm({ ...s }); setEditingId(s.id); setIsAdding(true); };
+  const startEdit = (s) => { setForm({ ...MIXER_DEFAULT, ...s }); setEditingId(s.id); setIsAdding(true); };
 
   const toggleDay = (id) => {
     const days = form.active_days.includes(id)
@@ -97,9 +126,7 @@ function MixerSchedules() {
     setForm({ ...form, excluded_days: [...form.excluded_days, excludeInput] });
     setExcludeInput('');
   };
-
   const removeExcluded = (d) => setForm({ ...form, excluded_days: form.excluded_days.filter(x => x !== d) });
-
   const toggleDeck = (id) => setForm({ ...form, deck_id: id });
 
   const handleSubmit = async (e) => {
@@ -107,10 +134,10 @@ function MixerSchedules() {
     if (!form.target_id) { toast.error('Please select a track or playlist'); return; }
     try {
       if (editingId) {
-        await api.updateRecurringMixerSchedule?.(editingId, form);
+        await api.updateRecurringMixerSchedule(editingId, form);
         toast.success('Mixer schedule updated');
       } else {
-        await api.createRecurringMixerSchedule?.(form);
+        await api.createRecurringMixerSchedule(form);
         toast.success('Mixer schedule created');
       }
       reset();
@@ -119,13 +146,13 @@ function MixerSchedules() {
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this schedule?')) return;
-    try { await api.deleteRecurringMixerSchedule?.(id); toast.info('Schedule removed'); }
+    try { await api.deleteRecurringMixerSchedule(id); toast.info('Schedule removed'); }
     catch (err) { toast.error(err.message); }
   };
 
   const toggleStatus = async (s) => {
     try {
-      await api.updateRecurringMixerSchedule?.(s.id, { ...s, enabled: !s.enabled });
+      await api.updateRecurringMixerSchedule(s.id, { ...s, enabled: !s.enabled });
       toast.success(s.enabled ? 'Schedule disabled' : 'Schedule enabled');
     } catch (err) { toast.error(err.message); }
   };
@@ -164,7 +191,6 @@ function MixerSchedules() {
             {/* Col 1 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
 
-              {/* Name */}
               <div>
                 <label style={labelStyle}>Schedule Name</label>
                 <input type="text" value={form.name} required
@@ -172,12 +198,11 @@ function MixerSchedules() {
                   placeholder="e.g. Morning Jazz" style={inputStyle} />
               </div>
 
-              {/* Type */}
               <div>
                 <label style={labelStyle}>Source Type</label>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   {[
-                    { val: 'track', icon: <Music size={12} />, txt: 'Single Track' },
+                    { val: 'track',    icon: <Music size={12} />,     txt: 'Single Track' },
                     { val: 'playlist', icon: <ListMusic size={12} />, txt: 'Playlist' },
                   ].map(o => (
                     <button key={o.val} type="button"
@@ -189,7 +214,6 @@ function MixerSchedules() {
                 </div>
               </div>
 
-              {/* Target */}
               <div>
                 <label style={labelStyle}>{form.type === 'track' ? 'Track' : 'Playlist'}</label>
                 <select value={form.target_id} required
@@ -208,23 +232,18 @@ function MixerSchedules() {
                 )}
               </div>
 
-              {/* Deck */}
               <div>
                 <label style={labelStyle}>Target Deck</label>
                 <div style={{ display: 'flex', gap: '0.4rem' }}>
                   {DECK_OPTIONS.map(d => (
                     <button key={d.id} type="button" onClick={() => toggleDeck(d.id)}
-                      style={{
-                        ...chipBtn(form.deck_id === d.id), padding: '0.4rem 0.75rem',
-                        fontWeight: '700', fontSize: '0.82rem',
-                      }}>
+                      style={{ ...chipBtn(form.deck_id === d.id), padding: '0.4rem 0.75rem', fontWeight: '700', fontSize: '0.82rem' }}>
                       {d.label}
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* Times */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                 <div>
                   <label style={labelStyle}>Start Time</label>
@@ -239,12 +258,34 @@ function MixerSchedules() {
                     style={{ ...inputStyle, colorScheme: 'dark' }} />
                 </div>
               </div>
+
+              {/* ── Jingles ─────────────────────────────── */}
+              <div style={{
+                padding: '0.85rem', borderRadius: '10px',
+                background: 'rgba(165,94,234,0.06)', border: '1px solid rgba(165,94,234,0.2)',
+                display: 'flex', flexDirection: 'column', gap: '0.75rem',
+              }}>
+                <div style={{ fontSize: '0.72rem', color: '#a55eea', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Music2 size={11} /> Jingles (optional)
+                </div>
+                <JinglePicker
+                  label="Intro Jingle (plays before music starts)"
+                  value={form.jingle_start}
+                  onChange={v => setForm({ ...form, jingle_start: v })}
+                  library={library}
+                />
+                <JinglePicker
+                  label="Outro Jingle (plays when music stops)"
+                  value={form.jingle_end}
+                  onChange={v => setForm({ ...form, jingle_end: v })}
+                  library={library}
+                />
+              </div>
             </div>
 
             {/* Col 2 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
 
-              {/* Active Days */}
               <div>
                 <label style={labelStyle}>Active Days</label>
                 <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
@@ -257,7 +298,6 @@ function MixerSchedules() {
                 </div>
               </div>
 
-              {/* Excluded Dates */}
               <div>
                 <label style={labelStyle}>Excluded Dates (holidays / exceptions)</label>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -293,13 +333,12 @@ function MixerSchedules() {
                 )}
               </div>
 
-              {/* Audio Settings */}
               <div>
                 <label style={labelStyle}>Audio Settings</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
                   {[
-                    { key: 'fade_in',  label: 'Fade In', max: 30, unit: 's' },
-                    { key: 'fade_out', label: 'Fade Out', max: 30, unit: 's' },
+                    { key: 'fade_in',  label: 'Fade In',  max: 30,  unit: 's' },
+                    { key: 'fade_out', label: 'Fade Out', max: 30,  unit: 's' },
                     { key: 'volume',   label: 'Volume',   max: 100, unit: '%' },
                   ].map(f => (
                     <div key={f.key}>
@@ -316,7 +355,6 @@ function MixerSchedules() {
                 </div>
               </div>
 
-              {/* Loop toggle */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <button type="button" onClick={() => setForm(f => ({ ...f, loop: !f.loop }))} style={{
                   width: '40px', height: '22px', borderRadius: '11px', border: 'none', cursor: 'pointer',
@@ -334,7 +372,6 @@ function MixerSchedules() {
                 </span>
               </div>
 
-              {/* Actions */}
               <div style={{ display: 'flex', gap: '0.75rem', marginTop: 'auto', paddingTop: '0.5rem' }}>
                 <button type="submit" style={{
                   flex: 1, padding: '0.75rem', borderRadius: '8px', border: 'none',
@@ -414,10 +451,12 @@ function MixerCard({ s, deckName, onEdit, onDelete, onToggle }) {
       )}
 
       <div style={{ marginTop: '0.6rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0.75rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px' }}>
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
           <StatChip icon={<Volume2 size={10} />} val={`${s.volume ?? 80}%`} />
           <StatChip icon={<Settings2 size={10} />} val={`↑${s.fade_in}s ↓${s.fade_out}s`} />
           {s.loop && <StatChip icon={null} val="↻ loop" color="#a55eea" />}
+          {s.jingle_start && <StatChip icon={<Music2 size={10} />} val="Intro ♪" color="#a55eea" />}
+          {s.jingle_end   && <StatChip icon={<Music2 size={10} />} val="Outro ♪" color="#a55eea" />}
         </div>
         <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>
           {s.type === 'playlist' ? <ListMusic size={11} /> : <Music size={11} />}
@@ -432,7 +471,7 @@ function MixerCard({ s, deckName, onEdit, onDelete, onToggle }) {
 ════════════════════════════════════════════════════════════ */
 const ANN_DEFAULT = {
   name: '',
-  type: 'Announcement',   // 'Announcement' | 'Microphone'
+  type: 'Announcement',
   announcement_id: '',
   deck_id: 'a',
   start_time: '09:00',
@@ -442,18 +481,20 @@ const ANN_DEFAULT = {
   fade_duration: 5,
   music_volume: 10,
   target_decks: ['a'],
+  jingle_start: null,   // ← NEW
+  jingle_end: null,     // ← NEW
   enabled: true,
 };
 
 function AnnSchedules() {
-  const { announcements, recurringSchedules = [], toast, api } = useApp();
+  const { library, announcements, recurringSchedules = [], toast, api } = useApp();
   const [isAdding, setIsAdding]   = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm]           = useState(ANN_DEFAULT);
   const [excludeInput, setExcludeInput] = useState('');
 
   const reset = () => { setForm(ANN_DEFAULT); setEditingId(null); setIsAdding(false); setExcludeInput(''); };
-  const startEdit = (s) => { setForm({ ...s }); setEditingId(s.id); setIsAdding(true); };
+  const startEdit = (s) => { setForm({ ...ANN_DEFAULT, ...s }); setEditingId(s.id); setIsAdding(true); };
 
   const toggleDay = (id) => {
     const days = form.active_days.includes(id)
@@ -589,7 +630,6 @@ function AnnSchedules() {
                 </div>
               </div>
 
-              {/* Target Decks for ducking */}
               <div>
                 <label style={labelStyle}>Duck These Decks (Music Fade)</label>
                 <div style={{ display: 'flex', gap: '0.4rem' }}>
@@ -600,6 +640,29 @@ function AnnSchedules() {
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* ── Jingles ─────────────────────────────── */}
+              <div style={{
+                padding: '0.85rem', borderRadius: '10px',
+                background: 'rgba(165,94,234,0.06)', border: '1px solid rgba(165,94,234,0.2)',
+                display: 'flex', flexDirection: 'column', gap: '0.75rem',
+              }}>
+                <div style={{ fontSize: '0.72rem', color: '#a55eea', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Music2 size={11} /> Jingles (optional)
+                </div>
+                <JinglePicker
+                  label="Intro Jingle (plays before mic / announcement)"
+                  value={form.jingle_start}
+                  onChange={v => setForm({ ...form, jingle_start: v })}
+                  library={library}
+                />
+                <JinglePicker
+                  label="Outro Jingle (plays after mic / announcement)"
+                  value={form.jingle_end}
+                  onChange={v => setForm({ ...form, jingle_end: v })}
+                  library={library}
+                />
               </div>
             </div>
 
@@ -618,7 +681,6 @@ function AnnSchedules() {
                 </div>
               </div>
 
-              {/* Excluded Dates */}
               <div>
                 <label style={labelStyle}>Excluded Dates</label>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -654,12 +716,11 @@ function AnnSchedules() {
                 )}
               </div>
 
-              {/* Audio ducking */}
               <div>
                 <label style={labelStyle}>Audio Ducking</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                   {[
-                    { key: 'fade_duration', label: 'Fade Duration', max: 30, unit: 's' },
+                    { key: 'fade_duration', label: 'Fade Duration', max: 30,  unit: 's' },
                     { key: 'music_volume',  label: 'Music Level',   max: 100, unit: '%' },
                   ].map(f => (
                     <div key={f.key}>
@@ -752,9 +813,11 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
       )}
 
       <div style={{ marginTop: '0.6rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0.75rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px' }}>
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
           <StatChip icon={<Volume2 size={10} />} val={`Music ${s.music_volume}%`} />
           <StatChip icon={<Settings2 size={10} />} val={`Fade ${s.fade_duration}s`} />
+          {s.jingle_start && <StatChip icon={<Music2 size={10} />} val="Intro ♪" color="#a55eea" />}
+          {s.jingle_end   && <StatChip icon={<Music2 size={10} />} val="Outro ♪" color="#a55eea" />}
         </div>
         <div style={{ display: 'flex', gap: '0.3rem' }}>
           {(s.target_decks || []).map(d => (
@@ -839,7 +902,7 @@ function EmptyState({ icon, title, sub, onAdd, show }) {
    PAGE ROOT
 ════════════════════════════════════════════════════════════ */
 const TABS = [
-  { id: 'mixer', label: 'Mixer Deck',    icon: <Music size={16} /> },
+  { id: 'mixer', label: 'Mixer Deck',         icon: <Music size={16} /> },
   { id: 'ann',   label: 'Mic & Announcements', icon: <Mic size={16} /> },
 ];
 
@@ -855,8 +918,7 @@ export default function SchedulesPage() {
       {/* Tab switcher */}
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '2rem', background: 'rgba(255,255,255,0.03)', padding: '0.4rem', borderRadius: '10px', border: '1px solid var(--panel-border)' }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            style={tabBtn(tab === t.id)}>
+          <button key={t.id} onClick={() => setTab(t.id)} style={tabBtn(tab === t.id)}>
             {t.icon} {t.label}
           </button>
         ))}

@@ -36,15 +36,16 @@ export function AppProvider({ children }) {
     c: DEFAULT_DECK('c', 'Karting'),
     d: DEFAULT_DECK('d', 'Deck D'),
   });
-  const [library,       setLibrary]       = useState([]);
-  const [announcements, setAnnouncements] = useState([]);
-  const [playlists,       setPlaylists]       = useState([]);
-  const [musicSchedules,  setMusicSchedules]  = useState([]);
-  const [recurringSchedules, setRecurringSchedules] = useState([]);
-  const [mic,           setMic]           = useState({ active: false, targets: [] });
-  const [wsConnected,   setWsConnected]   = useState(false);
-  const [settings,      setSettings]      = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
-  const [toasts,        setToasts]        = useState([]);
+  const [library,                   setLibrary]                   = useState([]);
+  const [announcements,             setAnnouncements]             = useState([]);
+  const [playlists,                 setPlaylists]                 = useState([]);
+  const [musicSchedules,            setMusicSchedules]            = useState([]);
+  const [recurringSchedules,        setRecurringSchedules]        = useState([]);
+  const [recurringMixerSchedules,   setRecurringMixerSchedules]   = useState([]);  // ← NEW
+  const [mic,                       setMic]                       = useState({ active: false, targets: [] });
+  const [wsConnected,               setWsConnected]               = useState(false);
+  const [settings,                  setSettings]                  = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
+  const [toasts,                    setToasts]                    = useState([]);
   const wsRef   = useRef(null);
   const toastId = useRef(0);
 
@@ -78,8 +79,6 @@ export function AppProvider({ children }) {
     return `${protocol}://${host}${path}`;
   }
 
-  // Use a ref for the message handler so connectWS never goes stale.
-  // The ref is always up to date — no closure capture issue.
   const handleWsMessageRef = useRef(null);
 
   const handleWsMessage = useCallback((msg) => {
@@ -95,7 +94,8 @@ export function AppProvider({ children }) {
         if (msg.settings)        setSettings(prev => ({ ...prev, ...msg.settings }));
         if (msg.playlists)        setPlaylists(msg.playlists);
         if (msg.music_schedules)  setMusicSchedules(msg.music_schedules);
-        if (msg.recurring_schedules) setRecurringSchedules(msg.recurring_schedules);
+        if (msg.recurring_schedules)       setRecurringSchedules(msg.recurring_schedules);
+        if (msg.recurring_mixer_schedules) setRecurringMixerSchedules(msg.recurring_mixer_schedules);  // ← NEW
         break;
       case 'DECK_STATE':
         if (msg.decks) {
@@ -109,13 +109,13 @@ export function AppProvider({ children }) {
       case 'SETTINGS_UPDATED':      if (msg.settings) setSettings(prev => ({ ...prev, ...msg.settings })); break;
       case 'LIBRARY_UPDATED':       fetchLibrary(); break;
       case 'PLAYLISTS_UPDATED':        if (msg.playlists)  setPlaylists(msg.playlists); break;
-      case 'MUSIC_SCHEDULES_UPDATED': if (msg.schedules) setMusicSchedules(msg.schedules); break;
-      case 'RECURRING_SCHEDULES_UPDATED': if (msg.schedules) setRecurringSchedules(msg.schedules); break;
+      case 'MUSIC_SCHEDULES_UPDATED':  if (msg.schedules) setMusicSchedules(msg.schedules); break;
+      case 'RECURRING_SCHEDULES_UPDATED':       if (msg.schedules) setRecurringSchedules(msg.schedules); break;
+      case 'RECURRING_MIXER_SCHEDULES_UPDATED': if (msg.schedules) setRecurringMixerSchedules(msg.schedules); break;  // ← NEW
       default: break;
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keep the ref in sync with the latest handler every render.
   handleWsMessageRef.current = handleWsMessage;
 
   const connectWS = useCallback(() => {
@@ -124,7 +124,6 @@ export function AppProvider({ children }) {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onopen    = () => { console.log('[WS] Connected'); setWsConnected(true); };
-    // Always call through the ref so we always use the latest handler.
     ws.onmessage = (evt) => { try { handleWsMessageRef.current(JSON.parse(evt.data)); } catch (_) {} };
     ws.onclose   = () => { setWsConnected(false); console.log('[WS] Disconnected – retrying in 3s'); setTimeout(connectWS, 3000); };
     ws.onerror   = () => ws.close();
@@ -136,6 +135,7 @@ export function AppProvider({ children }) {
     fetchAnnouncements();
     fetchPlaylists();
     fetchRecurringSchedules();
+    fetchRecurringMixerSchedules();  // ← NEW
     return () => { wsRef.current?.close(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -154,6 +154,10 @@ export function AppProvider({ children }) {
   }
   async function fetchRecurringSchedules() {
     try { const r = await fetch('/api/recurring-schedules'); if (r.ok) setRecurringSchedules(await r.json()); } catch (_) {}
+  }
+  // ── NEW ──────────────────────────────────────────────────────────────────────
+  async function fetchRecurringMixerSchedules() {
+    try { const r = await fetch('/api/recurring-mixer-schedules'); if (r.ok) setRecurringMixerSchedules(await r.json()); } catch (_) {}
   }
 
   const api = {
@@ -318,7 +322,7 @@ export function AppProvider({ children }) {
       const r = await fetch(`/api/music-schedules/${id}/trigger`, { method: 'POST' });
       if (!r.ok) throw new Error(await parseError(r));
     },
-    // ── Recurring Schedules ──
+    // ── Recurring Schedules (Mic & Announcements) ──
     createRecurringSchedule: async (payload) => {
       const r = await fetch('/api/recurring-schedules', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -339,10 +343,38 @@ export function AppProvider({ children }) {
       const r = await fetch(`/api/recurring-schedules/${id}`, { method: 'DELETE' });
       if (!r.ok) throw new Error(await parseError(r));
     },
+    // ── Recurring Mixer Schedules (Music / Deck) ── NEW ──────────────────────
+    createRecurringMixerSchedule: async (payload) => {
+      const r = await fetch('/api/recurring-mixer-schedules', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      await fetchRecurringMixerSchedules();
+      return r.json();
+    },
+    updateRecurringMixerSchedule: async (id, payload) => {
+      const r = await fetch(`/api/recurring-mixer-schedules/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      await fetchRecurringMixerSchedules();
+      return r.json();
+    },
+    deleteRecurringMixerSchedule: async (id) => {
+      const r = await fetch(`/api/recurring-mixer-schedules/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+      await fetchRecurringMixerSchedules();
+    },
   };
 
   return (
-    <AppContext.Provider value={{ decks, library, announcements, playlists, musicSchedules, recurringSchedules, mic, wsConnected, settings, toast, api }}>
+    <AppContext.Provider value={{
+      decks, library, announcements, playlists, musicSchedules,
+      recurringSchedules, recurringMixerSchedules,
+      mic, wsConnected, settings, toast, api,
+    }}>
       {children}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </AppContext.Provider>
