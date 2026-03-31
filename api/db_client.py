@@ -120,6 +120,9 @@ class DBClient:
         if isinstance(r.get("excluded_days"), str):
             try: r["excluded_days"] = json.loads(r["excluded_days"])
             except: r["excluded_days"] = []
+        if isinstance(r.get("multi_tracks"), str):
+            try: r["multi_tracks"] = json.loads(r["multi_tracks"])
+            except: r["multi_tracks"] = []
         if isinstance(r.get("created_at"), datetime):
             r["created_at"] = r["created_at"].isoformat()
         return r
@@ -662,6 +665,7 @@ class DBClient:
             "loop":         s.get("loop", True),
             "jingle_start": s.get("jingle_start"),
             "jingle_end":   s.get("jingle_end"),
+            "multi_tracks": json.dumps(s.get("multi_tracks", [])),
             "enabled":      s.get("enabled", True),
         }
         if self.mode == "cloud":
@@ -679,8 +683,8 @@ class DBClient:
                         INSERT INTO recurring_mixer_schedules
                             (id, name, type, target_id, deck_id, start_time, stop_time,
                              active_days, excluded_days, fade_in, fade_out, volume, loop,
-                             jingle_start, jingle_end, enabled)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                             jingle_start, jingle_end, multi_tracks, enabled)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name, type = EXCLUDED.type,
                             target_id = EXCLUDED.target_id, deck_id = EXCLUDED.deck_id,
@@ -689,12 +693,12 @@ class DBClient:
                             fade_in = EXCLUDED.fade_in, fade_out = EXCLUDED.fade_out,
                             volume = EXCLUDED.volume, loop = EXCLUDED.loop,
                             jingle_start = EXCLUDED.jingle_start, jingle_end = EXCLUDED.jingle_end,
-                            enabled = EXCLUDED.enabled
+                            multi_tracks = EXCLUDED.multi_tracks, enabled = EXCLUDED.enabled
                         """,
                         (data["id"], data["name"], data["type"], data["target_id"], data["deck_id"],
                          data["start_time"], data["stop_time"], data["active_days"], data["excluded_days"],
                          data["fade_in"], data["fade_out"], data["volume"], data["loop"],
-                         data["jingle_start"], data["jingle_end"], data["enabled"]),
+                         data["jingle_start"], data["jingle_end"], data["multi_tracks"], data["enabled"]),
                     )
             except Exception as e:
                 print(f"[DB] save_recurring_mixer_schedule (local) failed: {e}")

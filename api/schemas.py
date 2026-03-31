@@ -97,6 +97,7 @@ class RecurringScheduleCreateRequest(BaseModel):
     target_decks: List[str]
     jingle_start: Optional[str] = None  # library filename
     jingle_end: Optional[str] = None    # library filename
+    multi_tracks: List[str] = []   # filename list if type='multi_track'
     enabled: bool = True
 
 class RecurringSchedule(BaseModel):
@@ -133,6 +134,7 @@ class RecurringMixerScheduleCreateRequest(BaseModel):
     loop: bool = True
     jingle_start: Optional[str] = None  # library filename
     jingle_end: Optional[str] = None    # library filename
+    multi_tracks: List[str] = []   # filename list if type='multi_track'
     enabled: bool = True
 
 class RecurringMixerSchedule(BaseModel):

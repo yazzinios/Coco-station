@@ -45,7 +45,7 @@ DECKS: Dict[str, dict] = {
     "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
 }
 ANNOUNCEMENTS: List[dict] = []
-SETTINGS: dict = {"ducking_percent": 5, "mic_ducking_percent": 20, "on_air_beep": "default", "db_mode": "local", "on_air_chime_enabled": False}
+SETTINGS: dict = {"ducking_percent": 5, "mic_ducking_percent": 5, "on_air_beep": "default", "db_mode": "local", "on_air_chime_enabled": False}
 MIC_STATE: dict = {"active": False, "targets": []}
 PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
@@ -110,6 +110,23 @@ async def _trigger_music_schedule(s: dict):
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
         except Exception as e:
             print(f"[scheduler] play playlist error: {e}")
+    elif s["type"] == "multi_track":
+        tracks = [t for t in s.get("multi_tracks", []) if (MEDIA_DIR / t).exists()]
+        if not tracks:
+            print(f"[scheduler] No valid tracks in multi_track schedule: {s.get('name')}")
+            return
+        DECK_PLAYLISTS[deck_id] = {"playlist_id": "multi_track", "tracks": tracks, "index": 0, "loop": loop}
+        DECKS[deck_id].update({
+            "track": tracks[0], "is_playing": True, "is_paused": False,
+            "is_loop": False, "playlist_id": "multi_track",
+            "playlist_index": 0, "playlist_loop": loop,
+        })
+        filepath = str(Path("/library") / tracks[0])
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
+        except Exception as e:
+            print(f"[scheduler] play multi_track error: {e}")
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
 
@@ -167,10 +184,12 @@ async def _trigger_recurring_mixer_schedule(rs: dict):
 
     # Step 3 — play content
     await _trigger_music_schedule({
-        "deck_id":   deck_id,
-        "type":      rs["type"],
-        "target_id": rs["target_id"],
-        "loop":      loop,
+        "deck_id":      deck_id,
+        "name":         rs.get("name", "Recurring"),
+        "type":         rs["type"],
+        "target_id":    rs["target_id"],
+        "multi_tracks": rs.get("multi_tracks", []),
+        "loop":         loop,
     })
 
 
@@ -480,15 +499,14 @@ async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int
         final_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}") for did in deck_ids]
         await asyncio.gather(*final_tasks, return_exceptions=True)
 
-async def _restore_volumes(deck_ids: list):
+async def _restore_volumes(deck_ids: list, duck_pct: int):
     async with httpx.AsyncClient(timeout=3) as c:
         steps    = FADE_STEPS
         delay    = FADE_IN_STEP_MS / 1000.0
-        duck_pct = SETTINGS.get("ducking_percent", 5)
         per_deck = {did: DECKS[did]["volume"] for did in deck_ids if did in DECKS}
         current  = {did: float(duck_pct) for did in deck_ids}
         deltas   = {did: (per_deck.get(did, 100) - duck_pct) / steps for did in deck_ids}
-        for _ in range(steps):
+        for i in range(steps):
             tasks = []
             for did in deck_ids:
                 current[did] += deltas[did]
@@ -525,7 +543,9 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
     duck_pct = SETTINGS.get("ducking_percent", 5)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
-        await _fade_volumes(playing_decks, 100, duck_pct, FADE_STEP_MS)
+        for did in playing_decks:
+            current_vol = DECKS[did]["volume"]
+            await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
     await _play_chime_and_wait(deck_ids)
     ann_path = Path(filepath)
     local_path = ANNOUNCEMENTS_DIR / ann_path.name
@@ -547,16 +567,19 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
         await _restore_volumes(playing_decks)
 
 async def fade_and_enable_mic(deck_ids: list):
-    duck_pct = SETTINGS.get("mic_ducking_percent", 20)
+    duck_pct = SETTINGS.get("mic_ducking_percent", 5)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
-        await _fade_volumes(playing_decks, 100, duck_pct, FADE_STEP_MS)
+        for did in playing_decks:
+            current_vol = DECKS[did]["volume"]
+            await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
     await _play_chime_and_wait(deck_ids)
 
 async def fade_restore_after_mic(deck_ids: list):
+    duck_pct = SETTINGS.get("mic_ducking_percent", 5)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
-        await _restore_volumes(playing_decks)
+        await _restore_volumes(playing_decks, duck_pct)
 
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
@@ -1096,6 +1119,7 @@ async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateReque
         "fade_in": req.fade_in, "fade_out": req.fade_out,
         "volume": req.volume, "loop": req.loop,
         "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+        "multi_tracks": req.multi_tracks,
         "enabled": req.enabled, "last_run_date": None,
         "created_at": datetime.now().isoformat(),
     }
@@ -1121,6 +1145,7 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
         "fade_in": req.fade_in, "fade_out": req.fade_out,
         "volume": req.volume, "loop": req.loop,
         "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+        "multi_tracks": req.multi_tracks,
         "enabled": req.enabled,
     })
     RECURRING_MIXER_SCHEDULES[idx] = updated

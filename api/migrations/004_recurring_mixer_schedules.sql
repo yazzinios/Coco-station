@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS recurring_mixer_schedules (
     loop BOOLEAN DEFAULT TRUE,
     jingle_start TEXT,                    -- library filename or NULL
     jingle_end TEXT,                      -- library filename or NULL
+    multi_tracks TEXT DEFAULT '[]',       -- JSON array of track filenames
     enabled BOOLEAN DEFAULT TRUE,
     last_run_date TEXT,                   -- "YYYY-MM-DD" of most recent trigger
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

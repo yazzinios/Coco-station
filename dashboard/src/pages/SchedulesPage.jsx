@@ -98,8 +98,9 @@ const MIXER_DEFAULT = {
   fade_out: 3,
   volume: 80,
   loop: true,
-  jingle_start: null,   // ← NEW: track filename or null
-  jingle_end: null,     // ← NEW: track filename or null
+  jingle_start: null,
+  jingle_end: null,
+  multi_tracks: [],     // ← NEW: list of track filenames
   enabled: true,
 };
 
@@ -131,7 +132,9 @@ function MixerSchedules() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.target_id) { toast.error('Please select a track or playlist'); return; }
+    if (form.type === 'track' && !form.target_id) { toast.error('Please select a track'); return; }
+    if (form.type === 'playlist' && !form.target_id) { toast.error('Please select a playlist'); return; }
+    if (form.type === 'multi_track' && form.multi_tracks.length === 0) { toast.error('Please select at least one track'); return; }
     try {
       if (editingId) {
         await api.updateRecurringMixerSchedule(editingId, form);
@@ -202,12 +205,13 @@ function MixerSchedules() {
                 <label style={labelStyle}>Source Type</label>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   {[
-                    { val: 'track',    icon: <Music size={12} />,     txt: 'Single Track' },
-                    { val: 'playlist', icon: <ListMusic size={12} />, txt: 'Playlist' },
+                    { val: 'track',       icon: <Music size={12} />,     txt: 'Single' },
+                    { val: 'multi_track', icon: <Play size={12} />,      txt: 'Multi-Track' },
+                    { val: 'playlist',    icon: <ListMusic size={12} />, txt: 'Playlist' },
                   ].map(o => (
                     <button key={o.val} type="button"
                       onClick={() => setForm({ ...form, type: o.val, target_id: '' })}
-                      style={{ ...tabBtn(form.type === o.val), fontSize: '0.8rem', padding: '0.45rem 0.5rem' }}>
+                      style={{ ...tabBtn(form.type === o.val), fontSize: '0.74rem', padding: '0.45rem 0.25rem' }}>
                       {o.icon} {o.txt}
                     </button>
                   ))}
@@ -215,17 +219,59 @@ function MixerSchedules() {
               </div>
 
               <div>
-                <label style={labelStyle}>{form.type === 'track' ? 'Track' : 'Playlist'}</label>
-                <select value={form.target_id} required
-                  onChange={e => setForm({ ...form, target_id: e.target.value })}
-                  style={{ ...inputStyle, cursor: 'pointer' }}>
-                  <option value="">— Select {form.type === 'track' ? 'a track' : 'a playlist'} —</option>
-                  {form.type === 'track'
-                    ? library.map(f => <option key={f.filename} value={f.filename}>{f.filename}</option>)
-                    : playlists.map(p => <option key={p.id} value={p.id}>{p.name} ({p.tracks?.length ?? 0} tracks)</option>)
-                  }
-                </select>
-                {form.type === 'track' && library.length === 0 && (
+                <label style={labelStyle}>
+                  {form.type === 'track' ? 'Select Track' : form.type === 'playlist' ? 'Select Playlist' : 'Add Tracks'}
+                </label>
+
+                {form.type === 'multi_track' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      <select value=""
+                        onChange={e => {
+                          if (e.target.value && !form.multi_tracks.includes(e.target.value)) {
+                            setForm({ ...form, multi_tracks: [...form.multi_tracks, e.target.value] });
+                          }
+                        }}
+                        style={{ ...inputStyle, cursor: 'pointer', flex: 1 }}>
+                        <option value="">— Add a track —</option>
+                        {library.map(f => <option key={f.filename} value={f.filename}>{f.filename}</option>)}
+                      </select>
+                    </div>
+                    {form.multi_tracks.length > 0 && (
+                      <div style={{
+                        display: 'flex', flexDirection: 'column', gap: '0.25rem',
+                        maxHeight: '120px', overflowY: 'auto', padding: '0.5rem',
+                        background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--panel-border)'
+                      }}>
+                        {form.multi_tracks.map((t, idx) => (
+                          <div key={`${t}-${idx}`} style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            fontSize: '0.75rem', color: 'var(--text-secondary)',
+                            padding: '0.2rem 0.4rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px'
+                          }}>
+                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{idx + 1}. {t}</span>
+                            <button type="button" onClick={() => setForm({ ...form, multi_tracks: form.multi_tracks.filter((_, i) => i !== idx) })}
+                              style={{ background: 'none', border: 'none', color: '#ff4757', cursor: 'pointer', padding: '2px' }}>
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <select value={form.target_id} required
+                    onChange={e => setForm({ ...form, target_id: e.target.value })}
+                    style={{ ...inputStyle, cursor: 'pointer' }}>
+                    <option value="">— Select {form.type === 'track' ? 'a track' : 'a playlist'} —</option>
+                    {form.type === 'track'
+                      ? library.map(f => <option key={f.filename} value={f.filename}>{f.filename}</option>)
+                      : playlists.map(p => <option key={p.id} value={p.id}>{p.name} ({p.tracks?.length ?? 0} tracks)</option>)
+                    }
+                  </select>
+                )}
+
+                {library.length === 0 && (
                   <div style={{ marginTop: '0.3rem', fontSize: '0.72rem', color: '#ff4757', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                     <TriangleAlert size={11} /> No tracks in library yet
                   </div>
@@ -422,7 +468,7 @@ function MixerCard({ s, deckName, onEdit, onDelete, onToggle }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
         <div>
           <div style={{ fontWeight: '600', fontSize: '0.95rem', marginBottom: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            {s.type === 'playlist' ? <ListMusic size={13} /> : <Music size={13} />} {s.name}
+            {s.type === 'playlist' ? <ListMusic size={13} /> : s.type === 'multi_track' ? <Play size={13} /> : <Music size={13} />} {s.name}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Clock size={11} /> {s.start_time} — {s.stop_time}</span>
@@ -459,7 +505,7 @@ function MixerCard({ s, deckName, onEdit, onDelete, onToggle }) {
           {s.jingle_end   && <StatChip icon={<Music2 size={10} />} val="Outro ♪" color="#a55eea" />}
         </div>
         <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>
-          {s.type === 'playlist' ? <ListMusic size={11} /> : <Music size={11} />}
+          {s.type === 'playlist' ? <ListMusic size={11} /> : s.type === 'multi_track' ? <Play size={11} /> : <Music size={11} />}
         </span>
       </div>
     </div>
