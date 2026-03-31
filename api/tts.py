@@ -13,6 +13,7 @@ VOICE_MAP = {
     "es":  "es-ES-ElviraNeural",
     "de":  "de-DE-KatjaNeural",
     "it":  "it-IT-ElsaNeural",
+    "ma":  "ar-MA-MounaNeural",  # Darija / Moroccan Arabic
 }
 
 async def generate_tts(text: str, lang: str = "en") -> str:

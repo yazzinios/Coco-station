@@ -23,6 +23,7 @@ const TTS_LANGUAGES = [
   { code: 'es', label: '🇪🇸 Español',  voice: 'es-ES-ElviraNeural' },
   { code: 'de', label: '🇩🇪 Deutsch',  voice: 'de-DE-KatjaNeural' },
   { code: 'it', label: '🇮🇹 Italiano', voice: 'it-IT-ElsaNeural' },
+  { code: 'ma', label: '🇲🇦 Darija',   voice: 'ar-MA-MounaNeural' },
 ];
 
 export default function AnnouncementsPage() {
