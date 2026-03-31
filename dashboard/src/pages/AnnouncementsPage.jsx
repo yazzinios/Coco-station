@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio } from 'lucide-react';
+import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio, Edit2, X, Users } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 const ORIGIN = window.location.origin;
@@ -38,7 +38,21 @@ export default function AnnouncementsPage() {
   const [scheduledAt,   setScheduledAt]   = useState('');
   const [copiedIdx,     setCopiedIdx]     = useState(null);
   const [streamDeck,    setStreamDeck]    = useState('deck-a');
+  const [editingId,     setEditingId]     = useState(null);
+  const [listeners,     setListeners]     = useState({ total: 0, decks: {} });
   const fileRef = useRef(null);
+
+  React.useEffect(() => {
+    const poll = async () => {
+      try {
+        const data = await api.getListeners();
+        setListeners(data);
+      } catch {}
+    };
+    poll();
+    const inv = setInterval(poll, 5000);
+    return () => clearInterval(inv);
+  }, [api]);
 
   const copyLink = async (url, idx) => {
     try {
@@ -74,28 +88,58 @@ export default function AnnouncementsPage() {
     if (!name.trim()) { toast.error('Please give the announcement a name'); return; }
     setSubmitting(true);
     try {
-      if (type === 'TTS') {
-        if (!text.trim()) { toast.error('Please enter TTS text'); setSubmitting(false); return; }
-        await api.createTTS({
+      if (editingId) {
+        await api.updateAnnouncement(editingId, {
           name,
-          text,
-          lang,
           targets: selectedDecks,
           scheduled_at: scheduledAt || null,
+          // note: text/file updates usually require more complex handling if changed
         });
-        toast.success(scheduledAt ? 'TTS announcement scheduled!' : 'TTS announcement created!');
-        setName(''); setText(''); setScheduledAt('');
+        toast.success('Announcement updated!');
+        resetForm();
       } else {
-        if (!annFile) { toast.error('Please select an audio file'); setSubmitting(false); return; }
-        await api.uploadAnnouncement(annFile, name, selectedDecks, scheduledAt || null);
-        toast.success(scheduledAt ? `"${annFile.name}" scheduled!` : `"${annFile.name}" uploaded`);
-        setName(''); setAnnFile(null); setScheduledAt('');
+        if (type === 'TTS') {
+          if (!text.trim()) { toast.error('Please enter TTS text'); setSubmitting(false); return; }
+          await api.createTTS({
+            name,
+            text,
+            lang,
+            targets: selectedDecks,
+            scheduled_at: scheduledAt || null,
+          });
+          toast.success(scheduledAt ? 'TTS announcement scheduled!' : 'TTS announcement created!');
+          resetForm();
+        } else {
+          if (!annFile) { toast.error('Please select an audio file'); setSubmitting(false); return; }
+          await api.uploadAnnouncement(annFile, name, selectedDecks, scheduledAt || null);
+          toast.success(scheduledAt ? `"${annFile.name}" scheduled!` : `"${annFile.name}" uploaded`);
+          resetForm();
+        }
       }
     } catch (err) {
       toast.error(err.message);
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const resetForm = () => {
+    setName('');
+    setText('');
+    setScheduledAt('');
+    setAnnFile(null);
+    setEditingId(null);
+    setSelectedDecks(['ALL']);
+  };
+
+  const handleEdit = (ann) => {
+    setEditingId(ann.id);
+    setName(ann.name);
+    setType(ann.type);
+    setSelectedDecks(ann.targets || ['ALL']);
+    setScheduledAt(ann.scheduled_at ? ann.scheduled_at.slice(0, 16) : '');
+    // text is not stored in the list usually for MP3s, but TTS might have it
+    setText(ann.text || '');
   };
 
   const handlePlay = async (ann) => {
@@ -136,8 +180,15 @@ export default function AnnouncementsPage() {
 
         {/* ── Create Announcement ─────────────────────── */}
         <div className="glass-panel">
-          <h3 style={{ marginBottom: '1.5rem', color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Mic size={16} /> Create Announcement
+          <h3 style={{ marginBottom: '1.5rem', color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'space-between' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Mic size={16} /> {editingId ? 'Edit Announcement' : 'Create Announcement'}
+            </span>
+            {editingId && (
+              <button onClick={resetForm} style={{ background: 'none', border: 'none', color: '#ff4757', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.8rem' }}>
+                <X size={14} /> Cancel Edit
+              </button>
+            )}
           </h3>
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
 
@@ -277,7 +328,7 @@ export default function AnnouncementsPage() {
               }}
             >
               <Send size={16} />
-              {submitting ? 'Processing…' : type === 'TTS' ? 'Generate & Add' : 'Upload & Schedule'}
+              {submitting ? 'Processing…' : editingId ? 'Update Announcement' : (type === 'TTS' ? 'Generate & Add' : 'Upload & Schedule')}
             </button>
           </form>
         </div>
@@ -340,6 +391,14 @@ export default function AnnouncementsPage() {
                     }}>
                       <Play size={12} fill="currentColor" />
                     </button>
+                    <button onClick={() => handleEdit(a)} title="Edit announcement" style={{
+                      width: '30px', height: '30px', borderRadius: '50%', border: 'none',
+                      background: 'rgba(255,255,255,0.1)', color: 'white',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0, transition: 'all 0.2s',
+                    }}>
+                      <Edit2 size={12} />
+                    </button>
                     <button onClick={() => handleDelete(a)} title="Delete announcement" style={{
                       width: '30px', height: '30px', borderRadius: '50%', border: 'none',
                       background: 'rgba(255,71,87,0.1)', color: '#ff4757',
@@ -361,6 +420,9 @@ export default function AnnouncementsPage() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.75rem' }}>
           <h3 style={{ color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
             <Radio size={16} /> Stream Links
+            <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(46,213,115,0.1)', color: '#2ed573', padding: '0.2rem 0.6rem', borderRadius: '12px', fontSize: '0.75rem' }}>
+              <Users size={14} /> {listeners.total} Live Listeners
+            </span>
           </h3>
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             {DECK_IDS.map(d => (
