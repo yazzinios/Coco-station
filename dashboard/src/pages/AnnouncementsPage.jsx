@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import AnnouncementSchedules from '../components/AnnouncementSchedules';
 
 const ORIGIN = window.location.origin;
 const HOST   = window.location.hostname;
@@ -79,7 +78,7 @@ export default function AnnouncementsPage() {
         await api.createTTS({
           name,
           text,
-          lang,                                      // ← pass language to backend
+          lang,
           targets: selectedDecks,
           scheduled_at: scheduledAt || null,
         });
@@ -173,7 +172,6 @@ export default function AnnouncementsPage() {
             {/* TTS fields */}
             {type === 'TTS' ? (
               <>
-                {/* Language selector */}
                 <div>
                   <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Language / Voice</label>
                   <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
@@ -194,7 +192,6 @@ export default function AnnouncementsPage() {
                   </div>
                 </div>
 
-                {/* Text */}
                 <div>
                   <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Text</label>
                   <textarea
@@ -206,7 +203,6 @@ export default function AnnouncementsPage() {
                 </div>
               </>
             ) : (
-              /* MP3 upload */
               <div>
                 <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Audio File</label>
                 <div
@@ -358,8 +354,6 @@ export default function AnnouncementsPage() {
           )}
         </div>
       </div>
-
-      <AnnouncementSchedules />
 
       {/* ── Stream Links ──────────────────────────────────────── */}
       <div className="glass-panel" style={{ marginTop: '2rem' }}>

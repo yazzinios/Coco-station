@@ -6,6 +6,7 @@ import MixerPage from './pages/MixerPage';
 import AnnouncementsPage from './pages/AnnouncementsPage';
 import StatisticsPage from './pages/StatisticsPage';
 import SettingsPage from './pages/SettingsPage';
+import SchedulesPage from './pages/SchedulesPage';
 import { useApp } from './context/AppContext';
 
 function AppHeader({ onMenuToggle }) {
@@ -61,6 +62,7 @@ function AppLayout() {
         <Routes>
           <Route path="/"              element={<MixerPage />} />
           <Route path="/announcements" element={<AnnouncementsPage />} />
+          <Route path="/schedules"     element={<SchedulesPage />} />
           <Route path="/stats"         element={<StatisticsPage />} />
           <Route path="/settings"      element={<SettingsPage />} />
           <Route path="*"              element={<Navigate to="/" replace />} />
