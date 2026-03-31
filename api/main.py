@@ -20,7 +20,8 @@ from schemas import (
     TTSRequest, SettingUpdateRequest, LibraryItem, DeckState, Announcement,
     Playlist, PlaylistCreateRequest, PlaylistLoadRequest,
     MusicScheduleCreateRequest, MusicSchedule,
-    RecurringSchedule, RecurringScheduleCreateRequest
+    RecurringSchedule, RecurringScheduleCreateRequest,
+    RecurringMixerSchedule, RecurringMixerScheduleCreateRequest,
 )
 from tts import generate_tts
 from db_client import db
@@ -50,6 +51,7 @@ PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
 MUSIC_SCHEDULES: List[dict] = []
 RECURRING_SCHEDULES: List[dict] = []
+RECURRING_MIXER_SCHEDULES: List[dict] = []   # ← NEW
 
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
@@ -111,6 +113,118 @@ async def _trigger_music_schedule(s: dict):
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
 
+
+async def _play_library_track_on_deck(deck_id: str, filename: str):
+    """Play a single library track on a deck (used for jingles)."""
+    filepath = str(Path("/library") / filename)
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play_announcement",
+                         json={"filepath": filepath})
+    except Exception as e:
+        print(f"[jingle] error playing {filename} on deck {deck_id}: {e}")
+
+
+async def _play_jingle_and_wait(deck_id: str, filename: Optional[str]):
+    """Play a jingle track on the deck and wait for its duration."""
+    if not filename:
+        return
+    path = MEDIA_DIR / filename
+    if not path.exists():
+        print(f"[jingle] file not found: {filename}")
+        return
+    await _play_library_track_on_deck(deck_id, filename)
+    try:
+        duration = await get_audio_duration(path)
+        await asyncio.sleep(min(duration + 0.2, 30.0))
+    except Exception:
+        await asyncio.sleep(3.0)
+
+
+async def _trigger_recurring_mixer_schedule(rs: dict):
+    """
+    Full mixer-start sequence:
+      1. Play intro jingle on the deck and wait (optional)
+      2. Set deck volume to schedule volume
+      3. Load and play the track / playlist
+    Called at start_time each active day.
+    """
+    deck_id = rs["deck_id"]
+    volume  = rs.get("volume", 80)
+    loop    = rs.get("loop", True)
+
+    # Step 1 — intro jingle
+    if rs.get("jingle_start"):
+        await _play_jingle_and_wait(deck_id, rs["jingle_start"])
+
+    # Step 2 — set volume
+    try:
+        async with httpx.AsyncClient(timeout=3) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{volume}")
+    except Exception:
+        pass
+    DECKS[deck_id]["volume"] = volume
+
+    # Step 3 — play content
+    await _trigger_music_schedule({
+        "deck_id":   deck_id,
+        "type":      rs["type"],
+        "target_id": rs["target_id"],
+        "loop":      loop,
+    })
+
+
+async def _stop_recurring_mixer_schedule(rs: dict):
+    """
+    Full mixer-stop sequence:
+      1. Fade out deck volume
+      2. Stop the deck
+      3. Play outro jingle (optional)
+    Called at stop_time each active day.
+    """
+    deck_id  = rs["deck_id"]
+    fade_out = rs.get("fade_out", 3)
+
+    # Step 1 — fade out
+    current_vol = DECKS.get(deck_id, {}).get("volume", 80)
+    steps = max(1, fade_out * 5)
+    delay = fade_out / steps if steps else 0.1
+    delta = current_vol / steps
+    vol   = float(current_vol)
+    try:
+        async with httpx.AsyncClient(timeout=3) as c:
+            for _ in range(steps):
+                vol -= delta
+                v = max(0, round(vol))
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{v}")
+                await asyncio.sleep(delay)
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/0")
+    except Exception:
+        pass
+
+    # Step 2 — stop
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
+    except Exception:
+        pass
+    DECKS[deck_id]["is_playing"] = False
+    DECKS[deck_id]["is_paused"]  = False
+    DECKS[deck_id]["volume"]     = rs.get("volume", 80)   # restore stored volume
+    # Also restore volume on ffmpeg side
+    try:
+        async with httpx.AsyncClient(timeout=3) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{rs.get('volume', 80)}")
+    except Exception:
+        pass
+
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+
+    # Step 3 — outro jingle
+    if rs.get("jingle_end"):
+        await _play_jingle_and_wait(deck_id, rs["jingle_end"])
+
+
 async def scheduler_task():
     while True:
         await asyncio.sleep(10)
@@ -141,40 +255,57 @@ async def scheduler_task():
                         except Exception: pass
                 except Exception as e:
                     print(f"[scheduler] music schedule error: {e}")
-        # ── Recurring Schedules ──────────────────────────────────
-        day_of_week = now.weekday() # 0-6 (Mon-Sun)
+        # ── Recurring Schedules (Mic/Announcement) ───────────────
+        day_of_week = now.weekday()
         current_time_str = now.strftime("%H:%M")
         today_str = now.strftime("%Y-%m-%d")
 
         for rs in RECURRING_SCHEDULES:
             if not rs.get("enabled"): continue
             if day_of_week not in rs.get("active_days", []): continue
-            
-            # Check Start
+            if today_str in rs.get("excluded_days", []): continue
+
             if rs.get("start_time") == current_time_str and rs.get("last_run_date") != today_str:
                 rs["last_run_date"] = today_str
                 asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
-                
+
                 deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
-                if rs["type"] == "announcement":
-                    ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs["announcement_id"]), None)
+                if rs["type"] in ("announcement", "Announcement"):
+                    ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs.get("announcement_id")), None)
                     if ann:
                         filepath = str(Path("/announcements") / ann["filename"])
                         asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
                         await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
-                elif rs["type"] == "microphone":
-                    # For mic, we turn it on at start_time and off at stop_time
+                elif rs["type"] in ("microphone", "Microphone"):
                     await mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids]), _user=None)
 
-            # Check Stop (only for Microphone type)
-            if rs["type"] == "microphone" and rs.get("stop_time") == current_time_str:
-                # To prevent flickering, we only stop if it was likely turned on by this scheduler
+            if rs["type"] in ("microphone", "Microphone") and rs.get("stop_time") == current_time_str:
                 if MIC_STATE["active"]:
                     await mic_off(_user=None)
 
+        # ── Recurring Mixer Schedules ────────────────────────────
+        for rs in RECURRING_MIXER_SCHEDULES:
+            if not rs.get("enabled"): continue
+            if day_of_week not in rs.get("active_days", []): continue
+            if today_str in rs.get("excluded_days", []): continue
+
+            # START
+            if rs.get("start_time") == current_time_str and rs.get("last_run_date") != today_str:
+                rs["last_run_date"] = today_str
+                asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
+                asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
+                print(f"[mixer-scheduler] Started '{rs['name']}' on deck {rs['deck_id']}")
+
+            # STOP
+            if rs.get("stop_time") == current_time_str and rs.get("last_run_date") == today_str:
+                if DECKS.get(rs["deck_id"], {}).get("is_playing"):
+                    asyncio.create_task(_stop_recurring_mixer_schedule(rs))
+                    print(f"[mixer-scheduler] Stopped '{rs['name']}' on deck {rs['deck_id']}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES
+    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES
     print("CocoStation API Starting...")
 
     loop = asyncio.get_event_loop()
@@ -223,6 +354,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] Failed to load recurring schedules: {e}")
 
+    try:
+        RECURRING_MIXER_SCHEDULES = await loop.run_in_executor(None, db.get_recurring_mixer_schedules)
+        print(f"[startup] Loaded {len(RECURRING_MIXER_SCHEDULES)} recurring mixer schedule(s) from DB.")
+    except Exception as e:
+        print(f"[startup] Failed to load recurring mixer schedules: {e}")
+
     task = asyncio.create_task(scheduler_task())
     yield
     task.cancel()
@@ -243,7 +380,17 @@ def health():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    await websocket.send_json({"type": "FULL_STATE", "decks": list(DECKS.values()), "mic": MIC_STATE, "announcements": ANNOUNCEMENTS, "settings": SETTINGS, "playlists": list(PLAYLISTS.values()), "music_schedules": MUSIC_SCHEDULES, "recurring_schedules": RECURRING_SCHEDULES})
+    await websocket.send_json({
+        "type": "FULL_STATE",
+        "decks": list(DECKS.values()),
+        "mic": MIC_STATE,
+        "announcements": ANNOUNCEMENTS,
+        "settings": SETTINGS,
+        "playlists": list(PLAYLISTS.values()),
+        "music_schedules": MUSIC_SCHEDULES,
+        "recurring_schedules": RECURRING_SCHEDULES,
+        "recurring_mixer_schedules": RECURRING_MIXER_SCHEDULES,   # ← NEW
+    })
     try:
         while True: await websocket.receive_text()
     except WebSocketDisconnect: manager.disconnect(websocket)
@@ -312,12 +459,11 @@ async def get_audio_duration(filepath: Path) -> float:
         return 2.5
 
 # ── Fade helpers ────────────────────────────────────────────
-FADE_STEPS      = 20          # number of volume steps
-FADE_STEP_MS    = 60          # ms between steps  → ~1.2 s total fade
-FADE_IN_STEP_MS = 80          # slightly slower fade-in → ~1.6 s
+FADE_STEPS      = 20
+FADE_STEP_MS    = 60
+FADE_IN_STEP_MS = 80
 
 async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int):
-    """Smoothly transition volume on the given decks from from_pct → to_pct."""
     if from_pct == to_pct:
         return
     steps   = FADE_STEPS
@@ -328,26 +474,16 @@ async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int
         for _ in range(steps):
             current += delta
             vol = max(0, min(100, round(current)))
-            tasks = [
-                c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}")
-                for did in deck_ids
-            ]
+            tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}") for did in deck_ids]
             await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.sleep(delay)
-        # Snap to exact target
-        final_tasks = [
-            c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}")
-            for did in deck_ids
-        ]
+        final_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}") for did in deck_ids]
         await asyncio.gather(*final_tasks, return_exceptions=True)
 
 async def _restore_volumes(deck_ids: list):
-    """Fade volumes back to each deck's stored volume level."""
-    # Group decks by target volume for efficiency
     async with httpx.AsyncClient(timeout=3) as c:
-        steps   = FADE_STEPS
-        delay   = FADE_IN_STEP_MS / 1000.0
-        # Build per-deck fade: start from ducking level, end at stored volume
+        steps    = FADE_STEPS
+        delay    = FADE_IN_STEP_MS / 1000.0
         duck_pct = SETTINGS.get("ducking_percent", 5)
         per_deck = {did: DECKS[did]["volume"] for did in deck_ids if did in DECKS}
         current  = {did: float(duck_pct) for did in deck_ids}
@@ -360,16 +496,11 @@ async def _restore_volumes(deck_ids: list):
                 tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}"))
             await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.sleep(delay)
-        # Snap to stored volumes
-        final_tasks = [
-            c.post(f"{FFMPEG_URL}/decks/{did}/volume/{per_deck.get(did, 100)}")
-            for did in deck_ids
-        ]
+        final_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{per_deck.get(did, 100)}") for did in deck_ids]
         await asyncio.gather(*final_tasks, return_exceptions=True)
 
-# ── Chime (jingle) player ───────────────────────────────────
+# ── Chime (on-air jingle) player ───────────────────────────
 async def _play_chime_and_wait(deck_ids: list):
-    """Play the on-air chime on all target decks and wait for it to finish."""
     if not SETTINGS.get("on_air_chime_enabled", False):
         return
     chime_path = CHIMES_DIR / CHIME_FILENAME
@@ -389,59 +520,33 @@ async def _play_chime_and_wait(deck_ids: list):
     except Exception as e:
         print(f"[chime] error: {e}")
 
-# ── Master sequence: fade-out → jingle → content → fade-in ──
+# ── Master announcement sequence ────────────────────────────
 async def fade_and_play_announcement(deck_ids: list, filepath: str):
-    """
-    Full announcement / mic-on sequence:
-      1. Fade music down to ducking_percent
-      2. Play jingle (if enabled) and wait for it to finish
-      3. Play the announcement audio on all target decks
-      4. Wait for announcement to finish
-      5. Fade music back up to original volumes
-    """
     duck_pct = SETTINGS.get("ducking_percent", 5)
-
-    # Step 1 — fade out
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
         await _fade_volumes(playing_decks, 100, duck_pct, FADE_STEP_MS)
-
-    # Step 2 — jingle
     await _play_chime_and_wait(deck_ids)
-
-    # Step 3 — play announcement
     ann_path = Path(filepath)
-    # resolve local path for duration measurement
     local_path = ANNOUNCEMENTS_DIR / ann_path.name
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             tasks = [
-                c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
-                       json={"filepath": filepath})
+                c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
                 for did in deck_ids
             ]
             await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as e:
         print(f"[announcement] play error: {e}")
-
-    # Step 4 — wait for announcement duration
     try:
         duration = await get_audio_duration(local_path)
         await asyncio.sleep(max(0.5, duration + 0.3))
     except Exception:
         await asyncio.sleep(3.0)
-
-    # Step 5 — fade music back in
     if playing_decks:
         await _restore_volumes(playing_decks)
 
 async def fade_and_enable_mic(deck_ids: list):
-    """
-    Mic-on sequence:
-      1. Fade music down to mic_ducking_percent
-      2. Play jingle (if enabled) and wait
-      Music stays ducked while mic is live; caller restores on mic-off.
-    """
     duck_pct = SETTINGS.get("mic_ducking_percent", 20)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
@@ -449,7 +554,6 @@ async def fade_and_enable_mic(deck_ids: list):
     await _play_chime_and_wait(deck_ids)
 
 async def fade_restore_after_mic(deck_ids: list):
-    """Fade music back up after mic goes off air."""
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
         await _restore_volumes(playing_decks)
@@ -601,7 +705,6 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(verify
 @app.post("/api/mic/on")
 async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
     deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
-    # Fade music down + play jingle before opening mic
     await fade_and_enable_mic(deck_ids)
     MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
     try:
@@ -618,7 +721,6 @@ async def mic_off(_user=Depends(verify_token)):
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/off")
     except Exception: pass
     await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
-    # Fade music back up after mic goes off
     deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
     asyncio.create_task(fade_restore_after_mic(deck_ids))
     return {"status": "ok"}
@@ -688,7 +790,6 @@ async def play_announcement(ann_id: str, _user=Depends(verify_token)):
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
     deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-    # Full sequence: fade → jingle → announce → fade back
     asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
@@ -714,8 +815,7 @@ async def delete_announcement(ann_id: str, _user=Depends(verify_token)):
 
 # ── Playlists ───────────────────────────────────────────────
 @app.get("/api/playlists")
-def list_playlists():
-    return list(PLAYLISTS.values())
+def list_playlists(): return list(PLAYLISTS.values())
 
 @app.post("/api/playlists")
 async def create_playlist(req: PlaylistCreateRequest, _user=Depends(verify_token)):
@@ -731,8 +831,7 @@ async def create_playlist(req: PlaylistCreateRequest, _user=Depends(verify_token
 
 @app.put("/api/playlists/{playlist_id}")
 async def update_playlist(playlist_id: str, req: PlaylistCreateRequest, _user=Depends(verify_token)):
-    if playlist_id not in PLAYLISTS:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+    if playlist_id not in PLAYLISTS: raise HTTPException(status_code=404, detail="Playlist not found")
     PLAYLISTS[playlist_id].update({"name": req.name, "tracks": req.tracks})
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_playlist, PLAYLISTS[playlist_id])
@@ -743,8 +842,7 @@ async def update_playlist(playlist_id: str, req: PlaylistCreateRequest, _user=De
 
 @app.delete("/api/playlists/{playlist_id}")
 async def delete_playlist(playlist_id: str, _user=Depends(verify_token)):
-    if playlist_id not in PLAYLISTS:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+    if playlist_id not in PLAYLISTS: raise HTTPException(status_code=404, detail="Playlist not found")
     del PLAYLISTS[playlist_id]
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.delete_playlist, playlist_id)
@@ -779,12 +877,10 @@ async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, _user=De
 
 @app.post("/api/decks/{deck_id}/track_ended")
 async def track_ended(deck_id: str):
-    if deck_id not in DECKS:
-        return {"status": "ignored"}
+    if deck_id not in DECKS: return {"status": "ignored"}
     playlist_state = DECK_PLAYLISTS.get(deck_id)
     if not playlist_state:
-        DECKS[deck_id]["is_playing"] = False
-        DECKS[deck_id]["is_paused"]  = False
+        DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
         await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
         return {"status": "ok", "action": "stopped"}
     tracks     = playlist_state["tracks"]
@@ -794,8 +890,7 @@ async def track_ended(deck_id: str):
             next_index = 0
         else:
             DECK_PLAYLISTS[deck_id] = None
-            DECKS[deck_id].update({"is_playing": False, "is_paused": False,
-                                    "playlist_id": None, "playlist_index": None})
+            DECKS[deck_id].update({"is_playing": False, "is_paused": False, "playlist_id": None, "playlist_index": None})
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
             return {"status": "ok", "action": "playlist_done"}
     playlist_state["index"] = next_index
@@ -878,32 +973,20 @@ async def test_db_connection(req: SettingUpdateRequest, _user=Depends(verify_tok
 
 # ── Music Schedules ────────────────────────────────────────
 @app.get("/api/music-schedules")
-def list_music_schedules():
-    return MUSIC_SCHEDULES
+def list_music_schedules(): return MUSIC_SCHEDULES
 
 @app.post("/api/music-schedules")
 async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(verify_token)):
-    if req.deck_id not in DECKS:
-        raise HTTPException(status_code=400, detail="Invalid deck_id")
-    if req.type not in ("track", "playlist"):
-        raise HTTPException(status_code=400, detail="type must be 'track' or 'playlist'")
+    if req.deck_id not in DECKS: raise HTTPException(status_code=400, detail="Invalid deck_id")
+    if req.type not in ("track", "playlist"): raise HTTPException(status_code=400, detail="type must be 'track' or 'playlist'")
     if req.type == "track" and not (MEDIA_DIR / req.target_id).exists():
         raise HTTPException(status_code=404, detail=f"Track '{req.target_id}' not found in library")
     if req.type == "playlist" and req.target_id not in PLAYLISTS:
         raise HTTPException(status_code=404, detail=f"Playlist '{req.target_id}' not found")
-
     sid = str(uuid.uuid4())
-    schedule = {
-        "id":           sid,
-        "name":         req.name,
-        "deck_id":      req.deck_id,
-        "type":         req.type,
-        "target_id":    req.target_id,
-        "scheduled_at": req.scheduled_at,
-        "loop":         req.loop,
-        "status":       "Scheduled",
-        "created_at":   datetime.now().isoformat(),
-    }
+    schedule = {"id": sid, "name": req.name, "deck_id": req.deck_id, "type": req.type,
+                "target_id": req.target_id, "scheduled_at": req.scheduled_at,
+                "loop": req.loop, "status": "Scheduled", "created_at": datetime.now().isoformat()}
     MUSIC_SCHEDULES.append(schedule)
     MUSIC_SCHEDULES.sort(key=lambda x: x["scheduled_at"])
     try:
@@ -917,8 +1000,7 @@ async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(v
 async def delete_music_schedule(schedule_id: str, _user=Depends(verify_token)):
     global MUSIC_SCHEDULES
     s = next((x for x in MUSIC_SCHEDULES if x["id"] == schedule_id), None)
-    if not s:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    if not s: raise HTTPException(status_code=404, detail="Schedule not found")
     MUSIC_SCHEDULES = [x for x in MUSIC_SCHEDULES if x["id"] != schedule_id]
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.delete_music_schedule, schedule_id)
@@ -928,10 +1010,8 @@ async def delete_music_schedule(schedule_id: str, _user=Depends(verify_token)):
 
 @app.post("/api/music-schedules/{schedule_id}/trigger")
 async def trigger_music_schedule_now(schedule_id: str, _user=Depends(verify_token)):
-    """Immediately trigger a scheduled music event (for testing / manual override)."""
     s = next((x for x in MUSIC_SCHEDULES if x["id"] == schedule_id), None)
-    if not s:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    if not s: raise HTTPException(status_code=404, detail="Schedule not found")
     s["status"] = "Played"
     await _trigger_music_schedule(s)
     try:
@@ -940,28 +1020,23 @@ async def trigger_music_schedule_now(schedule_id: str, _user=Depends(verify_toke
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
     return {"status": "ok"}
 
-# ── Recurring Schedules ──────────────────────────────────
+# ── Recurring Schedules (Mic / Announcements) ────────────────
 @app.get("/api/recurring-schedules")
-def list_recurring_schedules():
-    return RECURRING_SCHEDULES
+def list_recurring_schedules(): return RECURRING_SCHEDULES
 
 @app.post("/api/recurring-schedules")
 async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=Depends(verify_token)):
     sid = str(uuid.uuid4())
     schedule = {
-        "id":              sid,
-        "name":            req.name,
-        "type":            req.type,
+        "id": sid, "name": req.name, "type": req.type,
         "announcement_id": req.announcement_id,
-        "start_time":      req.start_time,
-        "stop_time":       req.stop_time,
-        "active_days":     req.active_days,
-        "fade_duration":   req.fade_duration,
-        "music_volume":    req.music_volume,
-        "target_decks":    req.target_decks,
-        "enabled":         req.enabled,
-        "last_run_date":   None,
-        "created_at":      datetime.now().isoformat(),
+        "start_time": req.start_time, "stop_time": req.stop_time,
+        "active_days": req.active_days, "excluded_days": req.excluded_days,
+        "fade_duration": req.fade_duration, "music_volume": req.music_volume,
+        "target_decks": req.target_decks,
+        "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+        "enabled": req.enabled, "last_run_date": None,
+        "created_at": datetime.now().isoformat(),
     }
     RECURRING_SCHEDULES.append(schedule)
     try:
@@ -974,21 +1049,16 @@ async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=D
 @app.put("/api/recurring-schedules/{schedule_id}")
 async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCreateRequest, _user=Depends(verify_token)):
     idx = next((i for i, x in enumerate(RECURRING_SCHEDULES) if x["id"] == schedule_id), None)
-    if idx is None:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-    
+    if idx is None: raise HTTPException(status_code=404, detail="Schedule not found")
     updated = RECURRING_SCHEDULES[idx].copy()
     updated.update({
-        "name":            req.name,
-        "type":            req.type,
-        "announcement_id": req.announcement_id,
-        "start_time":      req.start_time,
-        "stop_time":       req.stop_time,
-        "active_days":     req.active_days,
-        "fade_duration":   req.fade_duration,
-        "music_volume":    req.music_volume,
-        "target_decks":    req.target_decks,
-        "enabled":         req.enabled,
+        "name": req.name, "type": req.type, "announcement_id": req.announcement_id,
+        "start_time": req.start_time, "stop_time": req.stop_time,
+        "active_days": req.active_days, "excluded_days": req.excluded_days,
+        "fade_duration": req.fade_duration, "music_volume": req.music_volume,
+        "target_decks": req.target_decks,
+        "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+        "enabled": req.enabled,
     })
     RECURRING_SCHEDULES[idx] = updated
     try:
@@ -1006,6 +1076,69 @@ async def delete_recurring_schedule(schedule_id: str, _user=Depends(verify_token
         await asyncio.get_event_loop().run_in_executor(None, db.delete_recurring_schedule, schedule_id)
     except Exception: pass
     await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
+    return {"status": "ok"}
+
+# ── Recurring Mixer Schedules (Music / Deck) ─────────────────  NEW
+@app.get("/api/recurring-mixer-schedules")
+def list_recurring_mixer_schedules():
+    return RECURRING_MIXER_SCHEDULES
+
+@app.post("/api/recurring-mixer-schedules")
+async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateRequest, _user=Depends(verify_token)):
+    if req.deck_id not in DECKS:
+        raise HTTPException(status_code=400, detail="Invalid deck_id")
+    sid = str(uuid.uuid4())
+    schedule = {
+        "id": sid, "name": req.name, "type": req.type,
+        "target_id": req.target_id, "deck_id": req.deck_id,
+        "start_time": req.start_time, "stop_time": req.stop_time,
+        "active_days": req.active_days, "excluded_days": req.excluded_days,
+        "fade_in": req.fade_in, "fade_out": req.fade_out,
+        "volume": req.volume, "loop": req.loop,
+        "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+        "enabled": req.enabled, "last_run_date": None,
+        "created_at": datetime.now().isoformat(),
+    }
+    RECURRING_MIXER_SCHEDULES.append(schedule)
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, schedule)
+    except Exception as e:
+        print(f"[DB] Failed to persist recurring mixer schedule: {e}")
+    await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
+    return schedule
+
+@app.put("/api/recurring-mixer-schedules/{schedule_id}")
+async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerScheduleCreateRequest, _user=Depends(verify_token)):
+    idx = next((i for i, x in enumerate(RECURRING_MIXER_SCHEDULES) if x["id"] == schedule_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    updated = RECURRING_MIXER_SCHEDULES[idx].copy()
+    updated.update({
+        "name": req.name, "type": req.type,
+        "target_id": req.target_id, "deck_id": req.deck_id,
+        "start_time": req.start_time, "stop_time": req.stop_time,
+        "active_days": req.active_days, "excluded_days": req.excluded_days,
+        "fade_in": req.fade_in, "fade_out": req.fade_out,
+        "volume": req.volume, "loop": req.loop,
+        "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+        "enabled": req.enabled,
+    })
+    RECURRING_MIXER_SCHEDULES[idx] = updated
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, updated)
+    except Exception as e:
+        print(f"[DB] Failed to persist recurring mixer schedule update: {e}")
+    await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
+    return updated
+
+@app.delete("/api/recurring-mixer-schedules/{schedule_id}")
+async def delete_recurring_mixer_schedule(schedule_id: str, _user=Depends(verify_token)):
+    global RECURRING_MIXER_SCHEDULES
+    RECURRING_MIXER_SCHEDULES = [x for x in RECURRING_MIXER_SCHEDULES if x["id"] != schedule_id]
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.delete_recurring_mixer_schedule, schedule_id)
+    except Exception: pass
+    await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
     return {"status": "ok"}
 
 # ── Stats ───────────────────────────────────────────────────

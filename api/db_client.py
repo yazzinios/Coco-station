@@ -102,9 +102,24 @@ class DBClient:
         if isinstance(r.get("active_days"), str):
             try: r["active_days"] = json.loads(r["active_days"])
             except: r["active_days"] = []
+        if isinstance(r.get("excluded_days"), str):
+            try: r["excluded_days"] = json.loads(r["excluded_days"])
+            except: r["excluded_days"] = []
         if isinstance(r.get("target_decks"), str):
             try: r["target_decks"] = json.loads(r["target_decks"])
             except: r["target_decks"] = []
+        if isinstance(r.get("created_at"), datetime):
+            r["created_at"] = r["created_at"].isoformat()
+        return r
+
+    def _map_recurring_mixer_schedule_row(self, row: dict) -> dict:
+        r = dict(row)
+        if isinstance(r.get("active_days"), str):
+            try: r["active_days"] = json.loads(r["active_days"])
+            except: r["active_days"] = []
+        if isinstance(r.get("excluded_days"), str):
+            try: r["excluded_days"] = json.loads(r["excluded_days"])
+            except: r["excluded_days"] = []
         if isinstance(r.get("created_at"), datetime):
             r["created_at"] = r["created_at"].isoformat()
         return r
@@ -287,7 +302,6 @@ class DBClient:
                 result = {}
                 for row in res.data:
                     v = row["value"]
-                    # Supabase returns JSONB as Python objects already
                     result[row["key"]] = v
                 return result
             except Exception as e:
@@ -369,10 +383,8 @@ class DBClient:
     def save_deck_name(self, deck_id: str, name: str):
         if self.mode == "cloud":
             try:
-                # Try update first; if the row doesn't exist yet, upsert it
                 res = self.supabase.table("decks").update({"name": name}).eq("id", deck_id).execute()
                 if not res.data:
-                    # Row didn't exist — insert it
                     self.supabase.table("decks").insert({"id": deck_id, "name": name}).execute()
             except Exception as e:
                 print(f"[DB] save_deck_name (cloud) failed: {e}")
@@ -393,7 +405,6 @@ class DBClient:
                 print(f"[DB] save_deck_name (local) failed: {e}")
             finally:
                 self._put_conn(conn)
-
 
     # ── Music Schedules — READ ───────────────────────────────
     def get_music_schedules(self) -> List[Dict]:
@@ -499,7 +510,7 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
-    # ── Recurring Schedules ──────────────────────────────────
+    # ── Recurring Schedules (Mic/Announcements) ──────────────────────────────
     def get_recurring_schedules(self) -> List[Dict]:
         if self.mode == "cloud":
             try:
@@ -530,9 +541,12 @@ class DBClient:
             "start_time":      s["start_time"],
             "stop_time":       s["stop_time"],
             "active_days":     json.dumps(s.get("active_days", [])),
+            "excluded_days":   json.dumps(s.get("excluded_days", [])),
             "fade_duration":   s.get("fade_duration", 5),
             "music_volume":    s.get("music_volume", 10),
             "target_decks":    json.dumps(s.get("target_decks", [])),
+            "jingle_start":    s.get("jingle_start"),
+            "jingle_end":      s.get("jingle_end"),
             "enabled":         s.get("enabled", True),
         }
         if self.mode == "cloud":
@@ -547,17 +561,25 @@ class DBClient:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        INSERT INTO recurring_schedules (id, name, type, announcement_id, start_time, stop_time, active_days, fade_duration, music_volume, target_decks, enabled)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        INSERT INTO recurring_schedules
+                            (id, name, type, announcement_id, start_time, stop_time,
+                             active_days, excluded_days, fade_duration, music_volume,
+                             target_decks, jingle_start, jingle_end, enabled)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET
-                            name = EXCLUDED.name, type = EXCLUDED.type, announcement_id = EXCLUDED.announcement_id,
-                            start_time = EXCLUDED.start_time, stop_time = EXCLUDED.stop_time, active_days = EXCLUDED.active_days,
-                            fade_duration = EXCLUDED.fade_duration, music_volume = EXCLUDED.music_volume, target_decks = EXCLUDED.target_decks,
+                            name = EXCLUDED.name, type = EXCLUDED.type,
+                            announcement_id = EXCLUDED.announcement_id,
+                            start_time = EXCLUDED.start_time, stop_time = EXCLUDED.stop_time,
+                            active_days = EXCLUDED.active_days, excluded_days = EXCLUDED.excluded_days,
+                            fade_duration = EXCLUDED.fade_duration, music_volume = EXCLUDED.music_volume,
+                            target_decks = EXCLUDED.target_decks,
+                            jingle_start = EXCLUDED.jingle_start, jingle_end = EXCLUDED.jingle_end,
                             enabled = EXCLUDED.enabled
                         """,
                         (data["id"], data["name"], data["type"], data["announcement_id"],
-                         data["start_time"], data["stop_time"], data["active_days"],
-                         data["fade_duration"], data["music_volume"], data["target_decks"], data["enabled"]),
+                         data["start_time"], data["stop_time"], data["active_days"], data["excluded_days"],
+                         data["fade_duration"], data["music_volume"], data["target_decks"],
+                         data["jingle_start"], data["jingle_end"], data["enabled"]),
                     )
             except Exception as e:
                 print(f"[DB] save_recurring_schedule (local) failed: {e}")
@@ -598,6 +620,123 @@ class DBClient:
                     cur.execute("DELETE FROM recurring_schedules WHERE id = %s", (schedule_id,))
             except Exception as e:
                 print(f"[DB] delete_recurring_schedule (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    # ── Recurring Mixer Schedules (Music/Deck) ────────────────────────────────
+    def get_recurring_mixer_schedules(self) -> List[Dict]:
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("recurring_mixer_schedules").select("*").execute()
+                return [self._map_recurring_mixer_schedule_row(r) for r in res.data]
+            except Exception as e:
+                print(f"[DB] get_recurring_mixer_schedules (cloud) failed: {e}")
+                return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM recurring_mixer_schedules ORDER BY created_at DESC")
+                    return [self._map_recurring_mixer_schedule_row(dict(r)) for r in cur.fetchall()]
+            except Exception as e:
+                print(f"[DB] get_recurring_mixer_schedules (local) failed: {e}")
+                return []
+            finally:
+                self._put_conn(conn)
+
+    def save_recurring_mixer_schedule(self, s: Dict):
+        data = {
+            "id":           s["id"],
+            "name":         s["name"],
+            "type":         s["type"],
+            "target_id":    s["target_id"],
+            "deck_id":      s["deck_id"],
+            "start_time":   s["start_time"],
+            "stop_time":    s["stop_time"],
+            "active_days":  json.dumps(s.get("active_days", [])),
+            "excluded_days": json.dumps(s.get("excluded_days", [])),
+            "fade_in":      s.get("fade_in", 3),
+            "fade_out":     s.get("fade_out", 3),
+            "volume":       s.get("volume", 80),
+            "loop":         s.get("loop", True),
+            "jingle_start": s.get("jingle_start"),
+            "jingle_end":   s.get("jingle_end"),
+            "enabled":      s.get("enabled", True),
+        }
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("recurring_mixer_schedules").upsert(data).execute()
+            except Exception as e:
+                print(f"[DB] save_recurring_mixer_schedule (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO recurring_mixer_schedules
+                            (id, name, type, target_id, deck_id, start_time, stop_time,
+                             active_days, excluded_days, fade_in, fade_out, volume, loop,
+                             jingle_start, jingle_end, enabled)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name, type = EXCLUDED.type,
+                            target_id = EXCLUDED.target_id, deck_id = EXCLUDED.deck_id,
+                            start_time = EXCLUDED.start_time, stop_time = EXCLUDED.stop_time,
+                            active_days = EXCLUDED.active_days, excluded_days = EXCLUDED.excluded_days,
+                            fade_in = EXCLUDED.fade_in, fade_out = EXCLUDED.fade_out,
+                            volume = EXCLUDED.volume, loop = EXCLUDED.loop,
+                            jingle_start = EXCLUDED.jingle_start, jingle_end = EXCLUDED.jingle_end,
+                            enabled = EXCLUDED.enabled
+                        """,
+                        (data["id"], data["name"], data["type"], data["target_id"], data["deck_id"],
+                         data["start_time"], data["stop_time"], data["active_days"], data["excluded_days"],
+                         data["fade_in"], data["fade_out"], data["volume"], data["loop"],
+                         data["jingle_start"], data["jingle_end"], data["enabled"]),
+                    )
+            except Exception as e:
+                print(f"[DB] save_recurring_mixer_schedule (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def update_recurring_mixer_last_run(self, schedule_id: str, last_run_date: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("recurring_mixer_schedules").update(
+                    {"last_run_date": last_run_date}
+                ).eq("id", schedule_id).execute()
+            except Exception as e:
+                print(f"[DB] update_recurring_mixer_last_run (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE recurring_mixer_schedules SET last_run_date = %s WHERE id = %s",
+                        (last_run_date, schedule_id),
+                    )
+            except Exception as e:
+                print(f"[DB] update_recurring_mixer_last_run (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def delete_recurring_mixer_schedule(self, schedule_id: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("recurring_mixer_schedules").delete().eq("id", schedule_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_recurring_mixer_schedule (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM recurring_mixer_schedules WHERE id = %s", (schedule_id,))
+            except Exception as e:
+                print(f"[DB] delete_recurring_mixer_schedule (local) failed: {e}")
             finally:
                 self._put_conn(conn)
 

@@ -91,9 +91,12 @@ class RecurringScheduleCreateRequest(BaseModel):
     start_time: str       # "HH:MM"
     stop_time: str        # "HH:MM"
     active_days: List[int] # [0, 1, 2, 3, 4, 5, 6]
+    excluded_days: List[str] = []  # ["YYYY-MM-DD", ...]
     fade_duration: int = 5
     music_volume: int = 10
     target_decks: List[str]
+    jingle_start: Optional[str] = None  # library filename
+    jingle_end: Optional[str] = None    # library filename
     enabled: bool = True
 
 class RecurringSchedule(BaseModel):
@@ -104,9 +107,50 @@ class RecurringSchedule(BaseModel):
     start_time: str
     stop_time: str
     active_days: List[int]
+    excluded_days: List[str] = []
     fade_duration: int = 5
     music_volume: int = 10
     target_decks: List[str]
+    jingle_start: Optional[str] = None
+    jingle_end: Optional[str] = None
+    enabled: bool = True
+    last_run_date: Optional[str] = None
+    created_at: Optional[str] = None
+
+# ── Recurring Mixer Schedules (music / playlist on deck) ────────────────────
+class RecurringMixerScheduleCreateRequest(BaseModel):
+    name: str
+    type: str             # 'track' | 'playlist'
+    target_id: str        # filename or playlist UUID
+    deck_id: str          # 'a' | 'b' | 'c' | 'd'
+    start_time: str       # "HH:MM"
+    stop_time: str        # "HH:MM"
+    active_days: List[int]
+    excluded_days: List[str] = []
+    fade_in: int = 3
+    fade_out: int = 3
+    volume: int = 80
+    loop: bool = True
+    jingle_start: Optional[str] = None  # library filename
+    jingle_end: Optional[str] = None    # library filename
+    enabled: bool = True
+
+class RecurringMixerSchedule(BaseModel):
+    id: str
+    name: str
+    type: str
+    target_id: str
+    deck_id: str
+    start_time: str
+    stop_time: str
+    active_days: List[int]
+    excluded_days: List[str] = []
+    fade_in: int = 3
+    fade_out: int = 3
+    volume: int = 80
+    loop: bool = True
+    jingle_start: Optional[str] = None
+    jingle_end: Optional[str] = None
     enabled: bool = True
     last_run_date: Optional[str] = None
     created_at: Optional[str] = None
