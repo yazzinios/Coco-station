@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio, Edit2, X, Users } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
@@ -39,6 +39,7 @@ export default function AnnouncementsPage() {
   const [copiedIdx,     setCopiedIdx]     = useState(null);
   const [streamDeck,    setStreamDeck]    = useState('deck-a');
   const [editingId,     setEditingId]     = useState(null);
+  const [textDir,       setTextDir]       = useState('ltr');   // auto RTL detection
   const [listeners,     setListeners]     = useState({ total: 0, decks: {} });
   const fileRef = useRef(null);
 
@@ -123,6 +124,27 @@ export default function AnnouncementsPage() {
     }
   };
 
+  // ── RTL auto-detect: Arabic / Darija codepoints ───────────────────
+  const RTL_LANGS = ['ar', 'ma'];                              // ar = Arabic, ma = Darija
+  const AR_RE     = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+
+  const handleTextChange = useCallback((val) => {
+    setText(val);
+    // If language is RTL or the first meaningful char is Arabic → flip direction
+    if (RTL_LANGS.includes(lang)) {
+      setTextDir('rtl');
+    } else if (AR_RE.test(val.trimStart()[0] || '')) {
+      setTextDir('rtl');
+    } else {
+      setTextDir('ltr');
+    }
+  }, [lang]);
+
+  // Also flip direction immediately when language tab changes
+  React.useEffect(() => {
+    setTextDir(RTL_LANGS.includes(lang) ? 'rtl' : 'ltr');
+  }, [lang]);
+
   const resetForm = () => {
     setName('');
     setText('');
@@ -130,6 +152,7 @@ export default function AnnouncementsPage() {
     setAnnFile(null);
     setEditingId(null);
     setSelectedDecks(['ALL']);
+    setTextDir('ltr');
   };
 
   const handleEdit = (ann) => {
@@ -245,13 +268,40 @@ export default function AnnouncementsPage() {
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Text</label>
+                  <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Text
+                    {textDir === 'rtl' && (
+                      <span style={{ marginRight: '0.5rem', fontSize: '0.68rem', background: 'rgba(0,212,255,0.15)', color: 'var(--accent-blue)', padding: '0.1rem 0.45rem', borderRadius: '4px', float: 'left', marginTop: '1px' }}>
+                        ← يمين إلى يسار
+                      </span>
+                    )}
+                  </label>
                   <textarea
-                    value={text} onChange={e => setText(e.target.value)}
-                    placeholder="Type what you want the robot to say…"
+                    value={text}
+                    onChange={e => handleTextChange(e.target.value)}
+                    placeholder={RTL_LANGS.includes(lang) ? 'اكتب النص هنا…' : 'Type what you want the robot to say…'}
                     rows="4"
-                    style={{ ...inputStyle, resize: 'vertical' }}
+                    dir={textDir}
+                    lang={lang === 'ma' ? 'ar-MA' : lang}
+                    style={{
+                      ...inputStyle,
+                      resize: 'vertical',
+                      direction: textDir,
+                      textAlign: textDir === 'rtl' ? 'right' : 'left',
+                      fontFamily: textDir === 'rtl'
+                        ? "'Segoe UI', 'Noto Sans Arabic', 'Arabic Typesetting', Arial, sans-serif"
+                        : 'inherit',
+                      fontSize: textDir === 'rtl' ? '1.05rem' : '0.9rem',
+                      lineHeight: '1.7',
+                      letterSpacing: textDir === 'rtl' ? '0' : 'inherit',
+                      unicodeBidi: 'plaintext',
+                    }}
                   />
+                  {textDir === 'rtl' && (
+                    <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)', textAlign: 'right', direction: 'rtl' }}>
+                      {lang === 'ma' ? '🇲🇦 الدارجة المغربية — الكتابة من اليمين إلى اليسار' : '🇸🇦 العربية — الكتابة من اليمين إلى اليسار'}
+                    </div>
+                  )}
                 </div>
               </>
             ) : (

@@ -146,7 +146,22 @@ export default function OnAirButton() {
       setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
     });
 
-    ws.send(JSON.stringify({ type: 'mic_start', targets, ducking: duckingPercent }));
+    // Send mic_start and wait for mic_ready confirmation before streaming audio.
+    // This ensures the server has opened the ffmpeg session + applied ducking
+    // BEFORE any PCM data (or the API micOn call) fires — preventing the
+    // "shoulder" where music ducks too late on the first chunk.
+    await new Promise((resolve) => {
+      const readyHandler = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'mic_ready') { ws.removeEventListener('message', readyHandler); resolve(); }
+        } catch {}
+      };
+      ws.addEventListener('message', readyHandler);
+      ws.send(JSON.stringify({ type: 'mic_start', targets, ducking: duckingPercent }));
+      // Fallback: don't hang forever if server doesn't send mic_ready
+      setTimeout(resolve, 1500);
+    });
 
     const ctx       = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
     audioCtxRef.current = ctx;
@@ -190,8 +205,12 @@ export default function OnAirButton() {
         await api.micOff();
         toast.info('Off Air');
       } else {
+        // startMic() now waits for mic_ready from server (WS session open + ducking applied)
+        // before returning — so api.micOn() fires only after everything is ready
         const ok = await startMic();
         if (!ok) { setLoading(false); return; }
+        // Small guard: ensure fade-out has started before declaring On Air
+        await new Promise(r => setTimeout(r, 120));
         await api.micOn(targets);
         toast.success(`🎙 On Air → ${targets.join(', ')}`);
       }
