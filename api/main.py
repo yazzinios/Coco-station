@@ -50,6 +50,7 @@ DECKS: Dict[str, dict] = {
 ANNOUNCEMENTS: List[dict] = []
 SETTINGS: dict = {"ducking_percent": 5, "mic_ducking_percent": 5, "on_air_beep": "default", "db_mode": "local", "on_air_chime_enabled": False}
 MIC_STATE: dict = {"active": False, "targets": []}
+MIC_PREV_VOLUMES: Dict[str, int] = {}
 PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
 MUSIC_SCHEDULES: List[dict] = []
@@ -70,6 +71,33 @@ class ConnectionManager:
         for d in dead: self.disconnect(d)
 
 manager = ConnectionManager()
+
+
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except Exception:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def _normalize_hhmm(value: str) -> Optional[str]:
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    # Accept HH:MM[:SS] and normalize to HH:MM
+    parts = value.split(":")
+    if len(parts) < 2:
+        return None
+    hh = parts[0].zfill(2)
+    mm = parts[1].zfill(2)
+    return f"{hh}:{mm}"
 
 async def _trigger_music_schedule(s: dict):
     """Load and play a track or playlist on the target deck."""
@@ -255,7 +283,8 @@ async def scheduler_task():
         for ann in list(ANNOUNCEMENTS):
             if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
                 try:
-                    if datetime.fromisoformat(ann["scheduled_at"]) <= now:
+                    scheduled_at = _parse_iso_datetime(ann["scheduled_at"])
+                    if scheduled_at and scheduled_at <= now:
                         ann["status"] = "Played"
                         filepath = str(Path("/announcements") / ann["filename"])
                         deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
@@ -267,7 +296,8 @@ async def scheduler_task():
         for s in list(MUSIC_SCHEDULES):
             if s.get("status") == "Scheduled" and s.get("scheduled_at"):
                 try:
-                    if datetime.fromisoformat(s["scheduled_at"]) <= now:
+                    scheduled_at = _parse_iso_datetime(s["scheduled_at"])
+                    if scheduled_at and scheduled_at <= now:
                         s["status"] = "Played"
                         await _trigger_music_schedule(s)
                         try:
@@ -287,7 +317,7 @@ async def scheduler_task():
             if day_of_week not in rs.get("active_days", []): continue
             if today_str in rs.get("excluded_days", []): continue
 
-            if rs.get("start_time") == current_time_str and rs.get("last_run_date") != today_str:
+            if _normalize_hhmm(rs.get("start_time")) == current_time_str and rs.get("last_run_date") != today_str:
                 rs["last_run_date"] = today_str
                 asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
 
@@ -353,7 +383,7 @@ async def scheduler_task():
             if today_str in rs.get("excluded_days", []): continue
 
             # START
-            if rs.get("start_time") == current_time_str and rs.get("last_run_date") != today_str:
+            if _normalize_hhmm(rs.get("start_time")) == current_time_str and rs.get("last_run_date") != today_str:
                 rs["last_run_date"] = today_str
                 asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
                 asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
@@ -522,6 +552,13 @@ FADE_STEPS      = 20
 FADE_STEP_MS    = 60
 FADE_IN_STEP_MS = 80
 
+def _duck_level(percent: Optional[int], default: int = 5) -> int:
+    try:
+        value = int(percent if percent is not None else default)
+    except (TypeError, ValueError):
+        value = default
+    return max(0, min(100, value))
+
 async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int):
     if from_pct == to_pct:
         return
@@ -580,12 +617,14 @@ async def _play_chime_and_wait(deck_ids: list):
 
 # ── Master announcement sequence ────────────────────────────
 async def fade_and_play_announcement(deck_ids: list, filepath: str):
-    duck_pct = SETTINGS.get("ducking_percent", 5)
+    duck_pct = _duck_level(SETTINGS.get("ducking_percent"), 5)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
+    original_volumes = {did: DECKS[did]["volume"] for did in playing_decks}
     if playing_decks:
-        for did in playing_decks:
-            current_vol = DECKS[did]["volume"]
+        # Smoothly duck active music and keep it at duck_pct during jingle + announcement.
+        for did, current_vol in original_volumes.items():
             await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
+            DECKS[did]["volume"] = duck_pct
     # Jingle BEFORE announcement
     await _play_chime_and_wait(deck_ids)
     ann_path = Path(filepath)
@@ -607,25 +646,37 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
     # Jingle AFTER announcement
     await _play_chime_and_wait(deck_ids)
     if playing_decks:
+        # Smoothly restore to each deck's original level and keep it there.
+        for did, original in original_volumes.items():
+            DECKS[did]["volume"] = original
         await _restore_volumes(playing_decks, duck_pct)
 
 async def fade_and_enable_mic(deck_ids: list):
-    duck_pct = SETTINGS.get("mic_ducking_percent", 5)
+    global MIC_PREV_VOLUMES
+    duck_pct = _duck_level(SETTINGS.get("mic_ducking_percent"), 5)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
+    original_volumes = {did: DECKS[did]["volume"] for did in playing_decks}
+    MIC_PREV_VOLUMES = original_volumes.copy()
     if playing_decks:
-        for did in playing_decks:
-            current_vol = DECKS[did]["volume"]
+        # Smooth duck before mic goes live, then stay at duck_pct until mic_off.
+        for did, current_vol in original_volumes.items():
             await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
+            DECKS[did]["volume"] = duck_pct
     # Jingle BEFORE mic feed
     await _play_chime_and_wait(deck_ids)
 
 async def fade_restore_after_mic(deck_ids: list):
+    global MIC_PREV_VOLUMES
     # Jingle AFTER mic feed
     await _play_chime_and_wait(deck_ids)
-    duck_pct = SETTINGS.get("mic_ducking_percent", 5)
+    duck_pct = _duck_level(SETTINGS.get("mic_ducking_percent"), 5)
     playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
+        for did in playing_decks:
+            if did in MIC_PREV_VOLUMES:
+                DECKS[did]["volume"] = MIC_PREV_VOLUMES[did]
         await _restore_volumes(playing_decks, duck_pct)
+    MIC_PREV_VOLUMES = {}
 
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
@@ -1039,6 +1090,64 @@ async def track_ended(deck_id: str):
     except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "action": "next_track", "track": next_track}
+
+async def _play_playlist_index(deck_id: str, index: int):
+    playlist_state = DECK_PLAYLISTS.get(deck_id)
+    if not playlist_state:
+        raise HTTPException(status_code=400, detail="No active playlist on this deck")
+    tracks = playlist_state.get("tracks", [])
+    if not tracks:
+        raise HTTPException(status_code=400, detail="Playlist is empty")
+    max_index = len(tracks) - 1
+    index = max(0, min(max_index, index))
+    playlist_state["index"] = index
+    track = tracks[index]
+    DECKS[deck_id].update({
+        "track": track,
+        "is_playing": True,
+        "is_paused": False,
+        "playlist_index": index,
+    })
+    filepath = str(Path("/library") / track)
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
+    except Exception:
+        pass
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    return {"status": "ok", "deck": deck_id, "track": track, "playlist_index": index}
+
+@app.post("/api/decks/{deck_id}/next")
+async def deck_next_track(deck_id: str, _user=Depends(verify_token)):
+    if deck_id not in DECKS:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    playlist_state = DECK_PLAYLISTS.get(deck_id)
+    if not playlist_state:
+        raise HTTPException(status_code=400, detail="Next is available only for playlists")
+    tracks = playlist_state.get("tracks", [])
+    if not tracks:
+        raise HTTPException(status_code=400, detail="Playlist is empty")
+    cur = int(playlist_state.get("index", 0))
+    nxt = cur + 1
+    if nxt >= len(tracks):
+        nxt = 0 if playlist_state.get("loop", False) else len(tracks) - 1
+    return await _play_playlist_index(deck_id, nxt)
+
+@app.post("/api/decks/{deck_id}/previous")
+async def deck_previous_track(deck_id: str, _user=Depends(verify_token)):
+    if deck_id not in DECKS:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    playlist_state = DECK_PLAYLISTS.get(deck_id)
+    if not playlist_state:
+        raise HTTPException(status_code=400, detail="Previous is available only for playlists")
+    tracks = playlist_state.get("tracks", [])
+    if not tracks:
+        raise HTTPException(status_code=400, detail="Playlist is empty")
+    cur = int(playlist_state.get("index", 0))
+    prev = cur - 1
+    if prev < 0:
+        prev = len(tracks) - 1 if playlist_state.get("loop", False) else 0
+    return await _play_playlist_index(deck_id, prev)
 
 # ── Chime ────────────────────────────────────────────────────
 @app.post("/api/settings/chime/upload")

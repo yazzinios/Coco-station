@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Save, Upload, Trash2, Bell } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 export default function SettingsPage() {
   const { decks, toast, api, settings } = useApp();

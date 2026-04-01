@@ -1,6 +1,6 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusic } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusic, SkipBack, SkipForward } from 'lucide-react';
+import { useApp } from '../context/useApp';
 
 const DECK_COLORS = {
   a: { accent: '#00d4ff', glow: 'rgba(0,212,255,0.3)' },
@@ -112,7 +112,7 @@ function DeckMonitor({ id, color }) {
   const toggleMonitor = () => { if (listening) stopListening(); else startListening(); };
 
   useEffect(() => { if (audioRef.current) audioRef.current.volume = monVol / 100; }, [monVol]);
-  useEffect(() => () => stopListening(), []); // eslint-disable-line
+  useEffect(() => () => stopListening(), [stopListening]);
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem' }}>
@@ -125,7 +125,6 @@ function DeckMonitor({ id, color }) {
           color: listening ? color.accent : 'rgba(255,255,255,0.3)',
           cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: listening ? `0 0 8px ${color.glow}` : 'none',
-          border: listening ? `1px solid ${color.accent}40` : '1px solid transparent',
           transition: 'all 0.2s',
         }}
       >
@@ -166,21 +165,16 @@ export default function DeckPanel({ id }) {
   const [volumeLocal, setVolumeLocal] = useState(deck.volume);
   const [copied,      setCopied]      = useState(false);
 
-  // Sync local volume when server state updates (e.g. on initial FULL_STATE)
-  useEffect(() => { setVolumeLocal(deck.volume); }, [deck.volume]);
-
   const [optimistic, setOptimistic] = useState(null);
-  const display = optimistic ? { ...deck, ...optimistic } : deck;
 
-  useEffect(() => {
-    if (
-      optimistic &&
-      optimistic.is_playing === deck.is_playing &&
-      optimistic.is_paused  === deck.is_paused
-    ) {
-      setOptimistic(null);
-    }
-  }, [deck.is_playing, deck.is_paused]); // eslint-disable-line
+  const resolvedOptimistic = useMemo(() => (
+    optimistic
+    && optimistic.is_playing === deck.is_playing
+    && optimistic.is_paused === deck.is_paused
+  ), [optimistic, deck.is_playing, deck.is_paused]);
+
+  const effectiveOptimistic = resolvedOptimistic ? null : optimistic;
+  const displayWithOptimistic = effectiveOptimistic ? { ...deck, ...effectiveOptimistic } : deck;
 
   // ── Play / Pause / Resume ────────────────────────────────────────────────────
   const handlePlay = async () => {
@@ -225,7 +219,7 @@ export default function DeckPanel({ id }) {
   const handleVolumeCommit = useCallback(async (e) => {
     const v = Number(e.target.value);
     setVolumeLocal(v);
-    try { await api.setVolume(id, v); } catch (_) {}
+    try { await api.setVolume(id, v); } catch { /* ignore transient volume update failures */ }
   }, [id, api]);
 
   // Stream URLs
@@ -255,16 +249,32 @@ export default function DeckPanel({ id }) {
   };
 
   const trackDisplayName = deck.track ? deck.track.replace(/\.[^.]+$/, '') : null;
-  const isActive         = display.is_playing || display.is_paused;
+  const isActive         = displayWithOptimistic.is_playing || displayWithOptimistic.is_paused;
+  const hasQueue         = Boolean(deck.playlist_id);
+
+  const handlePrevious = async () => {
+    try {
+      await api.previousTrack(id);
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
+  const handleNext = async () => {
+    try {
+      await api.nextTrack(id);
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
 
   return (
-    <div className="glass-panel" style={{
-      height: '420px', display: 'flex', flexDirection: 'column',
+    <div className="glass-panel deck-panel-mobile" style={{
+      height: '420px', minHeight: '360px', display: 'flex', flexDirection: 'column',
       position: 'relative', overflow: 'hidden',
-      borderColor: display.is_playing ? color.accent + '40' : 'var(--panel-border)',
+      borderColor: displayWithOptimistic.is_playing ? color.accent + '40' : 'var(--panel-border)',
       transition: 'border-color 0.3s',
     }}>
-      {display.is_playing && (
+      {displayWithOptimistic.is_playing && (
         <div style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
           background: `radial-gradient(ellipse at top, ${color.glow} 0%, transparent 70%)`,
@@ -284,8 +294,8 @@ export default function DeckPanel({ id }) {
         </div>
         <div style={{
           width: '10px', height: '10px', borderRadius: '50%',
-          background: display.is_playing ? color.accent : display.is_paused ? '#fd9644' : 'rgba(255,255,255,0.15)',
-          boxShadow: display.is_playing ? `0 0 10px ${color.accent}` : 'none',
+          background: displayWithOptimistic.is_playing ? color.accent : displayWithOptimistic.is_paused ? '#fd9644' : 'rgba(255,255,255,0.15)',
+          boxShadow: displayWithOptimistic.is_playing ? `0 0 10px ${color.accent}` : 'none',
           transition: 'all 0.3s',
         }} />
       </div>
@@ -295,15 +305,15 @@ export default function DeckPanel({ id }) {
         <div style={{
           width: '80px', height: '80px', borderRadius: '50%',
           background: `conic-gradient(${color.accent}15, rgba(0,0,0,0.5) 30%, ${color.accent}15 60%, rgba(0,0,0,0.5) 90%)`,
-          border: `2px solid ${display.is_playing ? color.accent + '60' : 'rgba(255,255,255,0.08)'}`,
+          border: `2px solid ${displayWithOptimistic.is_playing ? color.accent + '60' : 'rgba(255,255,255,0.08)'}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: display.is_playing ? `0 0 20px ${color.glow}` : 'none',
-          animation: display.is_playing ? 'vinylSpin 3s linear infinite' : 'none',
+          boxShadow: displayWithOptimistic.is_playing ? `0 0 20px ${color.glow}` : 'none',
+          animation: displayWithOptimistic.is_playing ? 'vinylSpin 3s linear infinite' : 'none',
           transition: 'box-shadow 0.3s, border-color 0.3s',
         }}>
           <div style={{
             width: '20px', height: '20px', borderRadius: '50%',
-            background: display.is_playing ? color.accent : 'rgba(255,255,255,0.15)',
+            background: displayWithOptimistic.is_playing ? color.accent : 'rgba(255,255,255,0.15)',
             transition: 'all 0.3s',
           }} />
         </div>
@@ -324,9 +334,9 @@ export default function DeckPanel({ id }) {
                 </div>
               )}
               <div style={{ fontSize: '0.75rem', color: color.accent }}>
-                {display.is_playing
+                {displayWithOptimistic.is_playing
                   ? (activePlaylist ? '▶ Playlist' : deck.is_loop ? '🔁 Looping' : '▶ Playing')
-                  : display.is_paused
+                  : displayWithOptimistic.is_paused
                     ? '⏸ Paused'
                     : '⏹ Ready'}
               </div>
@@ -342,16 +352,27 @@ export default function DeckPanel({ id }) {
 
       {/* Controls: Play | Stop | Loop */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-        <button onClick={handlePlay} disabled={!deck.track} title={display.is_playing ? 'Pause' : display.is_paused ? 'Resume' : 'Play'} style={{
+        <button onClick={handlePrevious} disabled={!hasQueue} title="Previous track" style={{
           width: '44px', height: '44px', borderRadius: '50%', border: 'none',
-          background: deck.track ? (display.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
-          color: deck.track ? (display.is_playing ? color.accent : '#000') : 'rgba(255,255,255,0.2)',
-          cursor: deck.track ? 'pointer' : 'not-allowed',
+          background: hasQueue ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+          color: hasQueue ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.2)',
+          cursor: hasQueue ? 'pointer' : 'not-allowed',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: display.is_playing ? `0 0 12px ${color.glow}` : 'none',
           transition: 'all 0.2s',
         }}>
-          {display.is_playing
+          <SkipBack size={16} />
+        </button>
+
+        <button onClick={handlePlay} disabled={!deck.track} title={displayWithOptimistic.is_playing ? 'Pause' : displayWithOptimistic.is_paused ? 'Resume' : 'Play'} style={{
+          width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+          background: deck.track ? (displayWithOptimistic.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
+          color: deck.track ? (displayWithOptimistic.is_playing ? color.accent : '#000') : 'rgba(255,255,255,0.2)',
+          cursor: deck.track ? 'pointer' : 'not-allowed',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: displayWithOptimistic.is_playing ? `0 0 12px ${color.glow}` : 'none',
+          transition: 'all 0.2s',
+        }}>
+          {displayWithOptimistic.is_playing
             ? <Pause size={18} fill="currentColor" />
             : <Play  size={18} fill="currentColor" style={{ marginLeft: '2px' }} />}
         </button>
@@ -379,12 +400,22 @@ export default function DeckPanel({ id }) {
             color: deck.is_loop ? color.accent : (deck.track ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)'),
             cursor: deck.track ? 'pointer' : 'not-allowed',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            border: deck.is_loop ? `1px solid ${color.accent}50` : '1px solid transparent',
             boxShadow: deck.is_loop ? `0 0 8px ${color.glow}` : 'none',
             transition: 'all 0.2s',
           }}
         >
           <Repeat size={16} />
+        </button>
+
+        <button onClick={handleNext} disabled={!hasQueue} title="Next track" style={{
+          width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+          background: hasQueue ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+          color: hasQueue ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.2)',
+          cursor: hasQueue ? 'pointer' : 'not-allowed',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'all 0.2s',
+        }}>
+          <SkipForward size={16} />
         </button>
       </div>
 

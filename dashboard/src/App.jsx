@@ -7,9 +7,9 @@ import AnnouncementsPage from './pages/AnnouncementsPage';
 import StatisticsPage from './pages/StatisticsPage';
 import SettingsPage from './pages/SettingsPage';
 import SchedulesPage from './pages/SchedulesPage';
-import { useApp } from './context/AppContext';
+import { useApp } from './context/useApp';
 
-function AppHeader({ onMenuToggle }) {
+function AppHeader() {
   const { wsConnected } = useApp();
   return (
     <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

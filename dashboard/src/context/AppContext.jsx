@@ -1,7 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-
-const AppContext = createContext(null);
-export function useApp() { return useContext(AppContext); }
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { AppContext } from './AppContextInstance';
 
 function ToastContainer({ toasts, onRemove }) {
   return (
@@ -79,7 +77,46 @@ export function AppProvider({ children }) {
     return `${protocol}://${host}${path}`;
   }
 
-  const handleWsMessageRef = useRef(null);
+  const fetchLibrary = useCallback(async () => {
+    try {
+      const r = await fetch('/api/library');
+      if (r.ok) setLibrary(await r.json());
+    } catch {
+      // Best-effort refresh.
+    }
+  }, []);
+  const fetchAnnouncements = useCallback(async () => {
+    try {
+      const r = await fetch('/api/announcements');
+      if (r.ok) setAnnouncements(await r.json());
+    } catch {
+      // Best-effort refresh.
+    }
+  }, []);
+  const fetchPlaylists = useCallback(async () => {
+    try {
+      const r = await fetch('/api/playlists');
+      if (r.ok) setPlaylists(await r.json());
+    } catch {
+      // Best-effort refresh.
+    }
+  }, []);
+  const fetchRecurringSchedules = useCallback(async () => {
+    try {
+      const r = await fetch('/api/recurring-schedules');
+      if (r.ok) setRecurringSchedules(await r.json());
+    } catch {
+      // Best-effort refresh.
+    }
+  }, []);
+  const fetchRecurringMixerSchedules = useCallback(async () => {
+    try {
+      const r = await fetch('/api/recurring-mixer-schedules');
+      if (r.ok) setRecurringMixerSchedules(await r.json());
+    } catch {
+      // Best-effort refresh.
+    }
+  }, []);
 
   const handleWsMessage = useCallback((msg) => {
     switch (msg.type) {
@@ -114,50 +151,49 @@ export function AppProvider({ children }) {
       case 'RECURRING_MIXER_SCHEDULES_UPDATED': if (msg.schedules) setRecurringMixerSchedules(msg.schedules); break;  // ← NEW
       default: break;
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  handleWsMessageRef.current = handleWsMessage;
-
-  const connectWS = useCallback(() => {
-    const wsUrl = buildWsUrl('/ws');
-    console.log('[WS] Connecting to', wsUrl);
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    ws.onopen    = () => { console.log('[WS] Connected'); setWsConnected(true); };
-    ws.onmessage = (evt) => { try { handleWsMessageRef.current(JSON.parse(evt.data)); } catch (_) {} };
-    ws.onclose   = () => { setWsConnected(false); console.log('[WS] Disconnected – retrying in 3s'); setTimeout(connectWS, 3000); };
-    ws.onerror   = () => ws.close();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchLibrary]);
 
   useEffect(() => {
+    let reconnectTimer = null;
+    const connectWS = () => {
+      const wsUrl = buildWsUrl('/ws');
+      console.log('[WS] Connecting to', wsUrl);
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      ws.onopen = () => { console.log('[WS] Connected'); setWsConnected(true); };
+      ws.onmessage = (evt) => {
+        try {
+          handleWsMessage(JSON.parse(evt.data));
+        } catch {
+          // Ignore malformed websocket events.
+        }
+      };
+      ws.onclose = () => {
+        setWsConnected(false);
+        console.log('[WS] Disconnected – retrying in 3s');
+        reconnectTimer = setTimeout(connectWS, 3000);
+      };
+      ws.onerror = () => ws.close();
+    };
+
     connectWS();
-    fetchLibrary();
-    fetchAnnouncements();
-    fetchPlaylists();
-    fetchRecurringSchedules();
-    fetchRecurringMixerSchedules();  // ← NEW
-    return () => { wsRef.current?.close(); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // Defer initial data loading to avoid synchronous state updates in effect body.
+    setTimeout(() => {
+      fetchLibrary();
+      fetchAnnouncements();
+      fetchPlaylists();
+      fetchRecurringSchedules();
+      fetchRecurringMixerSchedules();
+    }, 0);
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
+    };
+  }, [handleWsMessage, fetchAnnouncements, fetchLibrary, fetchPlaylists, fetchRecurringMixerSchedules, fetchRecurringSchedules]);
 
   async function parseError(res) {
     try { const d = await res.json(); return d?.detail || d?.message || JSON.stringify(d); }
-    catch (_) { return await res.text(); }
-  }
-  async function fetchLibrary() {
-    try { const r = await fetch('/api/library'); if (r.ok) setLibrary(await r.json()); } catch (_) {}
-  }
-  async function fetchAnnouncements() {
-    try { const r = await fetch('/api/announcements'); if (r.ok) setAnnouncements(await r.json()); } catch (_) {}
-  }
-  async function fetchPlaylists() {
-    try { const r = await fetch('/api/playlists'); if (r.ok) setPlaylists(await r.json()); } catch (_) {}
-  }
-  async function fetchRecurringSchedules() {
-    try { const r = await fetch('/api/recurring-schedules'); if (r.ok) setRecurringSchedules(await r.json()); } catch (_) {}
-  }
-  // ── NEW ──────────────────────────────────────────────────────────────────────
-  async function fetchRecurringMixerSchedules() {
-    try { const r = await fetch('/api/recurring-mixer-schedules'); if (r.ok) setRecurringMixerSchedules(await r.json()); } catch (_) {}
+    catch { return await res.text(); }
   }
 
   const api = {
@@ -193,6 +229,14 @@ export function AppProvider({ children }) {
     },
     stop:  async (deckId) => {
       const r = await fetch(`/api/decks/${deckId}/stop`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    nextTrack: async (deckId) => {
+      const r = await fetch(`/api/decks/${deckId}/next`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    previousTrack: async (deckId) => {
+      const r = await fetch(`/api/decks/${deckId}/previous`, { method: 'POST' });
       if (!r.ok) throw new Error(await parseError(r));
     },
     loop: async (deckId, loopEnabled) => {

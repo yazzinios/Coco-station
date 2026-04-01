@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { Music, Upload, Trash2, ListMusic, Plus, ChevronUp, ChevronDown, Play, CheckCircle, XCircle, Loader, X } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644' };
 const ALLOWED_EXTS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];

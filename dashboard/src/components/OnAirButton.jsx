@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, MicOff, Radio, RefreshCw, ChevronDown } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 // ─── Hook: enumerate + watch audio input devices ──────────────────────────────
 function useMicDevices() {
@@ -155,7 +155,9 @@ export default function OnAirButton() {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'mic_ready') { ws.removeEventListener('message', readyHandler); resolve(); }
-        } catch {}
+        } catch (error) {
+          console.debug('[mic_ws] message parse error', error);
+        }
       };
       ws.addEventListener('message', readyHandler);
       ws.send(JSON.stringify({ type: 'mic_start', targets, ducking: duckingPercent }));

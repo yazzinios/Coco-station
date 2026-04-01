@@ -1,32 +1,39 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { BarChart2, Clock, Music, Radio, Layers } from 'lucide-react';
 
 export default function StatisticsPage() {
   const [stats, setStats] = useState(null);
-  const [uptimeTick, setUptimeTick] = useState(0);
+  const [nowTs, setNowTs] = useState(0);
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
         const res = await fetch('/api/stats');
         if (res.ok) setStats(await res.json());
-      } catch (_) {}
+      } catch {
+        // Keep stale stats when fetch fails.
+      }
     };
     fetchStats();
     const poll = setInterval(fetchStats, 10000); // poll every 10s
     return () => clearInterval(poll);
   }, []);
 
-  // Live uptime counter — restart ticker whenever base uptime changes
+  // Live uptime counter.
   useEffect(() => {
-    if (!stats) return;
-    setUptimeTick(0); // reset offset when we get a fresh base from API
-    const interval = setInterval(() => setUptimeTick(t => t + 1), 1000);
+    const interval = setInterval(() => setNowTs(Date.now()), 1000);
     return () => clearInterval(interval);
-  }, [stats?.uptime_seconds]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
+
+  const baseStartedAt = useMemo(() => {
+    if (!stats?.uptime_seconds) return null;
+    return nowTs - (stats.uptime_seconds * 1000);
+  }, [stats?.uptime_seconds, nowTs]);
 
   const formatUptime = (base) => {
-    const total = (base || 0) + uptimeTick;
+    const total = baseStartedAt
+      ? Math.max(0, Math.floor((nowTs - baseStartedAt) / 1000))
+      : (base || 0);
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
     const s = total % 60;
@@ -47,7 +54,7 @@ export default function StatisticsPage() {
       </h2>
 
       {/* Stat Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
         {stats === null ? (
           Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="glass-panel" style={{ textAlign: 'center', padding: '1.75rem' }}>
@@ -69,7 +76,7 @@ export default function StatisticsPage() {
       </div>
 
       {/* Charts placeholder */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
         <div className="glass-panel" style={{ height: '280px', display: 'flex', flexDirection: 'column' }}>
           <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Radio size={16} /> Live Listeners</span>

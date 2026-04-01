@@ -4,7 +4,7 @@ import {
   Plus, Save, X, Check, Pause, Volume2, Settings2, TriangleAlert,
   Radio, Music2,
 } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 /* ─────────────────────── Constants ─────────────────────── */
 const DAYS_OF_WEEK = [
@@ -193,11 +193,6 @@ function MixerSchedules() {
       await api.updateRecurringMixerSchedule(s.id, { ...s, enabled: !s.enabled });
       toast.success(s.enabled ? 'Schedule disabled' : 'Schedule enabled');
     } catch (err) { toast.error(err.message); }
-  };
-
-  const deckName = (id) => {
-    const d = DECK_OPTIONS.find(o => o.id === id);
-    return d ? `Deck ${d.label}` : id;
   };
 
   return (
@@ -475,7 +470,7 @@ function MixerSchedules() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1rem' }}>
           {recurringMixerSchedules.map(s => (
-            <MixerCard key={s.id} s={s} deckName={deckName}
+            <MixerCard key={s.id} s={s}
               onEdit={startEdit} onDelete={handleDelete} onToggle={toggleStatus} />
           ))}
         </div>
@@ -484,7 +479,7 @@ function MixerSchedules() {
   );
 }
 
-function MixerCard({ s, deckName, onEdit, onDelete, onToggle }) {
+function MixerCard({ s, onEdit, onDelete, onToggle }) {
   return (
     <div style={{
       background: s.enabled ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.2)',

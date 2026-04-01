@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Clock, Calendar, Play, Trash2, Music, ListMusic, TriangleAlert } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 const DECK_OPTIONS = [
   { id: 'a', label: 'A' },

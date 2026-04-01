@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { Mic, Upload, Send, Play, Trash2, Calendar, Clock, Copy, Check, Radio, Edit2, X, Users } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 const ORIGIN = window.location.origin;
 const HOST   = window.location.hostname;
@@ -23,8 +23,10 @@ const TTS_LANGUAGES = [
   { code: 'es', label: '🇪🇸 Español',  voice: 'es-ES-ElviraNeural' },
   { code: 'de', label: '🇩🇪 Deutsch',  voice: 'de-DE-KatjaNeural' },
   { code: 'it', label: '🇮🇹 Italiano', voice: 'it-IT-ElsaNeural' },
-  { code: 'ma', label: '🇲🇦 Darija',   voice: 'ar-MA-MounaNeural' },
+  { code: 'ar-MA', label: '🇲🇦 Darija (Morocco)', voice: 'ar-MA-MounaNeural' },
 ];
+const RTL_LANGS = ['ar', 'ar-MA'];
+const AR_RE = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
 
 export default function AnnouncementsPage() {
   const { announcements, toast, api } = useApp();
@@ -48,7 +50,9 @@ export default function AnnouncementsPage() {
       try {
         const data = await api.getListeners();
         setListeners(data);
-      } catch {}
+      } catch {
+        // Keep previous value when polling fails.
+      }
     };
     poll();
     const inv = setInterval(poll, 5000);
@@ -139,9 +143,6 @@ export default function AnnouncementsPage() {
   };
 
   // ── RTL auto-detect: Arabic / Darija codepoints ───────────────────
-  const RTL_LANGS = ['ar', 'ma'];                              // ar = Arabic, ma = Darija
-  const AR_RE     = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
-
   const handleTextChange = useCallback((val) => {
     setText(val);
     // If language is RTL or the first meaningful char is Arabic → flip direction
@@ -179,7 +180,7 @@ export default function AnnouncementsPage() {
     setText(ann.text || '');
     setLang(ann.lang || 'en');
     // Set RTL direction if language is Arabic/Darija
-    const rtlLangs = ['ar', 'ma'];
+    const rtlLangs = ['ar', 'ar-MA'];
     setTextDir(rtlLangs.includes(ann.lang || 'en') ? 'rtl' : 'ltr');
   };
 
@@ -300,7 +301,7 @@ export default function AnnouncementsPage() {
                     placeholder={RTL_LANGS.includes(lang) ? 'اكتب النص هنا…' : 'Type what you want the robot to say…'}
                     rows="4"
                     dir={textDir}
-                    lang={lang === 'ma' ? 'ar-MA' : lang}
+                    lang={lang}
                     style={{
                       ...inputStyle,
                       resize: 'vertical',
@@ -317,7 +318,7 @@ export default function AnnouncementsPage() {
                   />
                   {textDir === 'rtl' && (
                     <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)', textAlign: 'right', direction: 'rtl' }}>
-                      {lang === 'ma' ? '🇲🇦 الدارجة المغربية — الكتابة من اليمين إلى اليسار' : '🇸🇦 العربية — الكتابة من اليمين إلى اليسار'}
+                      {lang === 'ar-MA' ? '🇲🇦 الدارجة المغربية — الكتابة من اليمين إلى اليسار' : '🇸🇦 العربية — الكتابة من اليمين إلى اليسار'}
                     </div>
                   )}
                 </div>

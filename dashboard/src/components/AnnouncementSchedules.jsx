@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Clock, Calendar, Volume2, Settings2, Trash2, Edit3, Plus, Mic, Play, Pause, Save, X, Check } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp } from '../context/useApp';
 
 const DAYS_OF_WEEK = [
   { id: 0, label: 'Mon', full: 'Monday' },
@@ -224,7 +224,7 @@ export default function AnnouncementSchedules() {
                   {DAYS_OF_WEEK.map(day => (
                     <button key={day.id} type="button" onClick={() => toggleDay(day.id)}
                       style={{
-                        padding: '0.4rem 0.6rem', borderRadius: '6px', border: 'none', fontSize: '0.75rem',
+                        padding: '0.4rem 0.6rem', borderRadius: '6px', fontSize: '0.75rem',
                         background: formData.active_days.includes(day.id) ? 'rgba(0,212,255,0.2)' : 'rgba(255,255,255,0.05)',
                         color: formData.active_days.includes(day.id) ? 'var(--accent-blue)' : 'var(--text-secondary)',
                         cursor: 'pointer', transition: 'all 0.15s',
