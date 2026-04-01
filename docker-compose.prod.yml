@@ -40,7 +40,7 @@ services:
 
   api:
     build:
-      context: "https://github.com/yazzinios/Coco-station.git#main:api"
+      context: ./api
     container_name: cc_api
     restart: always
     # Port 8000 is NOT exposed publicly — accessed only through nginx (dashboard)
@@ -64,7 +64,7 @@ services:
 
   ffmpeg-mixer:
     build:
-      context: "https://github.com/yazzinios/Coco-station.git#main:ffmpeg-mixer"
+      context: ./ffmpeg-mixer
     container_name: cc_ffmpeg
     restart: always
     depends_on:
@@ -84,7 +84,7 @@ services:
 
   dashboard:
     build:
-      context: "https://github.com/yazzinios/Coco-station.git#main:dashboard"
+      context: ./dashboard
       args:
         VITE_API_URL: "https://radio.cocopark.duckdns.org"
         VITE_WS_URL: "wss://radio.cocopark.duckdns.org"

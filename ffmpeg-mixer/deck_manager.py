@@ -52,6 +52,11 @@ class Deck:
         self.track_proc = None
         self.ann_proc   = None
 
+        # Mic hold-off: keeps ducking active for N seconds after last mic chunk
+        # prevents audible volume "pumping" when mic audio is slightly choppy
+        self._mic_last_active = 0.0
+        self._mic_holdoff     = 0.8   # seconds to stay ducked after mic goes silent
+
         self.track_q = queue.Queue(maxsize=100)
         self.ann_q   = queue.Queue(maxsize=100)
         self.mic_q   = queue.Queue(maxsize=100)
@@ -102,10 +107,16 @@ class Deck:
             mic_chunk  = silence
             mic_active = False
             try:
-                mic_chunk  = self.mic_q.get_nowait()
+                mic_chunk = self.mic_q.get_nowait()
+                self._mic_last_active = time.time()
                 mic_active = True
             except queue.Empty:
                 pass
+
+            # Hold ducking for _mic_holdoff seconds after last mic chunk
+            # This prevents volume pumping during brief gaps in mic audio
+            if not mic_active and (time.time() - self._mic_last_active) < self._mic_holdoff:
+                mic_active = True   # keep vol_factor ducked; mic_chunk stays silence
 
             # Volume + ducking
             vol_factor = self.volume / 100.0

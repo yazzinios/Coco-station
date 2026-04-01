@@ -13,7 +13,9 @@ function AppHeader({ onMenuToggle }) {
   const { wsConnected } = useApp();
   return (
     <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <h1 style={{ fontSize: '1.4rem', fontWeight: '600' }}>CocoStation</h1>
+      <h1 style={{ fontSize: '1.4rem', fontWeight: '600' }} className="app-title">
+        CocoStation
+      </h1>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
         <div style={{
           width: '8px', height: '8px', borderRadius: '50%',

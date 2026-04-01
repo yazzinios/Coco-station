@@ -233,6 +233,11 @@ body {
     font-size: 1.2rem !important;
   }
 
+  /* Shift app title right to clear the 40px hamburger button + 1rem gap */
+  .app-title {
+    padding-left: 52px;
+  }
+
   /* Compact glass panels on mobile */
   .glass-panel {
     padding: 1rem;
