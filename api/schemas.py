@@ -23,6 +23,8 @@ class TTSRequest(BaseModel):
     lang: str = "en"
     scheduled_at: Optional[str] = None
 
+
+
 class LibraryItem(BaseModel):
     filename: str
     size: int
@@ -95,15 +97,15 @@ class RecurringScheduleCreateRequest(BaseModel):
     type: str             # 'Announcement' | 'Microphone'
     announcement_id: Optional[str] = None
     start_time: str       # "HH:MM"
-    stop_time: str        # "HH:MM"
+    # stop_time removed: announcement/mic runs until it ends naturally
     active_days: List[int] # [0, 1, 2, 3, 4, 5, 6]
     excluded_days: List[str] = []  # ["YYYY-MM-DD", ...]
     fade_duration: int = 5
     music_volume: int = 10
     target_decks: List[str]
-    jingle_start: Optional[str] = None  # library filename
-    jingle_end: Optional[str] = None    # library filename
-    multi_tracks: List[str] = []   # filename list if type='multi_track'
+    jingle_start: Optional[str] = None  # library filename (always used)
+    jingle_end: Optional[str] = None    # library filename (always used)
+    multi_tracks: List[str] = []
     enabled: bool = True
 
 class RecurringSchedule(BaseModel):
@@ -112,7 +114,7 @@ class RecurringSchedule(BaseModel):
     type: str
     announcement_id: Optional[str] = None
     start_time: str
-    stop_time: str
+    # stop_time removed
     active_days: List[int]
     excluded_days: List[str] = []
     fade_duration: int = 5
@@ -131,16 +133,16 @@ class RecurringMixerScheduleCreateRequest(BaseModel):
     target_id: str        # filename or playlist UUID
     deck_id: str          # 'a' | 'b' | 'c' | 'd'
     start_time: str       # "HH:MM"
-    stop_time: str        # "HH:MM"
+    # stop_time removed: music plays until track/playlist ends naturally
     active_days: List[int]
     excluded_days: List[str] = []
     fade_in: int = 3
     fade_out: int = 3
     volume: int = 80
     loop: bool = True
-    jingle_start: Optional[str] = None  # library filename
-    jingle_end: Optional[str] = None    # library filename
-    multi_tracks: List[str] = []   # filename list if type='multi_track'
+    jingle_start: Optional[str] = None  # library filename (always used)
+    jingle_end: Optional[str] = None    # library filename (always used)
+    multi_tracks: List[str] = []
     enabled: bool = True
 
 class RecurringMixerSchedule(BaseModel):
@@ -150,7 +152,7 @@ class RecurringMixerSchedule(BaseModel):
     target_id: str
     deck_id: str
     start_time: str
-    stop_time: str
+    # stop_time removed
     active_days: List[int]
     excluded_days: List[str] = []
     fade_in: int = 3

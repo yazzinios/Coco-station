@@ -90,13 +90,27 @@ export default function AnnouncementsPage() {
     setSubmitting(true);
     try {
       if (editingId) {
-        await api.updateAnnouncement(editingId, {
-          name,
-          targets: selectedDecks,
-          scheduled_at: scheduledAt || null,
-          // note: text/file updates usually require more complex handling if changed
-        });
-        toast.success('Announcement updated!');
+        const editingAnn = announcements.find(a => a.id === editingId);
+        if (editingAnn?.type === 'TTS' && text.trim()) {
+          // TTS edit: delete old entry + audio file, then re-generate fresh TTS
+          await api.deleteAnnouncement(editingId);
+          await api.createTTS({
+            name,
+            text,
+            lang,
+            targets: selectedDecks,
+            scheduled_at: scheduledAt || null,
+          });
+          toast.success('TTS re-generated!');
+        } else {
+          // MP3 edit: just update metadata (name / targets / schedule)
+          await api.updateAnnouncement(editingId, {
+            name,
+            targets: selectedDecks,
+            scheduled_at: scheduledAt || null,
+          });
+          toast.success('Announcement updated!');
+        }
         resetForm();
       } else {
         if (type === 'TTS') {
@@ -161,8 +175,12 @@ export default function AnnouncementsPage() {
     setType(ann.type);
     setSelectedDecks(ann.targets || ['ALL']);
     setScheduledAt(ann.scheduled_at ? ann.scheduled_at.slice(0, 16) : '');
-    // text is not stored in the list usually for MP3s, but TTS might have it
+    // Restore TTS text + language so user can edit and re-generate
     setText(ann.text || '');
+    setLang(ann.lang || 'en');
+    // Set RTL direction if language is Arabic/Darija
+    const rtlLangs = ['ar', 'ma'];
+    setTextDir(rtlLangs.includes(ann.lang || 'en') ? 'rtl' : 'ltr');
   };
 
   const handlePlay = async (ann) => {

@@ -292,18 +292,59 @@ async def scheduler_task():
                 asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
 
                 deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
+
+                # Always play jingle_start before announcement/mic feed
+                jingle_start = rs.get("jingle_start")
+                jingle_end   = rs.get("jingle_end")
+
                 if rs["type"] in ("announcement", "Announcement"):
                     ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs.get("announcement_id")), None)
                     if ann:
-                        filepath = str(Path("/announcements") / ann["filename"])
-                        asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
-                        await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
-                elif rs["type"] in ("microphone", "Microphone"):
-                    await mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids]), _user=None)
+                        duck_pct = SETTINGS.get("ducking_percent", 5)
+                        playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
 
-            if rs["type"] in ("microphone", "Microphone") and rs.get("stop_time") == current_time_str:
-                if MIC_STATE["active"]:
-                    await mic_off(_user=None)
+                        async def _run_ann_schedule():
+                            # Fade music down
+                            for did in playing_decks:
+                                await _fade_volumes([did], DECKS[did]["volume"], duck_pct, FADE_STEP_MS)
+                            # Intro jingle
+                            if jingle_start:
+                                for did in deck_ids:
+                                    await _play_jingle_and_wait(did, jingle_start)
+                            # Announcement
+                            filepath = str(Path("/announcements") / ann["filename"])
+                            local_path = ANNOUNCEMENTS_DIR / ann["filename"]
+                            async with httpx.AsyncClient(timeout=5) as c:
+                                await asyncio.gather(*[
+                                    c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
+                                    for did in deck_ids
+                                ], return_exceptions=True)
+                            try:
+                                duration = await get_audio_duration(local_path)
+                                await asyncio.sleep(max(0.5, duration + 0.3))
+                            except Exception:
+                                await asyncio.sleep(3.0)
+                            # Outro jingle
+                            if jingle_end:
+                                for did in deck_ids:
+                                    await _play_jingle_and_wait(did, jingle_end)
+                            # Restore music
+                            if playing_decks:
+                                await _restore_volumes(playing_decks, duck_pct)
+
+                        asyncio.create_task(_run_ann_schedule())
+                        await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
+
+                elif rs["type"] in ("microphone", "Microphone"):
+                    async def _run_mic_schedule():
+                        # Jingle before mic
+                        if jingle_start:
+                            for did in deck_ids:
+                                await _play_jingle_and_wait(did, jingle_start)
+                        await mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids]), _user=None)
+                    asyncio.create_task(_run_mic_schedule())
+
+            # stop_time removed — mic feed ends when user manually turns it off
 
         # ── Recurring Mixer Schedules ────────────────────────────
         for rs in RECURRING_MIXER_SCHEDULES:
@@ -318,11 +359,7 @@ async def scheduler_task():
                 asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
                 print(f"[mixer-scheduler] Started '{rs['name']}' on deck {rs['deck_id']}")
 
-            # STOP
-            if rs.get("stop_time") == current_time_str and rs.get("last_run_date") == today_str:
-                if DECKS.get(rs["deck_id"], {}).get("is_playing"):
-                    asyncio.create_task(_stop_recurring_mixer_schedule(rs))
-                    print(f"[mixer-scheduler] Stopped '{rs['name']}' on deck {rs['deck_id']}")
+            # stop_time removed — music plays until track/playlist ends naturally via track_ended callback
 
 
 @asynccontextmanager
@@ -775,6 +812,9 @@ async def create_tts_announcement(req: TTSRequest, _user=Depends(verify_token)):
     ann = {
         "id": ann_id, "name": req.name, "type": "TTS", "filename": filename,
         "targets": req.targets,
+        # Store text + lang so the edit form can restore them for re-generation
+        "text": req.text,
+        "lang": req.lang,
         "status": "Scheduled" if getattr(req, 'scheduled_at', None) else "Ready",
         "scheduled_at": getattr(req, 'scheduled_at', None),
         "created_at": datetime.now().isoformat(),
@@ -1126,7 +1166,8 @@ async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=D
     schedule = {
         "id": sid, "name": req.name, "type": req.type,
         "announcement_id": req.announcement_id,
-        "start_time": req.start_time, "stop_time": req.stop_time,
+        "start_time": req.start_time,
+        # stop_time not stored
         "active_days": req.active_days, "excluded_days": req.excluded_days,
         "fade_duration": req.fade_duration, "music_volume": req.music_volume,
         "target_decks": req.target_decks,
@@ -1149,7 +1190,8 @@ async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCrea
     updated = RECURRING_SCHEDULES[idx].copy()
     updated.update({
         "name": req.name, "type": req.type, "announcement_id": req.announcement_id,
-        "start_time": req.start_time, "stop_time": req.stop_time,
+        "start_time": req.start_time,
+        # stop_time not stored
         "active_days": req.active_days, "excluded_days": req.excluded_days,
         "fade_duration": req.fade_duration, "music_volume": req.music_volume,
         "target_decks": req.target_decks,
@@ -1187,7 +1229,8 @@ async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateReque
     schedule = {
         "id": sid, "name": req.name, "type": req.type,
         "target_id": req.target_id, "deck_id": req.deck_id,
-        "start_time": req.start_time, "stop_time": req.stop_time,
+        "start_time": req.start_time,
+        # stop_time not stored
         "active_days": req.active_days, "excluded_days": req.excluded_days,
         "fade_in": req.fade_in, "fade_out": req.fade_out,
         "volume": req.volume, "loop": req.loop,
@@ -1213,7 +1256,8 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
     updated.update({
         "name": req.name, "type": req.type,
         "target_id": req.target_id, "deck_id": req.deck_id,
-        "start_time": req.start_time, "stop_time": req.stop_time,
+        "start_time": req.start_time,
+        # stop_time not stored
         "active_days": req.active_days, "excluded_days": req.excluded_days,
         "fade_in": req.fade_in, "fade_out": req.fade_out,
         "volume": req.volume, "loop": req.loop,

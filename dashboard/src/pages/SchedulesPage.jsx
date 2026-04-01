@@ -55,24 +55,35 @@ const tabBtn = (active) => ({
 });
 
 /* ─────────────────────── Jingle Picker ─────────────────── */
+// Jingles are ALWAYS required — no "None" option
 function JinglePicker({ label: lbl, value, onChange, library }) {
   return (
     <div>
       <label style={labelStyle}>
         <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
           <Music2 size={11} /> {lbl}
+          <span style={{ color: '#ff4757', marginLeft: '2px' }}>*</span>
         </span>
       </label>
-      <select
-        value={value || ''}
-        onChange={e => onChange(e.target.value || null)}
-        style={{ ...inputStyle, cursor: 'pointer' }}
-      >
-        <option value="">— None —</option>
-        {library.map(f => (
-          <option key={f.filename} value={f.filename}>{f.filename.replace(/\.[^.]+$/, '')}</option>
-        ))}
-      </select>
+      {library.length === 0 ? (
+        <div style={{ padding: '0.5rem', fontSize: '0.75rem', color: '#ffa502',
+          background: 'rgba(255,165,2,0.08)', borderRadius: '6px', border: '1px solid rgba(255,165,2,0.2)' }}>
+          ⚠ Upload a jingle track to the library first
+        </div>
+      ) : (
+        <select
+          value={value || library[0]?.filename || ''}
+          onChange={e => onChange(e.target.value)}
+          style={{ ...inputStyle, cursor: 'pointer',
+            outline: '1px solid rgba(165,94,234,0.5)',
+            borderColor: 'rgba(165,94,234,0.4)' }}
+          required
+        >
+          {library.map(f => (
+            <option key={f.filename} value={f.filename}>{f.filename.replace(/\.[^.]+$/, '')}</option>
+          ))}
+        </select>
+      )}
       {value && (
         <div style={{ marginTop: '0.25rem', fontSize: '0.7rem', color: '#a55eea', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
           <Music2 size={10} /> {value.replace(/\.[^.]+$/, '')}
@@ -91,16 +102,16 @@ const MIXER_DEFAULT = {
   target_id: '',
   deck_id: 'a',
   start_time: '09:00',
-  stop_time: '10:00',
+  // stop_time removed — music plays until end of track/playlist naturally
   active_days: [0, 1, 2, 3, 4, 5, 6],
   excluded_days: [],
   fade_in: 3,
   fade_out: 3,
   volume: 80,
   loop: true,
-  jingle_start: null,
+  jingle_start: null,   // populated from library[0] on mount
   jingle_end: null,
-  multi_tracks: [],     // ← NEW: list of track filenames
+  multi_tracks: [],
   enabled: true,
 };
 
@@ -111,8 +122,32 @@ function MixerSchedules() {
   const [form, setForm]           = useState(MIXER_DEFAULT);
   const [excludeInput, setExcludeInput] = useState('');
 
-  const reset = () => { setForm(MIXER_DEFAULT); setEditingId(null); setIsAdding(false); setExcludeInput(''); };
-  const startEdit = (s) => { setForm({ ...MIXER_DEFAULT, ...s }); setEditingId(s.id); setIsAdding(true); };
+  // Auto-fill jingles from first library track when library loads
+  React.useEffect(() => {
+    if (library.length > 0 && !form.jingle_start) {
+      setForm(f => ({ ...f,
+        jingle_start: f.jingle_start || library[0].filename,
+        jingle_end:   f.jingle_end   || library[0].filename,
+      }));
+    }
+  }, [library]); // eslint-disable-line
+
+  const reset = () => {
+    setForm({ ...MIXER_DEFAULT,
+      jingle_start: library[0]?.filename || null,
+      jingle_end:   library[0]?.filename || null,
+    });
+    setEditingId(null); setIsAdding(false); setExcludeInput('');
+  };
+  const startEdit = (s) => {
+    setForm({
+      ...MIXER_DEFAULT, ...s,
+      // Ensure jingles fall back to first library track if not set
+      jingle_start: s.jingle_start || library[0]?.filename || null,
+      jingle_end:   s.jingle_end   || library[0]?.filename || null,
+    });
+    setEditingId(s.id); setIsAdding(true);
+  };
 
   const toggleDay = (id) => {
     const days = form.active_days.includes(id)
@@ -290,39 +325,34 @@ function MixerSchedules() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                <div>
-                  <label style={labelStyle}>Start Time</label>
-                  <input type="time" value={form.start_time} required
-                    onChange={e => setForm({ ...form, start_time: e.target.value })}
-                    style={{ ...inputStyle, colorScheme: 'dark' }} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Stop Time</label>
-                  <input type="time" value={form.stop_time} required
-                    onChange={e => setForm({ ...form, stop_time: e.target.value })}
-                    style={{ ...inputStyle, colorScheme: 'dark' }} />
+              <div>
+                <label style={labelStyle}>Start Time</label>
+                <input type="time" value={form.start_time} required
+                  onChange={e => setForm({ ...form, start_time: e.target.value })}
+                  style={{ ...inputStyle, colorScheme: 'dark' }} />
+                <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                  Music plays until the track / playlist ends naturally.
                 </div>
               </div>
 
-              {/* ── Jingles ─────────────────────────────── */}
+              {/* ── Jingles (always required) ────────────── */}
               <div style={{
                 padding: '0.85rem', borderRadius: '10px',
-                background: 'rgba(165,94,234,0.06)', border: '1px solid rgba(165,94,234,0.2)',
+                background: 'rgba(165,94,234,0.08)', border: '1px solid rgba(165,94,234,0.35)',
                 display: 'flex', flexDirection: 'column', gap: '0.75rem',
               }}>
                 <div style={{ fontSize: '0.72rem', color: '#a55eea', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <Music2 size={11} /> Jingles (optional)
+                  <Music2 size={11} /> Jingles — played before &amp; after every feed
                 </div>
                 <JinglePicker
                   label="Intro Jingle (plays before music starts)"
-                  value={form.jingle_start}
+                  value={form.jingle_start || library[0]?.filename}
                   onChange={v => setForm({ ...form, jingle_start: v })}
                   library={library}
                 />
                 <JinglePicker
                   label="Outro Jingle (plays when music stops)"
-                  value={form.jingle_end}
+                  value={form.jingle_end || library[0]?.filename}
                   onChange={v => setForm({ ...form, jingle_end: v })}
                   library={library}
                 />
@@ -471,7 +501,7 @@ function MixerCard({ s, deckName, onEdit, onDelete, onToggle }) {
             {s.type === 'playlist' ? <ListMusic size={13} /> : s.type === 'multi_track' ? <Play size={13} /> : <Music size={13} />} {s.name}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Clock size={11} /> {s.start_time} — {s.stop_time}</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Clock size={11} /> {s.start_time}</span>
             <span style={{ color: 'var(--accent-blue)', fontWeight: '600' }}>Deck {s.deck_id?.toUpperCase()}</span>
           </div>
         </div>
@@ -521,14 +551,14 @@ const ANN_DEFAULT = {
   announcement_id: '',
   deck_id: 'a',
   start_time: '09:00',
-  stop_time: '09:05',
+  // stop_time removed — announcement runs until it ends naturally
   active_days: [0, 1, 2, 3, 4, 5, 6],
   excluded_days: [],
   fade_duration: 5,
   music_volume: 10,
   target_decks: ['a'],
-  jingle_start: null,   // ← NEW
-  jingle_end: null,     // ← NEW
+  jingle_start: null,
+  jingle_end: null,
   enabled: true,
 };
 
@@ -539,8 +569,31 @@ function AnnSchedules() {
   const [form, setForm]           = useState(ANN_DEFAULT);
   const [excludeInput, setExcludeInput] = useState('');
 
-  const reset = () => { setForm(ANN_DEFAULT); setEditingId(null); setIsAdding(false); setExcludeInput(''); };
-  const startEdit = (s) => { setForm({ ...ANN_DEFAULT, ...s }); setEditingId(s.id); setIsAdding(true); };
+  // Auto-fill jingles from first library track when library loads
+  React.useEffect(() => {
+    if (library.length > 0 && !form.jingle_start) {
+      setForm(f => ({ ...f,
+        jingle_start: f.jingle_start || library[0].filename,
+        jingle_end:   f.jingle_end   || library[0].filename,
+      }));
+    }
+  }, [library]); // eslint-disable-line
+
+  const reset = () => {
+    setForm({ ...ANN_DEFAULT,
+      jingle_start: library[0]?.filename || null,
+      jingle_end:   library[0]?.filename || null,
+    });
+    setEditingId(null); setIsAdding(false); setExcludeInput('');
+  };
+  const startEdit = (s) => {
+    setForm({
+      ...ANN_DEFAULT, ...s,
+      jingle_start: s.jingle_start || library[0]?.filename || null,
+      jingle_end:   s.jingle_end   || library[0]?.filename || null,
+    });
+    setEditingId(s.id); setIsAdding(true);
+  };
 
   const toggleDay = (id) => {
     const days = form.active_days.includes(id)
@@ -661,18 +714,13 @@ function AnnSchedules() {
                 </div>
               )}
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                <div>
-                  <label style={labelStyle}>Start Time</label>
-                  <input type="time" value={form.start_time} required
-                    onChange={e => setForm({ ...form, start_time: e.target.value })}
-                    style={{ ...inputStyle, colorScheme: 'dark' }} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Stop Time</label>
-                  <input type="time" value={form.stop_time} required
-                    onChange={e => setForm({ ...form, stop_time: e.target.value })}
-                    style={{ ...inputStyle, colorScheme: 'dark' }} />
+              <div>
+                <label style={labelStyle}>Start Time</label>
+                <input type="time" value={form.start_time} required
+                  onChange={e => setForm({ ...form, start_time: e.target.value })}
+                  style={{ ...inputStyle, colorScheme: 'dark' }} />
+                <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                  Announcement plays until it ends, then music restores.
                 </div>
               </div>
 
@@ -688,24 +736,24 @@ function AnnSchedules() {
                 </div>
               </div>
 
-              {/* ── Jingles ─────────────────────────────── */}
+              {/* ── Jingles (always required) ────────────── */}
               <div style={{
                 padding: '0.85rem', borderRadius: '10px',
-                background: 'rgba(165,94,234,0.06)', border: '1px solid rgba(165,94,234,0.2)',
+                background: 'rgba(165,94,234,0.08)', border: '1px solid rgba(165,94,234,0.35)',
                 display: 'flex', flexDirection: 'column', gap: '0.75rem',
               }}>
                 <div style={{ fontSize: '0.72rem', color: '#a55eea', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <Music2 size={11} /> Jingles (optional)
+                  <Music2 size={11} /> Jingles — played before &amp; after every feed
                 </div>
                 <JinglePicker
                   label="Intro Jingle (plays before mic / announcement)"
-                  value={form.jingle_start}
+                  value={form.jingle_start || library[0]?.filename}
                   onChange={v => setForm({ ...form, jingle_start: v })}
                   library={library}
                 />
                 <JinglePicker
                   label="Outro Jingle (plays after mic / announcement)"
-                  value={form.jingle_end}
+                  value={form.jingle_end || library[0]?.filename}
                   onChange={v => setForm({ ...form, jingle_end: v })}
                   library={library}
                 />
@@ -834,7 +882,7 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
             {s.type === 'Announcement' ? <Radio size={13} /> : <Mic size={13} />} {s.name}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Clock size={11} /> {s.start_time} — {s.stop_time}
+            <Clock size={11} /> {s.start_time}
           </div>
         </div>
         <div style={{ display: 'flex', gap: '0.4rem' }}>
