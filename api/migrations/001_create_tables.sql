@@ -35,15 +35,21 @@ CREATE TABLE IF NOT EXISTS queue_items (
 
 -- Announcements
 CREATE TABLE IF NOT EXISTS announcements (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id TEXT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     text TEXT,
+    lang VARCHAR(10) DEFAULT 'en',
     type VARCHAR(10),
     file_path VARCHAR(255),
     targets JSONB,
     schedule_at TIMESTAMP WITH TIME ZONE,
+    status VARCHAR(20) DEFAULT 'Ready',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Add lang + status columns to existing announcements table if upgrading
+ALTER TABLE announcements ADD COLUMN IF NOT EXISTS lang VARCHAR(10) DEFAULT 'en';
+ALTER TABLE announcements ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'Ready';
 
 -- Key-value settings
 CREATE TABLE IF NOT EXISTS settings (

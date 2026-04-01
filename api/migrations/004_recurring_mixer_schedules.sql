@@ -1,21 +1,27 @@
 CREATE TABLE IF NOT EXISTS recurring_mixer_schedules (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    type TEXT NOT NULL DEFAULT 'track',   -- 'track' | 'playlist'
-    target_id TEXT NOT NULL,              -- filename or playlist UUID
-    deck_id TEXT NOT NULL,                -- 'a' | 'b' | 'c' | 'd'
-    start_time TEXT NOT NULL,             -- "HH:MM"
-    stop_time TEXT NOT NULL,              -- "HH:MM"
-    active_days TEXT NOT NULL,            -- JSON array e.g. [0,1,2,3,4,5,6]
-    excluded_days TEXT DEFAULT '[]',      -- JSON array of "YYYY-MM-DD" strings
+    type TEXT NOT NULL DEFAULT 'track',
+    target_id TEXT NOT NULL,
+    deck_id TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    -- stop_time removed: music plays until track/playlist ends naturally
+    active_days TEXT NOT NULL DEFAULT '[]',
+    excluded_days TEXT NOT NULL DEFAULT '[]',
     fade_in INTEGER DEFAULT 3,
     fade_out INTEGER DEFAULT 3,
     volume INTEGER DEFAULT 80,
     loop BOOLEAN DEFAULT TRUE,
-    jingle_start TEXT,                    -- library filename or NULL
-    jingle_end TEXT,                      -- library filename or NULL
-    multi_tracks TEXT DEFAULT '[]',       -- JSON array of track filenames
+    jingle_start TEXT,
+    jingle_end TEXT,
+    multi_tracks TEXT DEFAULT '[]',
     enabled BOOLEAN DEFAULT TRUE,
-    last_run_date TEXT,                   -- "YYYY-MM-DD" of most recent trigger
+    last_run_date TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Drop stop_time if upgrading from an older schema
+DO $ BEGIN
+    ALTER TABLE recurring_mixer_schedules DROP COLUMN IF EXISTS stop_time;
+EXCEPTION WHEN undefined_column THEN NULL;
+END $;

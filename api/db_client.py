@@ -155,6 +155,7 @@ class DBClient:
             "id":          ann["id"],
             "name":        ann["name"],
             "text":        ann.get("text"),
+            "lang":        ann.get("lang", "en"),   # stored for TTS edit/re-generate
             "type":        ann["type"].lower(),
             "file_path":   ann.get("filename"),
             "targets":     json.dumps(ann.get("targets", ["ALL"])),
@@ -569,13 +570,13 @@ class DBClient:
                 self._put_conn(conn)
 
     def save_recurring_schedule(self, s: Dict):
+        # stop_time removed — announcement/mic runs until it ends naturally
         data = {
             "id":              s["id"],
             "name":            s["name"],
             "type":            s["type"].lower(),
             "announcement_id": s.get("announcement_id"),
             "start_time":      s["start_time"],
-            "stop_time":       s["stop_time"],
             "active_days":     json.dumps(s.get("active_days", [])),
             "excluded_days":   json.dumps(s.get("excluded_days", [])),
             "fade_duration":   s.get("fade_duration", 5),
@@ -598,14 +599,14 @@ class DBClient:
                     cur.execute(
                         """
                         INSERT INTO recurring_schedules
-                            (id, name, type, announcement_id, start_time, stop_time,
+                            (id, name, type, announcement_id, start_time,
                              active_days, excluded_days, fade_duration, music_volume,
                              target_decks, jingle_start, jingle_end, enabled)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name, type = EXCLUDED.type,
                             announcement_id = EXCLUDED.announcement_id,
-                            start_time = EXCLUDED.start_time, stop_time = EXCLUDED.stop_time,
+                            start_time = EXCLUDED.start_time,
                             active_days = EXCLUDED.active_days, excluded_days = EXCLUDED.excluded_days,
                             fade_duration = EXCLUDED.fade_duration, music_volume = EXCLUDED.music_volume,
                             target_decks = EXCLUDED.target_decks,
@@ -613,7 +614,7 @@ class DBClient:
                             enabled = EXCLUDED.enabled
                         """,
                         (data["id"], data["name"], data["type"], data["announcement_id"],
-                         data["start_time"], data["stop_time"], data["active_days"], data["excluded_days"],
+                         data["start_time"], data["active_days"], data["excluded_days"],
                          data["fade_duration"], data["music_volume"], data["target_decks"],
                          data["jingle_start"], data["jingle_end"], data["enabled"]),
                     )
@@ -682,6 +683,7 @@ class DBClient:
                 self._put_conn(conn)
 
     def save_recurring_mixer_schedule(self, s: Dict):
+        # stop_time removed — music plays until track/playlist ends naturally
         data = {
             "id":           s["id"],
             "name":         s["name"],
@@ -689,7 +691,6 @@ class DBClient:
             "target_id":    s["target_id"],
             "deck_id":      s["deck_id"],
             "start_time":   s["start_time"],
-            "stop_time":    s["stop_time"],
             "active_days":  json.dumps(s.get("active_days", [])),
             "excluded_days": json.dumps(s.get("excluded_days", [])),
             "fade_in":      s.get("fade_in", 3),
@@ -714,14 +715,14 @@ class DBClient:
                     cur.execute(
                         """
                         INSERT INTO recurring_mixer_schedules
-                            (id, name, type, target_id, deck_id, start_time, stop_time,
+                            (id, name, type, target_id, deck_id, start_time,
                              active_days, excluded_days, fade_in, fade_out, volume, loop,
                              jingle_start, jingle_end, multi_tracks, enabled)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name, type = EXCLUDED.type,
                             target_id = EXCLUDED.target_id, deck_id = EXCLUDED.deck_id,
-                            start_time = EXCLUDED.start_time, stop_time = EXCLUDED.stop_time,
+                            start_time = EXCLUDED.start_time,
                             active_days = EXCLUDED.active_days, excluded_days = EXCLUDED.excluded_days,
                             fade_in = EXCLUDED.fade_in, fade_out = EXCLUDED.fade_out,
                             volume = EXCLUDED.volume, loop = EXCLUDED.loop,
@@ -729,7 +730,7 @@ class DBClient:
                             multi_tracks = EXCLUDED.multi_tracks, enabled = EXCLUDED.enabled
                         """,
                         (data["id"], data["name"], data["type"], data["target_id"], data["deck_id"],
-                         data["start_time"], data["stop_time"], data["active_days"], data["excluded_days"],
+                         data["start_time"], data["active_days"], data["excluded_days"],
                          data["fade_in"], data["fade_out"], data["volume"], data["loop"],
                          data["jingle_start"], data["jingle_end"], data["multi_tracks"], data["enabled"]),
                     )
