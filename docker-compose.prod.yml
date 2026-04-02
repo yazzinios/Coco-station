@@ -44,6 +44,12 @@ services:
     container_name: cc_api
     restart: always
     # Port 8000 is NOT exposed publicly — accessed only through nginx (dashboard)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     environment:
       - DB_MODE=${DB_MODE:-local}
       - POSTGRES_USER=${POSTGRES_USER:-coco}
@@ -51,6 +57,10 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-cocostation}
       - POSTGRES_HOST=db
       - FFMPEG_HOST=ffmpeg-mixer
+      # WebSocket keepalive — FastAPI/uvicorn sends a ping every 30s so nginx
+      # never sees the connection as idle and drops it
+      - WS_PING_INTERVAL=30
+      - WS_PING_TIMEOUT=20
     volumes:
       - cocostation-library:/app/data/library
       - cocostation-announcements:/app/data/announcements
@@ -93,7 +103,8 @@ services:
     ports:
       - "8083:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy   # wait until API is actually ready before nginx starts
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.6
