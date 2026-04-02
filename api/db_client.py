@@ -123,6 +123,15 @@ class DBClient:
         if isinstance(r.get("multi_tracks"), str):
             try: r["multi_tracks"] = json.loads(r["multi_tracks"])
             except: r["multi_tracks"] = []
+        # Migrate old single deck_id to new deck_ids list
+        if "deck_ids" in r:
+            if isinstance(r["deck_ids"], str):
+                try: r["deck_ids"] = json.loads(r["deck_ids"])
+                except: r["deck_ids"] = [r.get("deck_id", "a")]
+        elif "deck_id" in r and r.get("deck_id"):
+            r["deck_ids"] = [r["deck_id"]]  # back-compat: wrap old single value
+        else:
+            r["deck_ids"] = []
         if isinstance(r.get("created_at"), datetime):
             r["created_at"] = r["created_at"].isoformat()
         return r
@@ -684,12 +693,14 @@ class DBClient:
 
     def save_recurring_mixer_schedule(self, s: Dict):
         # stop_time removed — music plays until track/playlist ends naturally
+        # deck_ids replaces deck_id — stored as JSON array for multi-deck support
+        raw_deck_ids = s.get("deck_ids") or ([s["deck_id"]] if s.get("deck_id") else [])
         data = {
             "id":           s["id"],
             "name":         s["name"],
             "type":         s["type"],
             "target_id":    s["target_id"],
-            "deck_id":      s["deck_id"],
+            "deck_ids":     json.dumps(raw_deck_ids),
             "start_time":   s["start_time"],
             "active_days":  json.dumps(s.get("active_days", [])),
             "excluded_days": json.dumps(s.get("excluded_days", [])),
@@ -715,13 +726,13 @@ class DBClient:
                     cur.execute(
                         """
                         INSERT INTO recurring_mixer_schedules
-                            (id, name, type, target_id, deck_id, start_time,
+                            (id, name, type, target_id, deck_ids, start_time,
                              active_days, excluded_days, fade_in, fade_out, volume, loop,
                              jingle_start, jingle_end, multi_tracks, enabled)
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name, type = EXCLUDED.type,
-                            target_id = EXCLUDED.target_id, deck_id = EXCLUDED.deck_id,
+                            target_id = EXCLUDED.target_id, deck_ids = EXCLUDED.deck_ids,
                             start_time = EXCLUDED.start_time,
                             active_days = EXCLUDED.active_days, excluded_days = EXCLUDED.excluded_days,
                             fade_in = EXCLUDED.fade_in, fade_out = EXCLUDED.fade_out,
@@ -729,7 +740,7 @@ class DBClient:
                             jingle_start = EXCLUDED.jingle_start, jingle_end = EXCLUDED.jingle_end,
                             multi_tracks = EXCLUDED.multi_tracks, enabled = EXCLUDED.enabled
                         """,
-                        (data["id"], data["name"], data["type"], data["target_id"], data["deck_id"],
+                        (data["id"], data["name"], data["type"], data["target_id"], data["deck_ids"],
                          data["start_time"], data["active_days"], data["excluded_days"],
                          data["fade_in"], data["fade_out"], data["volume"], data["loop"],
                          data["jingle_start"], data["jingle_end"], data["multi_tracks"], data["enabled"]),

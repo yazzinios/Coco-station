@@ -131,7 +131,7 @@ class RecurringMixerScheduleCreateRequest(BaseModel):
     name: str
     type: str             # 'track' | 'playlist'
     target_id: str        # filename or playlist UUID
-    deck_id: str          # 'a' | 'b' | 'c' | 'd'
+    deck_ids: List[str]   # ['a', 'b', ...] — one or more decks to play on simultaneously
     start_time: str       # "HH:MM"
     # stop_time removed: music plays until track/playlist ends naturally
     active_days: List[int]
@@ -150,7 +150,7 @@ class RecurringMixerSchedule(BaseModel):
     name: str
     type: str
     target_id: str
-    deck_id: str
+    deck_ids: List[str]   # one or more deck ids
     start_time: str
     # stop_time removed
     active_days: List[int]

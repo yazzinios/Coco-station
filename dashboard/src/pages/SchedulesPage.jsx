@@ -100,7 +100,7 @@ const MIXER_DEFAULT = {
   name: '',
   type: 'track',
   target_id: '',
-  deck_id: 'a',
+  deck_ids: ['a'],   // multi-deck: play the same content on multiple decks simultaneously
   start_time: '09:00',
   // stop_time removed — music plays until end of track/playlist naturally
   active_days: [0, 1, 2, 3, 4, 5, 6],
@@ -142,7 +142,8 @@ function MixerSchedules() {
   const startEdit = (s) => {
     setForm({
       ...MIXER_DEFAULT, ...s,
-      // Ensure jingles fall back to first library track if not set
+      // Normalise: old records may have deck_id (string) instead of deck_ids (array)
+      deck_ids: s.deck_ids ?? (s.deck_id ? [s.deck_id] : ['a']),
       jingle_start: s.jingle_start || library[0]?.filename || null,
       jingle_end:   s.jingle_end   || library[0]?.filename || null,
     });
@@ -163,7 +164,14 @@ function MixerSchedules() {
     setExcludeInput('');
   };
   const removeExcluded = (d) => setForm({ ...form, excluded_days: form.excluded_days.filter(x => x !== d) });
-  const toggleDeck = (id) => setForm({ ...form, deck_id: id });
+  // Multi-deck toggle: at least one deck must stay selected
+  const toggleDeck = (id) => {
+    const next = form.deck_ids.includes(id)
+      ? form.deck_ids.filter(d => d !== id)
+      : [...form.deck_ids, id].sort();
+    if (next.length === 0) return; // prevent deselecting all
+    setForm({ ...form, deck_ids: next });
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -309,15 +317,20 @@ function MixerSchedules() {
               </div>
 
               <div>
-                <label style={labelStyle}>Target Deck</label>
+                <label style={labelStyle}>Target Decks <span style={{ color: 'var(--text-secondary)', fontWeight: '400', textTransform: 'none', letterSpacing: 0, fontSize: '0.7rem' }}>(select one or more)</span></label>
                 <div style={{ display: 'flex', gap: '0.4rem' }}>
                   {DECK_OPTIONS.map(d => (
                     <button key={d.id} type="button" onClick={() => toggleDeck(d.id)}
-                      style={{ ...chipBtn(form.deck_id === d.id), padding: '0.4rem 0.75rem', fontWeight: '700', fontSize: '0.82rem' }}>
+                      style={{ ...chipBtn(form.deck_ids.includes(d.id)), padding: '0.4rem 0.75rem', fontWeight: '700', fontSize: '0.82rem' }}>
                       {d.label}
                     </button>
                   ))}
                 </div>
+                {form.deck_ids.length > 1 && (
+                  <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'var(--accent-blue)' }}>
+                    ✓ Playing on Decks {form.deck_ids.map(d => d.toUpperCase()).join(' + ')}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -497,7 +510,9 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Clock size={11} /> {s.start_time}</span>
-            <span style={{ color: 'var(--accent-blue)', fontWeight: '600' }}>Deck {s.deck_id?.toUpperCase()}</span>
+            <span style={{ color: 'var(--accent-blue)', fontWeight: '600' }}>
+              {(s.deck_ids ?? (s.deck_id ? [s.deck_id] : [])).map(d => `Deck ${d.toUpperCase()}`).join(' + ')}
+            </span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: '0.4rem' }}>

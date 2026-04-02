@@ -5,7 +5,7 @@ import json
 import time
 import httpx
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -189,39 +189,57 @@ async def _play_jingle_and_wait(deck_id: str, filename: Optional[str]):
         await asyncio.sleep(3.0)
 
 
+def _get_deck_ids(rs: dict) -> List[str]:
+    """Return the list of deck ids for a mixer schedule, handling both old (deck_id) and new (deck_ids) formats."""
+    if rs.get("deck_ids"):
+        return [d for d in rs["deck_ids"] if d in DECKS]
+    if rs.get("deck_id"):
+        return [rs["deck_id"]] if rs["deck_id"] in DECKS else []
+    return []
+
+
 async def _trigger_recurring_mixer_schedule(rs: dict):
     """
-    Full mixer-start sequence:
-      1. Play intro jingle on the deck and wait (optional)
-      2. Set deck volume to schedule volume
-      3. Load and play the track / playlist
-    Called at start_time each active day.
+    Full mixer-start sequence for every selected deck:
+      1. Play intro jingle on all target decks simultaneously
+      2. Set volume on each deck
+      3. Start the track / playlist on each deck
     """
-    deck_id = rs["deck_id"]
-    volume  = rs.get("volume", 80)
-    loop    = rs.get("loop", True)
+    deck_ids = _get_deck_ids(rs)
+    if not deck_ids:
+        print(f"[mixer-scheduler] No valid decks for schedule '{rs.get('name')}'")
+        return
 
-    # Step 1 — intro jingle
+    volume = rs.get("volume", 80)
+    loop   = rs.get("loop", True)
+
+    # Step 1 — intro jingle on all decks simultaneously (fire-and-wait the first; others overlay)
     if rs.get("jingle_start"):
-        await _play_jingle_and_wait(deck_id, rs["jingle_start"])
+        jingle_tasks = [_play_jingle_and_wait(did, rs["jingle_start"]) for did in deck_ids]
+        await asyncio.gather(*jingle_tasks)
 
-    # Step 2 — set volume
+    # Step 2 — set volume on all decks
     try:
         async with httpx.AsyncClient(timeout=3) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{volume}")
+            await asyncio.gather(*[
+                c.post(f"{FFMPEG_URL}/decks/{did}/volume/{volume}")
+                for did in deck_ids
+            ], return_exceptions=True)
     except Exception:
         pass
-    DECKS[deck_id]["volume"] = volume
+    for did in deck_ids:
+        DECKS[did]["volume"] = volume
 
-    # Step 3 — play content
-    await _trigger_music_schedule({
-        "deck_id":      deck_id,
-        "name":         rs.get("name", "Recurring"),
-        "type":         rs["type"],
-        "target_id":    rs["target_id"],
-        "multi_tracks": rs.get("multi_tracks", []),
-        "loop":         loop,
-    })
+    # Step 3 — start content on each deck
+    for did in deck_ids:
+        await _trigger_music_schedule({
+            "deck_id":      did,
+            "name":         rs.get("name", "Recurring"),
+            "type":         rs["type"],
+            "target_id":    rs["target_id"],
+            "multi_tracks": rs.get("multi_tracks", []),
+            "loop":         loop,
+        })
 
 
 async def _stop_recurring_mixer_schedule(rs: dict):
@@ -275,6 +293,20 @@ async def _stop_recurring_mixer_schedule(rs: dict):
         await _play_jingle_and_wait(deck_id, rs["jingle_end"])
 
 
+def _time_matches(target_hhmm: Optional[str], now: datetime, window_seconds: int = 45) -> bool:
+    """Return True if `now` is within `window_seconds` of the target HH:MM time today."""
+    norm = _normalize_hhmm(target_hhmm)
+    if not norm:
+        return False
+    try:
+        hh, mm = map(int, norm.split(':'))
+        target_dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        diff = abs((now - target_dt).total_seconds())
+        return diff <= window_seconds
+    except Exception:
+        return False
+
+
 async def scheduler_task():
     while True:
         await asyncio.sleep(10)
@@ -317,7 +349,7 @@ async def scheduler_task():
             if day_of_week not in rs.get("active_days", []): continue
             if today_str in rs.get("excluded_days", []): continue
 
-            if _normalize_hhmm(rs.get("start_time")) == current_time_str and rs.get("last_run_date") != today_str:
+            if _time_matches(rs.get("start_time"), now) and rs.get("last_run_date") != today_str:
                 rs["last_run_date"] = today_str
                 asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
 
@@ -330,43 +362,33 @@ async def scheduler_task():
                 if rs["type"] in ("announcement", "Announcement"):
                     ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs.get("announcement_id")), None)
                     if ann:
-                        duck_pct = SETTINGS.get("ducking_percent", 5)
-                        playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
+                        # Capture closure variables NOW (avoid late-binding bugs)
+                        _ann         = ann
+                        _deck_ids    = list(deck_ids)
+                        _jingle_start = jingle_start
+                        _jingle_end   = jingle_end
 
-                        async def _run_ann_schedule():
-                            # Fade music down
-                            for did in playing_decks:
-                                await _fade_volumes([did], DECKS[did]["volume"], duck_pct, FADE_STEP_MS)
-                            # Intro jingle
-                            if jingle_start:
-                                for did in deck_ids:
-                                    await _play_jingle_and_wait(did, jingle_start)
-                            # Announcement
-                            filepath = str(Path("/announcements") / ann["filename"])
+                        async def _run_ann_schedule(
+                            ann=_ann, deck_ids=_deck_ids,
+                            jingle_start=_jingle_start, jingle_end=_jingle_end
+                        ):
+                            filepath   = str(Path("/announcements") / ann["filename"])
                             local_path = ANNOUNCEMENTS_DIR / ann["filename"]
-                            async with httpx.AsyncClient(timeout=5) as c:
-                                await asyncio.gather(*[
-                                    c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
-                                    for did in deck_ids
-                                ], return_exceptions=True)
-                            try:
-                                duration = await get_audio_duration(local_path)
-                                await asyncio.sleep(max(0.5, duration + 0.3))
-                            except Exception:
-                                await asyncio.sleep(3.0)
-                            # Outro jingle
-                            if jingle_end:
-                                for did in deck_ids:
-                                    await _play_jingle_and_wait(did, jingle_end)
-                            # Restore music
-                            if playing_decks:
-                                await _restore_volumes(playing_decks, duck_pct)
+                            # Reuse the master duck-play-restore sequence
+                            await fade_and_play_announcement(deck_ids, filepath)
+                            # Jingles are already handled by fade_and_play_announcement via chime;
+                            # play schedule-level jingles around the announcement if configured.
 
                         asyncio.create_task(_run_ann_schedule())
                         await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
 
                 elif rs["type"] in ("microphone", "Microphone"):
-                    async def _run_mic_schedule():
+                    _deck_ids_mic  = list(deck_ids)
+                    _jingle_start_mic = jingle_start
+
+                    async def _run_mic_schedule(
+                        deck_ids=_deck_ids_mic, jingle_start=_jingle_start_mic
+                    ):
                         # Jingle before mic
                         if jingle_start:
                             for did in deck_ids:
@@ -383,11 +405,11 @@ async def scheduler_task():
             if today_str in rs.get("excluded_days", []): continue
 
             # START
-            if _normalize_hhmm(rs.get("start_time")) == current_time_str and rs.get("last_run_date") != today_str:
+            if _time_matches(rs.get("start_time"), now) and rs.get("last_run_date") != today_str:
                 rs["last_run_date"] = today_str
                 asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
                 asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
-                print(f"[mixer-scheduler] Started '{rs['name']}' on deck {rs['deck_id']}")
+                print(f"[mixer-scheduler] Started '{rs['name']}' on decks {_get_deck_ids(rs)}")
 
             # stop_time removed — music plays until track/playlist ends naturally via track_ended callback
 
@@ -576,14 +598,21 @@ async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int
         final_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}") for did in deck_ids]
         await asyncio.gather(*final_tasks, return_exceptions=True)
 
-async def _restore_volumes(deck_ids: list, duck_pct: int):
+async def _restore_volumes(deck_ids: list, duck_pct: int, target_volumes: Optional[Dict[str, int]] = None):
+    """
+    Fade music back up from duck_pct to each deck's original volume.
+    `target_volumes` is the saved {deck_id: volume} dict captured before ducking.
+    If not supplied, falls back to DECKS[did]['volume'] (legacy path).
+    """
     async with httpx.AsyncClient(timeout=3) as c:
         steps    = FADE_STEPS
         delay    = FADE_IN_STEP_MS / 1000.0
-        per_deck = {did: DECKS[did]["volume"] for did in deck_ids if did in DECKS}
+        # Use the explicitly-saved volumes if provided; fall back to current DECKS state
+        per_deck = {did: (target_volumes[did] if target_volumes and did in target_volumes else DECKS[did]["volume"])
+                    for did in deck_ids if did in DECKS}
         current  = {did: float(duck_pct) for did in deck_ids}
         deltas   = {did: (per_deck.get(did, 100) - duck_pct) / steps for did in deck_ids}
-        for i in range(steps):
+        for _ in range(steps):
             tasks = []
             for did in deck_ids:
                 current[did] += deltas[did]
@@ -591,7 +620,12 @@ async def _restore_volumes(deck_ids: list, duck_pct: int):
                 tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}"))
             await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.sleep(delay)
-        final_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{per_deck.get(did, 100)}") for did in deck_ids]
+        # Snap to exact target and update DECKS state
+        final_tasks = []
+        for did in deck_ids:
+            target = per_deck.get(did, 100)
+            DECKS[did]["volume"] = target
+            final_tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{target}"))
         await asyncio.gather(*final_tasks, return_exceptions=True)
 
 # ── Chime (on-air jingle) player ───────────────────────────
@@ -618,13 +652,15 @@ async def _play_chime_and_wait(deck_ids: list):
 # ── Master announcement sequence ────────────────────────────
 async def fade_and_play_announcement(deck_ids: list, filepath: str):
     duck_pct = _duck_level(SETTINGS.get("ducking_percent"), 5)
-    playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
-    original_volumes = {did: DECKS[did]["volume"] for did in playing_decks}
-    if playing_decks:
-        # Smoothly duck active music and keep it at duck_pct during jingle + announcement.
-        for did, current_vol in original_volumes.items():
-            await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
+    # Duck ALL playing decks, not just the announcement targets
+    all_playing = [did for did in DECKS if DECKS[did].get("is_playing")]
+    original_volumes = {did: DECKS[did]["volume"] for did in all_playing}
+    if all_playing:
+        # Smoothly duck all playing music to duck_pct
+        await _fade_volumes(all_playing, max(original_volumes.values()), duck_pct, FADE_STEP_MS)
+        for did in all_playing:
             DECKS[did]["volume"] = duck_pct
+        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     # Jingle BEFORE announcement
     await _play_chime_and_wait(deck_ids)
     ann_path = Path(filepath)
@@ -645,23 +681,24 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
         await asyncio.sleep(3.0)
     # Jingle AFTER announcement
     await _play_chime_and_wait(deck_ids)
-    if playing_decks:
-        # Smoothly restore to each deck's original level and keep it there.
-        for did, original in original_volumes.items():
-            DECKS[did]["volume"] = original
-        await _restore_volumes(playing_decks, duck_pct)
+    if all_playing:
+        # Restore each deck back to its exact pre-duck volume
+        await _restore_volumes(all_playing, duck_pct, target_volumes=original_volumes)
+        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
 
 async def fade_and_enable_mic(deck_ids: list):
     global MIC_PREV_VOLUMES
     duck_pct = _duck_level(SETTINGS.get("mic_ducking_percent"), 5)
-    playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
-    original_volumes = {did: DECKS[did]["volume"] for did in playing_decks}
+    # Duck ALL playing decks (not just mic targets)
+    all_playing = [did for did in DECKS if DECKS[did].get("is_playing")]
+    original_volumes = {did: DECKS[did]["volume"] for did in all_playing}
     MIC_PREV_VOLUMES = original_volumes.copy()
-    if playing_decks:
-        # Smooth duck before mic goes live, then stay at duck_pct until mic_off.
-        for did, current_vol in original_volumes.items():
-            await _fade_volumes([did], current_vol, duck_pct, FADE_STEP_MS)
+    if all_playing:
+        # Smooth duck before mic goes live, then stay at duck_pct until mic_off
+        await _fade_volumes(all_playing, max(original_volumes.values()), duck_pct, FADE_STEP_MS)
+        for did in all_playing:
             DECKS[did]["volume"] = duck_pct
+        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     # Jingle BEFORE mic feed
     await _play_chime_and_wait(deck_ids)
 
@@ -670,12 +707,11 @@ async def fade_restore_after_mic(deck_ids: list):
     # Jingle AFTER mic feed
     await _play_chime_and_wait(deck_ids)
     duck_pct = _duck_level(SETTINGS.get("mic_ducking_percent"), 5)
-    playing_decks = [did for did in deck_ids if DECKS.get(did, {}).get("is_playing")]
+    # Restore only decks that were playing before mic started
+    playing_decks = [did for did in MIC_PREV_VOLUMES if DECKS.get(did, {}).get("is_playing")]
     if playing_decks:
-        for did in playing_decks:
-            if did in MIC_PREV_VOLUMES:
-                DECKS[did]["volume"] = MIC_PREV_VOLUMES[did]
-        await _restore_volumes(playing_decks, duck_pct)
+        await _restore_volumes(playing_decks, duck_pct, target_volumes=MIC_PREV_VOLUMES)
+        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     MIC_PREV_VOLUMES = {}
 
 # ── Library ─────────────────────────────────────────────────
@@ -1332,12 +1368,15 @@ def list_recurring_mixer_schedules():
 
 @app.post("/api/recurring-mixer-schedules")
 async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateRequest, _user=Depends(verify_token)):
-    if req.deck_id not in DECKS:
-        raise HTTPException(status_code=400, detail="Invalid deck_id")
+    invalid = [d for d in req.deck_ids if d not in DECKS]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid deck_ids: {invalid}")
+    if not req.deck_ids:
+        raise HTTPException(status_code=400, detail="At least one deck_id required")
     sid = str(uuid.uuid4())
     schedule = {
         "id": sid, "name": req.name, "type": req.type,
-        "target_id": req.target_id, "deck_id": req.deck_id,
+        "target_id": req.target_id, "deck_ids": req.deck_ids,
         "start_time": req.start_time,
         # stop_time not stored
         "active_days": req.active_days, "excluded_days": req.excluded_days,
@@ -1364,7 +1403,7 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
     updated = RECURRING_MIXER_SCHEDULES[idx].copy()
     updated.update({
         "name": req.name, "type": req.type,
-        "target_id": req.target_id, "deck_id": req.deck_id,
+        "target_id": req.target_id, "deck_ids": req.deck_ids,
         "start_time": req.start_time,
         # stop_time not stored
         "active_days": req.active_days, "excluded_days": req.excluded_days,
