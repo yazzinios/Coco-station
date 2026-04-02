@@ -725,7 +725,9 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
 
 # ── Master announcement sequence ────────────────────────────
 async def fade_and_play_announcement(deck_ids: list, filepath: str):
-    """Duck music, play announcement on deck_ids, then release duck."""
+    """Duck-acquire, play announcement end-to-end, then release duck.
+    Used by the SCHEDULER (which has no HTTP response to return early).
+    The manual /play endpoint does its own acquire + background task instead."""
     await _duck_acquire()
     try:
         # Jingle BEFORE announcement
@@ -743,7 +745,7 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
         except Exception as e:
             print(f"[announcement] play error: {e}")
 
-        # Wait for announcement to finish
+        # Block here until the announcement audio has fully played
         try:
             duration = await get_audio_duration(local_path)
             await asyncio.sleep(max(0.5, duration + 0.3))
@@ -758,20 +760,20 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
 
 
 async def fade_and_enable_mic(deck_ids: list):
-    """Duck music and play chime. Call fade_restore_after_mic() when mic ends."""
+    """Acquire duck, play intro chime, then return.
+    Music stays at duck level until fade_restore_after_mic() is called."""
     global MIC_PREV_VOLUMES
-    # Save for legacy compat (mic_off endpoint still references this)
     MIC_PREV_VOLUMES = {did: DECKS[did]["volume"] for did in DECKS if DECKS[did].get("is_playing")}
-
+    # Duck happens here — blocks until fade is done, then returns.
+    # mic_on endpoint awaits this so duck is fully applied before mic goes live.
     await _duck_acquire()
-    # Jingle BEFORE mic feed
     await _play_chime_and_wait(deck_ids)
 
 
 async def fade_restore_after_mic(deck_ids: list):
-    """Play outro chime and release the duck held by the mic."""
+    """Play outro chime then release the duck held by the mic.
+    Runs in a background task spawned by mic_off."""
     global MIC_PREV_VOLUMES
-    # Jingle AFTER mic feed
     await _play_chime_and_wait(deck_ids)
     await _duck_release()
     MIC_PREV_VOLUMES = {}
@@ -940,6 +942,9 @@ async def mic_off(_user=Depends(verify_token)):
     except Exception: pass
     await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
     deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+    # Run restore in background so the HTTP response returns immediately,
+    # but use create_task (not fire-and-forget) so the event loop awaits it.
+    # The duck refcount is decremented inside fade_restore_after_mic → _duck_release.
     asyncio.create_task(fade_restore_after_mic(deck_ids))
     return {"status": "ok"}
 
@@ -1011,7 +1016,34 @@ async def play_announcement(ann_id: str, _user=Depends(verify_token)):
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
     deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-    asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
+
+    # Acquire the duck IMMEDIATELY (before returning to caller) so the
+    # refcount is correct even if another event fires straight after.
+    # The rest of the sequence (play audio + release) runs in background.
+    await _duck_acquire()
+
+    async def _play_and_release():
+        try:
+            await _play_chime_and_wait(deck_ids)
+            local_path = ANNOUNCEMENTS_DIR / Path(filepath).name
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    await asyncio.gather(*[
+                        c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
+                        for did in deck_ids
+                    ], return_exceptions=True)
+            except Exception as e:
+                print(f"[announcement] play error: {e}")
+            try:
+                duration = await get_audio_duration(local_path)
+                await asyncio.sleep(max(0.5, duration + 0.3))
+            except Exception:
+                await asyncio.sleep(3.0)
+            await _play_chime_and_wait(deck_ids)
+        finally:
+            await _duck_release()
+
+    asyncio.create_task(_play_and_release())
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
     except Exception as e:
