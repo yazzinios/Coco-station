@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Music, Search, Send, CheckCircle, User, Phone, X, Headphones, Heart } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Music, Search, Send, CheckCircle, User, Phone, X, Headphones, Heart, MapPin } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -25,6 +26,9 @@ export default function RequestPage() {
   const [error, setError] = useState('');
 
   const googleBtnRef = useRef(null);
+
+  const [searchParams] = useSearchParams();
+  const deckParam = searchParams.get('deck') || '';
 
   // ── Load library ─────────────────────────────────────────
   useEffect(() => {
@@ -100,6 +104,7 @@ export default function RequestPage() {
           requester_photo: user.photo || null,
           track: selectedTrack,
           message: message || null,
+          target_deck: deckParam || null,
         }),
       });
       if (!res.ok) {
@@ -165,6 +170,11 @@ export default function RequestPage() {
           </div>
           <h1 style={{ fontSize: '1.8rem', fontWeight: '700', marginBottom: '0.3rem' }}>CocoStation</h1>
           <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.95rem' }}>Request your favorite song 🎵</p>
+          {deckParam && (
+            <div style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', color: '#00d4ff', fontSize: '0.85rem', fontWeight: '500', background: 'rgba(0,212,255,0.1)', padding: '0.4rem 0.8rem', borderRadius: '20px', width: 'max-content', margin: '0.5rem auto 0' }}>
+              <MapPin size={14} /> Location: Deck {deckParam.toUpperCase()}
+            </div>
+          )}
         </div>
 
         <div style={cardStyle}>
@@ -326,7 +336,10 @@ export default function RequestPage() {
         )}
         <div>
           <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>{user.name}</div>
-          <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.35)' }}>Song Request</div>
+          <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            Song Request
+            {deckParam && <span style={{ color: '#00d4ff', fontWeight: '500' }}>• Deck {deckParam.toUpperCase()}</span>}
+          </div>
         </div>
       </div>
 

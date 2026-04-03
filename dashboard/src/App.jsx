@@ -8,6 +8,7 @@ import AnnouncementsPage from './pages/AnnouncementsPage';
 import StatisticsPage from './pages/StatisticsPage';
 import SettingsPage from './pages/SettingsPage';
 import SchedulesPage from './pages/SchedulesPage';
+import RequestPage from './pages/RequestPage';
 import { useApp } from './context/useApp';
 
 function AppHeader() {
@@ -80,7 +81,10 @@ function App() {
   return (
     <BrowserRouter>
       <AppProvider>
-        <AppLayout />
+        <Routes>
+          <Route path="/request" element={<RequestPage />} />
+          <Route path="/*" element={<AppLayout />} />
+        </Routes>
       </AppProvider>
     </BrowserRouter>
   );

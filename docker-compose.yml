@@ -25,6 +25,7 @@ services:
       - ./data/announcements:/announcements:ro
       - ./data/chimes:/chimes:ro
     environment:
+      - TZ=Africa/Casablanca
       - MEDIAMTX_HOST=mediamtx
       - API_HOST=api
       - PYTHONUNBUFFERED=1
@@ -43,6 +44,7 @@ services:
       - ./api:/app  # For hot-reloading in dev
       - ./supabase/migrations:/app/supabase/migrations:ro
     environment:
+      - TZ=Africa/Casablanca
       - DB_MODE=${DB_MODE:-local}
       - POSTGRES_USER=${POSTGRES_USER:-coco}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-coco_secret}
@@ -77,6 +79,7 @@ services:
     ports:
       - "8083:80"
     environment:
+      - TZ=Africa/Casablanca
       - VITE_API_URL=http://localhost:8000
       - VITE_WS_URL=ws://localhost:8000
       - VITE_SUPABASE_URL=${SUPABASE_URL:-}

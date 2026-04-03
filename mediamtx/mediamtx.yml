@@ -17,9 +17,9 @@ rtmpAddress: :1935
 # HLS
 hls: yes
 hlsAddress: :8888
+hlsVariant: mpegts
 hlsAlwaysRemux: yes
 hlsSegmentDuration: 1s
-hlsPartDuration: 100ms
 hlsSegmentCount: 3
 
 ###############################################

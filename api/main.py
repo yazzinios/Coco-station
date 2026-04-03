@@ -335,7 +335,10 @@ async def scheduler_task():
                             ann["status"] = "Played"
                             filepath = str(Path("/announcements") / ann["filename"])
                             deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-                            await fade_and_play_announcement(deck_ids, filepath)
+                            
+                            # Queue the trigger instead of blocking the scheduler loop
+                            asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
+                            
                             await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
                             await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
                 except Exception as e:
@@ -775,6 +778,10 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
 async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int = None):
     """Full announcement trigger sequence with lock.
     Order: PRE-trigger → Duck → Play → POST-trigger → Restore"""
+    
+    if _TRIGGER_LOCK.locked():
+        print(f"[trigger] Engine is busy. Adding '{Path(filepath).name}' to Trigger Queue...")
+        
     async with _TRIGGER_LOCK:
         print(f"[trigger] announcement locked — {Path(filepath).name}")
         try:
