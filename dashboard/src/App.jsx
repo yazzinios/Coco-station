@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import Sidebar from './components/Sidebar';
 import MixerPage from './pages/MixerPage';
+import LibraryPage from './pages/LibraryPage';
 import AnnouncementsPage from './pages/AnnouncementsPage';
 import StatisticsPage from './pages/StatisticsPage';
 import SettingsPage from './pages/SettingsPage';
@@ -63,6 +64,7 @@ function AppLayout() {
         <AppHeader />
         <Routes>
           <Route path="/"              element={<MixerPage />} />
+          <Route path="/library"       element={<LibraryPage />} />
           <Route path="/announcements" element={<AnnouncementsPage />} />
           <Route path="/schedules"     element={<SchedulesPage />} />
           <Route path="/stats"         element={<StatisticsPage />} />

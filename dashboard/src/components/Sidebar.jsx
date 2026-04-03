@@ -1,14 +1,15 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Sliders, Mic2, BarChart2, Settings, Calendar, LogOut } from 'lucide-react';
+import { Sliders, Mic2, BarChart2, Settings, Calendar, LogOut, FolderOpen } from 'lucide-react';
 
 export default function Sidebar({ onNavClick }) {
   const navItems = [
-    { name: 'Mixer',         path: '/',           icon: <Sliders size={20} /> },
+    { name: 'Mixer',         path: '/',              icon: <Sliders size={20} /> },
+    { name: 'Library',       path: '/library',       icon: <FolderOpen size={20} /> },
     { name: 'Announcements', path: '/announcements', icon: <Mic2 size={20} /> },
-    { name: 'Schedules',     path: '/schedules',  icon: <Calendar size={20} /> },
-    { name: 'Statistics',    path: '/stats',      icon: <BarChart2 size={20} /> },
-    { name: 'Settings',      path: '/settings',   icon: <Settings size={20} /> },
+    { name: 'Schedules',     path: '/schedules',     icon: <Calendar size={20} /> },
+    { name: 'Statistics',    path: '/stats',         icon: <BarChart2 size={20} /> },
+    { name: 'Settings',      path: '/settings',      icon: <Settings size={20} /> },
   ];
 
   return (

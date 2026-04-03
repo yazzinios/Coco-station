@@ -1,4 +1,3 @@
-import LibraryManager from '../components/LibraryManager';
 import DeckPanel from '../components/DeckPanel';
 import OnAirButton from '../components/OnAirButton';
 
@@ -15,9 +14,8 @@ export default function MixerPage() {
         <DeckPanel id="d" />
       </div>
 
-      {/* Library + OnAir button: side-by-side → stacked on mobile */}
-      <div className="mixer-bottom">
-        <LibraryManager />
+      {/* On Air button */}
+      <div style={{ marginTop: '1.5rem', maxWidth: '400px' }}>
         <OnAirButton />
       </div>
     </div>
