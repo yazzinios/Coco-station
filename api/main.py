@@ -178,7 +178,7 @@ async def _play_library_track_on_deck(deck_id: str, filename: str):
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play_announcement",
-                         json={"filepath": filepath})
+                         json={"filepath": filepath, "notify": False})
     except Exception as e:
         print(f"[jingle] error playing {filename} on deck {deck_id}: {e}")
 
@@ -670,7 +670,7 @@ async def _play_chime_and_wait(deck_ids: list):
         async with httpx.AsyncClient(timeout=5) as c:
             tasks = [
                 c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
-                       json={"filepath": filepath_in_container})
+                       json={"filepath": filepath_in_container, "notify": False})
                 for did in deck_ids
             ]
             await asyncio.gather(*tasks, return_exceptions=True)

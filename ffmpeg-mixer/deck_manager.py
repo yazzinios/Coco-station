@@ -258,7 +258,7 @@ class Deck:
         with self.lock:
             self.duck_volume = max(0, min(100, vol))
 
-    def play_announcement(self, filepath):
+    def play_announcement(self, filepath, notify: bool = True):
         """Play an announcement clip on top of whatever is on the deck."""
         if self.ann_proc and self.ann_proc.poll() is None:
             try:
@@ -275,12 +275,13 @@ class Deck:
             "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1",
         ]
         self.ann_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        proc_name = "ann" if notify else "jingle"
         threading.Thread(
             target=self._reader_thread,
-            args=(self.ann_proc, self.ann_q, "ann"),
+            args=(self.ann_proc, self.ann_q, proc_name),
             daemon=True,
         ).start()
-        print(f"[Deck {self.name}] Announcement: {filepath}")
+        print(f"[Deck {self.name}] Announcement: {filepath} (notify={notify})")
 
 
 # ── Initialise decks ─────────────────────────────────────────
@@ -304,6 +305,10 @@ app = FastAPI(lifespan=lifespan)
 class PlayRequest(BaseModel):
     filepath: str
     loop: bool = False
+
+class PlayAnnouncementRequest(BaseModel):
+    filepath: str
+    notify: bool = True
 
 class LoopRequest(BaseModel):
     loop: bool = False
@@ -371,10 +376,10 @@ def set_volume(deck_id: str, level: int):
     return {"status": "ok", "volume": level}
 
 @app.post("/decks/{deck_id}/play_announcement")
-def play_announcement(deck_id: str, req: PlayRequest):
+def play_announcement(deck_id: str, req: PlayAnnouncementRequest):
     if deck_id not in decks:
         raise HTTPException(status_code=404, detail="Deck not found")
-    decks[deck_id].play_announcement(req.filepath)
+    decks[deck_id].play_announcement(req.filepath, notify=req.notify)
     return {"status": "ok"}
 
 
