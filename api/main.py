@@ -56,8 +56,8 @@ MIC_STATE: dict = {"active": False, "targets": []}
 # holding the duck. Music is only restored when this counter reaches zero.
 # Priority: Mic > Announcement > Music
 _DUCK_REFCOUNT: int = 0                    # how many sources are currently ducking
-_DUCK_SAVED_VOLUMES: Dict[str, int] = {}   # volumes captured at first duck entry
-MIC_PREV_VOLUMES: Dict[str, int] = {}      # kept for legacy compat
+_DUCK_SAVED_VOLUMES: Dict[str, int] = {}   # the natural volumes to restore to
+_DUCK_CURRENT_TYPE: str = None             # "mic" or "announcement"
 PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
 MUSIC_SCHEDULES: List[dict] = []
@@ -322,15 +322,21 @@ async def scheduler_task():
         for ann in list(ANNOUNCEMENTS):
             if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
                 try:
+                    # Parse and normalize timezone
                     scheduled_at = _parse_iso_datetime(ann["scheduled_at"])
-                    if scheduled_at and scheduled_at <= now:
-                        ann["status"] = "Played"
-                        filepath = str(Path("/announcements") / ann["filename"])
-                        deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-                        await fade_and_play_announcement(deck_ids, filepath)
-                        await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
-                        await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
-                except Exception: pass
+                    if scheduled_at:
+                        # DEBUG: Uncomment to see drift in logs
+                        # print(f"[scheduler] check '{ann['name']}' ({scheduled_at}) vs now ({now})")
+                        if scheduled_at <= now:
+                            print(f"[scheduler] TRIGGERING one-off announcement: {ann['name']}")
+                            ann["status"] = "Played"
+                            filepath = str(Path("/announcements") / ann["filename"])
+                            deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
+                            await fade_and_play_announcement(deck_ids, filepath)
+                            await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
+                            await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
+                except Exception as e:
+                    print(f"[scheduler] error triggering announcement {ann.get('id')}: {e}")
         # ── Music Schedules ──────────────────────────────────────
         for s in list(MUSIC_SCHEDULES):
             if s.get("status") == "Scheduled" and s.get("scheduled_at"):
@@ -382,7 +388,8 @@ async def scheduler_task():
                             filepath   = str(Path("/announcements") / ann["filename"])
                             local_path = ANNOUNCEMENTS_DIR / ann["filename"]
                             # Reuse the master duck-play-restore sequence
-                            await fade_and_play_announcement(deck_ids, filepath)
+                            level = rs.get("music_volume") if rs else None
+                            await fade_and_play_announcement(deck_ids, filepath, level=level)
                             # Jingles are already handled by fade_and_play_announcement via chime;
                             # play schedule-level jingles around the announcement if configured.
 
@@ -662,73 +669,89 @@ async def _play_chime_and_wait(deck_ids: list):
 #  Rules:
 #    Mic > Announcement > Music
 #    Music held at duck_pct until ALL active sources release.
-#    Volumes are captured once (at first duck entry) and
-#    restored exactly when the last source releases.
+#    Volumes are captured once (at first duck entry) or updated
+#    during ducking, and restored exactly when last source releases.
 # ═══════════════════════════════════════════════════════════
 
-async def _duck_acquire() -> None:
-    """Called when a new high-priority source (announcement or mic) starts.
-    First caller captures current volumes and ducks music to duck_pct.
-    Subsequent callers just increment the counter — music stays ducked."""
-    global _DUCK_REFCOUNT, _DUCK_SAVED_VOLUMES
+async def _duck_acquire(source_type: str = "announcement", level: int = None) -> None:
+    """Called when a new high-priority source (announcement or mic) starts."""
+    global _DUCK_REFCOUNT, _DUCK_SAVED_VOLUMES, _DUCK_CURRENT_TYPE
 
     _DUCK_REFCOUNT += 1
-    print(f"[duck] acquire → refcount={_DUCK_REFCOUNT}")
+    _DUCK_CURRENT_TYPE = source_type
+    print(f"[duck] acquire ({source_type}) → refcount={_DUCK_REFCOUNT}")
+
+    # Determine duck level (Mic usually ducks more/less than announcements)
+    if level is not None:
+        duck_pct = level
+    elif source_type == "mic":
+        duck_pct = _duck_level(SETTINGS.get("mic_ducking_percent"), 5)
+    else:
+        duck_pct = _duck_level(SETTINGS.get("ducking_percent"), 5)
 
     if _DUCK_REFCOUNT == 1:
-        # First source: capture volumes and duck NOW
-        duck_pct     = _duck_level(SETTINGS.get("ducking_percent"), 5)
+        # First source: capture CURRENT volumes as "natural" volumes
         all_playing  = [did for did in DECKS if DECKS[did].get("is_playing")]
-        saved        = {did: DECKS[did]["volume"] for did in all_playing}
-        _DUCK_SAVED_VOLUMES = saved
-
+        _DUCK_SAVED_VOLUMES = {did: DECKS[did]["volume"] for did in all_playing}
+        
         if all_playing:
-            from_vol = max(saved.values()) if saved else 100
+            from_vol = max(_DUCK_SAVED_VOLUMES.values()) if _DUCK_SAVED_VOLUMES else 100
             await _fade_volumes(all_playing, from_vol, duck_pct, FADE_STEP_MS)
             for did in all_playing:
                 DECKS[did]["volume"] = duck_pct
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
-            print(f"[duck] ducked {all_playing} from {saved} → {duck_pct}%")
-    # else: already ducked, nothing to do
-
+            print(f"[duck] ducked {all_playing} from {_DUCK_SAVED_VOLUMES} → {duck_pct}%")
+    else:
+        # Subsequent sources: potentially change duck level if this source is "deeper"
+        # For simplicity, we just snap to the current source's requested duck_pct
+        all_playing = [did for did in DECKS if DECKS[did].get("is_playing")]
+        if all_playing:
+            async with httpx.AsyncClient(timeout=3) as c:
+                await asyncio.gather(*[
+                    c.post(f"{FFMPEG_URL}/decks/{did}/volume/{duck_pct}") 
+                    for did in all_playing
+                ], return_exceptions=True)
+            for did in all_playing:
+                DECKS[did]["volume"] = duck_pct
+            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
 
 async def _duck_release(restore_delay_ms: int = 200) -> None:
-    """Called when a high-priority source ends.
-    Only the LAST release actually restores the music."""
+    """Called when a high-priority source ends. Music restored when last source leaves."""
     global _DUCK_REFCOUNT, _DUCK_SAVED_VOLUMES
 
-    if _DUCK_REFCOUNT <= 0:
-        print("[duck] release called with refcount=0 — ignored")
-        return
-
+    if _DUCK_REFCOUNT <= 0: return
     _DUCK_REFCOUNT -= 1
     print(f"[duck] release → refcount={_DUCK_REFCOUNT}")
 
     if _DUCK_REFCOUNT == 0:
-        # Last source finished — restore music
-        duck_pct     = _duck_level(SETTINGS.get("ducking_percent"), 5)
-        saved        = dict(_DUCK_SAVED_VOLUMES)   # copy before clearing
+        # Last source finished — restore music to saved natural volumes
+        saved = dict(_DUCK_SAVED_VOLUMES)
         _DUCK_SAVED_VOLUMES = {}
+        
+        # Use generic ducking_percent as the baseline we are fading UP from
+        duck_pct = _duck_level(SETTINGS.get("ducking_percent"), 5)
 
-        # Brief hold before restoring (configurable, default 200 ms)
         if restore_delay_ms > 0:
             await asyncio.sleep(restore_delay_ms / 1000.0)
 
-        # Only restore decks that are still playing
         to_restore = [did for did in saved if DECKS.get(did, {}).get("is_playing")]
         if to_restore:
             await _restore_volumes(to_restore, duck_pct, target_volumes=saved)
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
             print(f"[duck] restored {to_restore} → {saved}")
-    # else: other sources still active — keep ducked
+    else:
+        # Other sources still active (e.g. mic still on). 
+        # Check if we should adjust duck level back to the remaining source's type.
+        # For now, we just stay at the current level until refcount hits 0.
+        pass
 
 
 # ── Master announcement sequence ────────────────────────────
-async def fade_and_play_announcement(deck_ids: list, filepath: str):
+async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int = None):
     """Duck-acquire, play announcement end-to-end, then release duck.
     Used by the SCHEDULER (which has no HTTP response to return early).
     The manual /play endpoint does its own acquire + background task instead."""
-    await _duck_acquire()
+    await _duck_acquire(level=level)
     try:
         # Jingle BEFORE announcement
         await _play_chime_and_wait(deck_ids)
@@ -762,21 +785,17 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str):
 async def fade_and_enable_mic(deck_ids: list):
     """Acquire duck, play intro chime, then return.
     Music stays at duck level until fade_restore_after_mic() is called."""
-    global MIC_PREV_VOLUMES
-    MIC_PREV_VOLUMES = {did: DECKS[did]["volume"] for did in DECKS if DECKS[did].get("is_playing")}
     # Duck happens here — blocks until fade is done, then returns.
     # mic_on endpoint awaits this so duck is fully applied before mic goes live.
-    await _duck_acquire()
+    await _duck_acquire(source_type="mic")
     await _play_chime_and_wait(deck_ids)
 
 
 async def fade_restore_after_mic(deck_ids: list):
     """Play outro chime then release the duck held by the mic.
     Runs in a background task spawned by mic_off."""
-    global MIC_PREV_VOLUMES
     await _play_chime_and_wait(deck_ids)
     await _duck_release()
-    MIC_PREV_VOLUMES = {}
 
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
@@ -914,10 +933,21 @@ async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(verify_token)):
 @app.post("/api/decks/{deck_id}/volume")
 async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
-    vol = max(0, min(100, req.volume)); DECKS[deck_id]["volume"] = vol
-    try:
-        async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{vol}")
-    except Exception: pass
+    vol = max(0, min(100, req.volume))
+    
+    # If currently ducked, we save the NEW volume as the 'natural' volume to restore to,
+    # but we don't unduck the music on the mixer side yet.
+    if _DUCK_REFCOUNT > 0:
+        _DUCK_SAVED_VOLUMES[deck_id] = vol
+        print(f"[volume] Ducked. Saved natural volume for {deck_id} as {vol}%")
+        # Optimization: We don't send anything to mixer because it's already ducked.
+    else:
+        DECKS[deck_id]["volume"] = vol
+        try:
+            async with httpx.AsyncClient(timeout=5) as c: 
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{vol}")
+        except Exception: pass
+        
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok"}
 
@@ -927,9 +957,8 @@ async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
     deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
     await fade_and_enable_mic(deck_ids)
     MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
-    try:
-        async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/on", json={"targets": deck_ids})
-    except Exception: pass
+    # Note: ffmpeg-mixer side is handled by the /ws/mic WebSocket flow 
+    # to ensure precise sync between PCM push and ducking.
     await manager.broadcast({"type": "MIC_STATUS", "active": True, "targets": req.targets})
     return {"status": "ok"}
 
@@ -1019,8 +1048,9 @@ async def play_announcement(ann_id: str, _user=Depends(verify_token)):
 
     # Acquire the duck IMMEDIATELY (before returning to caller) so the
     # refcount is correct even if another event fires straight after.
-    # The rest of the sequence (play audio + release) runs in background.
-    await _duck_acquire()
+    # Master duck-play-restore sequence
+    await fade_and_play_announcement(deck_ids, filepath)
+    return {"status": "ok"}
 
     async def _play_and_release():
         try:
