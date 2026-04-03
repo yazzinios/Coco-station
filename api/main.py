@@ -64,6 +64,7 @@ DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d
 MUSIC_SCHEDULES: List[dict] = []
 RECURRING_SCHEDULES: List[dict] = []
 RECURRING_MIXER_SCHEDULES: List[dict] = []   # ← NEW
+MUSIC_REQUESTS: List[dict] = []               # listener song requests
 
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
@@ -515,7 +516,8 @@ async def websocket_endpoint(websocket: WebSocket):
         "playlists": list(PLAYLISTS.values()),
         "music_schedules": MUSIC_SCHEDULES,
         "recurring_schedules": RECURRING_SCHEDULES,
-        "recurring_mixer_schedules": RECURRING_MIXER_SCHEDULES,   # ← NEW
+        "recurring_mixer_schedules": RECURRING_MIXER_SCHEDULES,
+        "music_requests": MUSIC_REQUESTS,
     })
     try:
         while True: await websocket.receive_text()
@@ -1581,3 +1583,104 @@ def get_stats():
             "tracks_played": TRACKS_PLAYED, "playing_decks": sum(1 for d in DECKS.values() if d["is_playing"]),
             "library_count": len(list(MEDIA_DIR.glob("*.*"))), "announcements_count": len(ANNOUNCEMENTS),
             "peak_listeners": 0, "current_listeners": 0}
+
+# ═══════════════════════════════════════════════════════════
+#  MUSIC REQUESTS (public — no auth for submit)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/api/library/public")
+def list_library_public():
+    """Public listing — returns filenames only (no auth required)."""
+    items = [{"filename": f.name} for f in MEDIA_DIR.iterdir() if f.suffix.lower() in ALLOWED_AUDIO]
+    return sorted(items, key=lambda x: x["filename"])
+
+from pydantic import BaseModel as _PydanticBase
+
+class MusicRequestSubmit(_PydanticBase):
+    requester_name: str
+    requester_email: Optional[str] = None
+    requester_phone: Optional[str] = None
+    requester_photo: Optional[str] = None
+    track: str
+    message: Optional[str] = None
+    target_deck: Optional[str] = None
+
+@app.post("/api/requests")
+async def submit_music_request(req: MusicRequestSubmit):
+    """Public endpoint — anyone can submit a song request."""
+    # Validate track exists
+    track_path = MEDIA_DIR / req.track
+    if not track_path.exists():
+        raise HTTPException(status_code=404, detail="Track not found in library")
+
+    # Rate limit: max 3 pending requests per email
+    if req.requester_email:
+        existing = [r for r in MUSIC_REQUESTS if r.get("requester_email") == req.requester_email and r["status"] == "pending"]
+        if len(existing) >= 3:
+            raise HTTPException(status_code=429, detail="Maximum 3 pending requests per user")
+
+    request_id = str(uuid.uuid4())
+    music_req = {
+        "id": request_id,
+        "requester_name": req.requester_name,
+        "requester_email": req.requester_email,
+        "requester_phone": req.requester_phone,
+        "requester_photo": req.requester_photo,
+        "track": req.track,
+        "message": req.message,
+        "target_deck": req.target_deck,
+        "status": "pending",  # pending | accepted | dismissed
+        "created_at": datetime.now().isoformat(),
+    }
+    MUSIC_REQUESTS.insert(0, music_req)
+    await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
+    print(f"[request] New request from {req.requester_name}: {req.track}")
+    return {"status": "ok", "request": music_req}
+
+@app.get("/api/requests")
+async def list_music_requests(_user=Depends(verify_token)):
+    return MUSIC_REQUESTS
+
+@app.post("/api/requests/{request_id}/accept")
+async def accept_music_request(request_id: str, _user=Depends(verify_token)):
+    req = next((r for r in MUSIC_REQUESTS if r["id"] == request_id), None)
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    req["status"] = "accepted"
+
+    # Auto-load track to target deck if specified, otherwise find first available
+    deck_id = (req.get("target_deck") or "a").lower()
+    if deck_id not in DECKS:
+        deck_id = "a"
+
+    filename = req["track"]
+    filepath = str(Path("/library") / filename)
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/load", json={"filepath": filepath})
+        DECKS[deck_id]["track"] = filename
+        DECKS[deck_id]["is_playing"] = False
+        DECKS[deck_id]["is_paused"] = False
+        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    except Exception as e:
+        print(f"[request] Failed to load track to deck: {e}")
+
+    await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
+    return {"status": "ok", "loaded_to": deck_id}
+
+@app.delete("/api/requests/{request_id}")
+async def dismiss_music_request(request_id: str, _user=Depends(verify_token)):
+    global MUSIC_REQUESTS
+    req = next((r for r in MUSIC_REQUESTS if r["id"] == request_id), None)
+    if req:
+        req["status"] = "dismissed"
+    MUSIC_REQUESTS = [r for r in MUSIC_REQUESTS if r["status"] == "pending"]
+    await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
+    return {"status": "ok"}
+
+@app.delete("/api/requests")
+async def clear_all_requests(_user=Depends(verify_token)):
+    global MUSIC_REQUESTS
+    MUSIC_REQUESTS = []
+    await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
+    return {"status": "ok"}

@@ -41,6 +41,7 @@ export function AppProvider({ children }) {
   const [recurringSchedules,        setRecurringSchedules]        = useState([]);
   const [recurringMixerSchedules,   setRecurringMixerSchedules]   = useState([]);  // ← NEW
   const [mic,                       setMic]                       = useState({ active: false, targets: [] });
+  const [musicRequests,              setMusicRequests]              = useState([]);
   const [wsConnected,               setWsConnected]               = useState(false);
   const [settings,                  setSettings]                  = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
   const [toasts,                    setToasts]                    = useState([]);
@@ -132,7 +133,8 @@ export function AppProvider({ children }) {
         if (msg.playlists)        setPlaylists(msg.playlists);
         if (msg.music_schedules)  setMusicSchedules(msg.music_schedules);
         if (msg.recurring_schedules)       setRecurringSchedules(msg.recurring_schedules);
-        if (msg.recurring_mixer_schedules) setRecurringMixerSchedules(msg.recurring_mixer_schedules);  // ← NEW
+        if (msg.recurring_mixer_schedules) setRecurringMixerSchedules(msg.recurring_mixer_schedules);
+        if (msg.music_requests) setMusicRequests(msg.music_requests);
         break;
       case 'DECK_STATE':
         if (msg.decks) {
@@ -148,7 +150,8 @@ export function AppProvider({ children }) {
       case 'PLAYLISTS_UPDATED':        if (msg.playlists)  setPlaylists(msg.playlists); break;
       case 'MUSIC_SCHEDULES_UPDATED':  if (msg.schedules) setMusicSchedules(msg.schedules); break;
       case 'RECURRING_SCHEDULES_UPDATED':       if (msg.schedules) setRecurringSchedules(msg.schedules); break;
-      case 'RECURRING_MIXER_SCHEDULES_UPDATED': if (msg.schedules) setRecurringMixerSchedules(msg.schedules); break;  // ← NEW
+      case 'RECURRING_MIXER_SCHEDULES_UPDATED': if (msg.schedules) setRecurringMixerSchedules(msg.schedules); break;
+      case 'REQUESTS_UPDATED': if (msg.requests) setMusicRequests(msg.requests); break;
       default: break;
     }
   }, [fetchLibrary]);
@@ -425,12 +428,34 @@ export function AppProvider({ children }) {
       if (!r.ok) throw new Error(await parseError(r));
       await fetchRecurringMixerSchedules();
     },
+    // ── Music Requests ──
+    submitRequest: async (payload) => {
+      const r = await fetch('/api/requests', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    acceptRequest: async (id) => {
+      const r = await fetch(`/api/requests/${id}/accept`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    dismissRequest: async (id) => {
+      const r = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    clearAllRequests: async () => {
+      const r = await fetch('/api/requests', { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
   };
 
   return (
     <AppContext.Provider value={{
       decks, library, announcements, playlists, musicSchedules,
-      recurringSchedules, recurringMixerSchedules,
+      recurringSchedules, recurringMixerSchedules, musicRequests,
       mic, wsConnected, settings, toast, api,
     }}>
       {children}
