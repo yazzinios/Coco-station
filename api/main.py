@@ -59,6 +59,7 @@ _DUCK_REFCOUNT: int = 0                    # how many sources are currently duck
 _DUCK_SAVED_VOLUMES: Dict[str, int] = {}   # the natural volumes to restore to
 _DUCK_CURRENT_TYPE: str = None             # "mic" or "announcement"
 _TRIGGER_LOCK = asyncio.Lock()             # prevents overlapping triggers
+_ANNOUNCEMENT_EVENTS: Dict[str, asyncio.Event] = {} # per-deck events for end detection
 PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
 MUSIC_SCHEDULES: List[dict] = []
@@ -557,9 +558,14 @@ async def mic_audio_ws(websocket: WebSocket):
                             await manager.broadcast({"type": "MIC_STATUS", "active": True, "targets": targets})
                             await websocket.send_text(json.dumps({"type": "mic_ready", "session_id": session_id}))
                         elif ctrl.get("type") == "mic_stop":
+                            was_active = MIC_STATE.get("active", False)
+                            prev_targets = list(MIC_STATE.get("targets", []))
                             MIC_STATE["active"] = False; MIC_STATE["targets"] = []
                             if session_id: await close_ffmpeg_stream(session_id); session_id = None
                             await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
+                            if was_active:
+                                deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+                                asyncio.create_task(fade_restore_after_mic(deck_ids))
                     except json.JSONDecodeError: pass
                 elif "bytes" in msg and msg["bytes"] and session_id:
                     try:
@@ -570,8 +576,12 @@ async def mic_audio_ws(websocket: WebSocket):
     except WebSocketDisconnect: pass
     finally:
         if session_id: await close_ffmpeg_stream(session_id)
-        MIC_STATE["active"] = False; MIC_STATE["targets"] = []
-        await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
+        if MIC_STATE.get("active", False):
+            prev_targets = list(MIC_STATE.get("targets", []))
+            MIC_STATE["active"] = False; MIC_STATE["targets"] = []
+            await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
+            deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+            asyncio.create_task(fade_restore_after_mic(deck_ids))
 
 # ── Audio duration helper ───────────────────────────────────
 async def get_audio_duration(filepath: Path) -> float:
@@ -777,6 +787,14 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
             # STATE 4: PLAY ANNOUNCEMENT
             ann_path   = Path(filepath)
             local_path = ANNOUNCEMENTS_DIR / ann_path.name
+
+            # Setup end-detection events
+            events = []
+            for did in deck_ids:
+                event = asyncio.Event()
+                _ANNOUNCEMENT_EVENTS[did] = event
+                events.append(event.wait())
+
             try:
                 async with httpx.AsyncClient(timeout=5) as c:
                     tasks = [
@@ -788,12 +806,17 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
             except Exception as e:
                 print(f"[trigger] play error: {e}")
 
-            # Wait for announcement audio to finish
+            # Wait for ALL decks to finish the announcement (up to 5 min safety timeout)
             try:
-                duration = await get_audio_duration(local_path)
-                await asyncio.sleep(max(0.5, duration + 0.3))
-            except Exception:
-                await asyncio.sleep(3.0)
+                await asyncio.wait_for(asyncio.gather(*events), timeout=300.0)
+            except asyncio.TimeoutError:
+                print("[trigger] Announcement wait timeout! Forcing restore.")
+
+            for did in deck_ids:
+                _ANNOUNCEMENT_EVENTS.pop(did, None)
+
+            # small buffer gap
+            await asyncio.sleep(0.3)
 
             # STATE 5: POST-TRIGGER (music still ducked)
             await _play_chime_and_wait(deck_ids)
@@ -1013,6 +1036,12 @@ async def mic_off(_user=Depends(verify_token)):
 
 @app.get("/api/mic/status")
 def mic_status(): return MIC_STATE
+
+@app.post("/api/internal/announcement_ended/{deck_id}")
+async def internal_announcement_ended(deck_id: str):
+    if deck_id in _ANNOUNCEMENT_EVENTS:
+        _ANNOUNCEMENT_EVENTS[deck_id].set()
+    return {"status": "ok"}
 
 # ── Announcements ───────────────────────────────────────────
 @app.get("/api/announcements")

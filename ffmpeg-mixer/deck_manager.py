@@ -31,6 +31,19 @@ def _notify_track_ended(deck_name: str):
     except Exception as e:
         print(f"[deck {deck_name}] track_ended notify failed: {e}")
 
+def _notify_announcement_ended(deck_name: str):
+    """HTTP callback to main API when an announcement finishes naturally."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{API_URL}/api/internal/announcement_ended/{deck_name}",
+            data=b"", method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+    except Exception as e:
+        print(f"[deck {deck_name}] announcement_ended notify failed: {e}")
+
 CHUNK_SIZE     = 4096
 SAMPLE_RATE    = 44100
 CHANNELS       = 2
@@ -172,6 +185,10 @@ class Deck:
                     threading.Thread(
                         target=_notify_track_ended, args=(self.name,), daemon=True
                     ).start()
+            elif proc_name == "ann":
+                threading.Thread(
+                    target=_notify_announcement_ended, args=(self.name,), daemon=True
+                ).start()
 
     def play(self, filepath, loop: bool = False):
         """Start (or restart) playback of filepath. If loop=True, use -stream_loop -1."""

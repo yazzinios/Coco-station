@@ -2,7 +2,8 @@ import React, { useState, useRef, useCallback } from 'react';
 import {
   Music, Upload, Trash2, ListMusic, Plus, ChevronUp, ChevronDown,
   Play, CheckCircle, XCircle, Loader, X, Search, ArrowUpDown,
-  ArrowUp, ArrowDown, Filter, FolderOpen, GripVertical, Repeat
+  ArrowUp, ArrowDown, Filter, FolderOpen, GripVertical, Repeat,
+  PlayCircle, StopCircle
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
@@ -191,6 +192,21 @@ export default function LibraryPage() {
   // Playlist
   const [editingPlaylist, setEditingPlaylist] = useState(null);
   const [playlistLoop, setPlaylistLoop]       = useState({});
+  const [previewTrack, setPreviewTrack]       = useState(null);
+  const audioRef                              = useRef(null);
+
+  const togglePreview = useCallback((filename) => {
+    if (previewTrack === filename) {
+      setPreviewTrack(null);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.removeAttribute('src');
+        audioRef.current.load();
+      }
+    } else {
+      setPreviewTrack(filename);
+    }
+  }, [previewTrack]);
 
   /* ── Queue helpers ───────────────────────────────────────── */
   const updateItem = useCallback((id, patch) => {
@@ -577,6 +593,16 @@ export default function LibraryPage() {
                             </button>
                           );
                         })}
+                        <button title={previewTrack === track.filename ? "Stop preview" : "Preview locally"} onClick={() => togglePreview(track.filename)} style={{
+                          width: '30px', height: '30px', borderRadius: '6px',
+                          border: previewTrack === track.filename ? '1px solid var(--accent-blue)' : '1px solid rgba(255,255,255,0.12)',
+                          background: previewTrack === track.filename ? 'rgba(0,212,255,0.1)' : 'rgba(255,255,255,0.05)',
+                          color: previewTrack === track.filename ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          transition: 'all 0.15s',
+                        }}>
+                          {previewTrack === track.filename ? <StopCircle size={14} /> : <PlayCircle size={14} />}
+                        </button>
                         <button title="Delete from library" onClick={() => handleDelete(track.filename)} style={{
                           width: '30px', height: '30px', borderRadius: '6px',
                           border: '1px solid rgba(255,71,87,0.2)', background: 'rgba(255,71,87,0.08)',
@@ -687,6 +713,32 @@ export default function LibraryPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* HIDDEN AUDIO PLAYER FOR PREVIEWS */}
+      {previewTrack && (
+        <div style={{
+          position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(0,0,0,0.85)', padding: '0.6rem 1.2rem', borderRadius: '12px',
+          border: '1px solid var(--accent-blue)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', gap: '1rem',
+          boxShadow: '0 4px 15px rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)',
+        }}>
+          <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: '500', maxWidth: '200px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            Previewing: {previewTrack.replace(/\.[^.]+$/, '')}
+          </div>
+          <audio 
+            ref={audioRef}
+            src={`/api/library/file/${encodeURIComponent(previewTrack)}`}
+            controls 
+            autoPlay 
+            style={{ height: '35px', outline: 'none' }} 
+            onEnded={() => setPreviewTrack(null)}
+          />
+          <button onClick={() => togglePreview(previewTrack)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', padding: '0 4px', display: 'flex', alignItems: 'center' }}>
+            <X size={18} />
+          </button>
         </div>
       )}
     </div>
