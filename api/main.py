@@ -58,6 +58,7 @@ MIC_STATE: dict = {"active": False, "targets": []}
 _DUCK_REFCOUNT: int = 0                    # how many sources are currently ducking
 _DUCK_SAVED_VOLUMES: Dict[str, int] = {}   # the natural volumes to restore to
 _DUCK_CURRENT_TYPE: str = None             # "mic" or "announcement"
+_TRIGGER_LOCK = asyncio.Lock()             # prevents overlapping triggers
 PLAYLISTS: Dict[str, dict] = {}
 DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
 MUSIC_SCHEDULES: List[dict] = []
@@ -746,56 +747,87 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
         pass
 
 
-# ── Master announcement sequence ────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  TRIGGER STATE MACHINE  (matches broadcast standard)
+#
+#  STATE 1 → MUSIC_NORMAL   (e.g. 80%)
+#  STATE 2 → PRE_TRIGGER    (play pre.wav, music STILL at normal)
+#  STATE 3 → MUSIC_DUCK     (fade normal → 5%)
+#  STATE 4 → CONTENT        (announcement audio / mic live)
+#  STATE 5 → POST_TRIGGER   (play post.wav, music still ducked)
+#  STATE 6 → RESTORE        (fade 5% → normal)
+#
+#  _TRIGGER_LOCK prevents overlapping triggers.
+# ═══════════════════════════════════════════════════════════
+
 async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int = None):
-    """Duck-acquire, play announcement end-to-end, then release duck.
-    Used by the SCHEDULER (which has no HTTP response to return early).
-    The manual /play endpoint does its own acquire + background task instead."""
-    await _duck_acquire(level=level)
-    try:
-        # Jingle BEFORE announcement
-        await _play_chime_and_wait(deck_ids)
-
-        ann_path   = Path(filepath)
-        local_path = ANNOUNCEMENTS_DIR / ann_path.name
+    """Full announcement trigger sequence with lock.
+    Order: PRE-trigger → Duck → Play → POST-trigger → Restore"""
+    async with _TRIGGER_LOCK:
+        print(f"[trigger] announcement locked — {Path(filepath).name}")
         try:
-            async with httpx.AsyncClient(timeout=5) as c:
-                tasks = [
-                    c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
-                    for did in deck_ids
-                ]
-                await asyncio.gather(*tasks, return_exceptions=True)
-        except Exception as e:
-            print(f"[announcement] play error: {e}")
+            # STATE 2: PRE-TRIGGER (music still at normal volume)
+            await _play_chime_and_wait(deck_ids)
 
-        # Block here until the announcement audio has fully played
-        try:
-            duration = await get_audio_duration(local_path)
-            await asyncio.sleep(max(0.5, duration + 0.3))
-        except Exception:
-            await asyncio.sleep(3.0)
+            # STATE 3: DUCK MUSIC (normal → 5%)
+            await _duck_acquire(level=level)
 
-        # Jingle AFTER announcement
-        await _play_chime_and_wait(deck_ids)
-    finally:
-        # Always release — even if an exception occurred
-        await _duck_release()
+            # STATE 4: PLAY ANNOUNCEMENT
+            ann_path   = Path(filepath)
+            local_path = ANNOUNCEMENTS_DIR / ann_path.name
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    tasks = [
+                        c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
+                               json={"filepath": filepath})
+                        for did in deck_ids
+                    ]
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception as e:
+                print(f"[trigger] play error: {e}")
+
+            # Wait for announcement audio to finish
+            try:
+                duration = await get_audio_duration(local_path)
+                await asyncio.sleep(max(0.5, duration + 0.3))
+            except Exception:
+                await asyncio.sleep(3.0)
+
+            # STATE 5: POST-TRIGGER (music still ducked)
+            await _play_chime_and_wait(deck_ids)
+
+        finally:
+            # STATE 6: RESTORE MUSIC (5% → normal)
+            await _duck_release()
+            print(f"[trigger] announcement unlocked")
 
 
 async def fade_and_enable_mic(deck_ids: list):
-    """Acquire duck, play intro chime, then return.
-    Music stays at duck level until fade_restore_after_mic() is called."""
-    # Duck happens here — blocks until fade is done, then returns.
-    # mic_on endpoint awaits this so duck is fully applied before mic goes live.
-    await _duck_acquire(source_type="mic")
+    """Mic ON trigger sequence — acquires lock (held until mic off).
+    Order: PRE-trigger → Duck → mic goes live"""
+    await _TRIGGER_LOCK.acquire()
+    print(f"[trigger] mic locked — decks {deck_ids}")
+    # STATE 2: PRE-TRIGGER (music still at normal volume)
     await _play_chime_and_wait(deck_ids)
+    # STATE 3: DUCK MUSIC
+    await _duck_acquire(source_type="mic")
+    # STATE 4: MIC IS NOW LIVE (lock stays held until mic_off)
 
 
 async def fade_restore_after_mic(deck_ids: list):
-    """Play outro chime then release the duck held by the mic.
-    Runs in a background task spawned by mic_off."""
-    await _play_chime_and_wait(deck_ids)
-    await _duck_release()
+    """Mic OFF sequence — post-trigger, restore, release lock.
+    Order: POST-trigger → Restore → Unlock"""
+    try:
+        # STATE 5: POST-TRIGGER (music still ducked)
+        await _play_chime_and_wait(deck_ids)
+        # STATE 6: RESTORE MUSIC
+        await _duck_release()
+    finally:
+        try:
+            _TRIGGER_LOCK.release()
+            print(f"[trigger] mic unlocked")
+        except RuntimeError:
+            pass  # Lock wasn't held (edge case)
 
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
@@ -954,11 +986,11 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(verify
 # ── Mic ─────────────────────────────────────────────────────
 @app.post("/api/mic/on")
 async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
+    if _TRIGGER_LOCK.locked():
+        raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
     deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
     await fade_and_enable_mic(deck_ids)
     MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
-    # Note: ffmpeg-mixer side is handled by the /ws/mic WebSocket flow 
-    # to ensure precise sync between PCM push and ducking.
     await manager.broadcast({"type": "MIC_STATUS", "active": True, "targets": req.targets})
     return {"status": "ok"}
 
@@ -1042,38 +1074,23 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
 async def play_announcement(ann_id: str, _user=Depends(verify_token)):
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
+
+    if _TRIGGER_LOCK.locked():
+        raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
+
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
     deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
 
-    # Acquire the duck IMMEDIATELY (before returning to caller) so the
-    # refcount is correct even if another event fires straight after.
-    # Master duck-play-restore sequence
-    await fade_and_play_announcement(deck_ids, filepath)
-    return {"status": "ok"}
-
-    async def _play_and_release():
+    # Run the full state machine (PRE → Duck → Play → POST → Restore) in background
+    # so the HTTP response returns immediately to the dashboard.
+    async def _play_task():
         try:
-            await _play_chime_and_wait(deck_ids)
-            local_path = ANNOUNCEMENTS_DIR / Path(filepath).name
-            try:
-                async with httpx.AsyncClient(timeout=5) as c:
-                    await asyncio.gather(*[
-                        c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath})
-                        for did in deck_ids
-                    ], return_exceptions=True)
-            except Exception as e:
-                print(f"[announcement] play error: {e}")
-            try:
-                duration = await get_audio_duration(local_path)
-                await asyncio.sleep(max(0.5, duration + 0.3))
-            except Exception:
-                await asyncio.sleep(3.0)
-            await _play_chime_and_wait(deck_ids)
-        finally:
-            await _duck_release()
+            await fade_and_play_announcement(deck_ids, filepath)
+        except Exception as e:
+            print(f"[trigger] announcement play task error: {e}")
 
-    asyncio.create_task(_play_and_release())
+    asyncio.create_task(_play_task())
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
     except Exception as e:
