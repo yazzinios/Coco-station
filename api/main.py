@@ -111,8 +111,15 @@ def _normalize_hhmm(value: str) -> Optional[str]:
 
 async def _trigger_music_schedule(s: dict):
     """Load and play a track or playlist on the target deck."""
-    deck_id = s["deck_id"]
-    loop    = s.get("loop", False)
+    # If currently ducked, we don't blast the music; we start it ducked.
+    current_vol = s.get("volume", 80) if s.get("type") != "multi_track" else 80
+    if _DUCK_REFCOUNT > 0:
+        # Determine current duck level
+        duck_pct = _duck_level(SETTINGS.get("mic_ducking_percent") if _DUCK_CURRENT_TYPE == "mic" else SETTINGS.get("ducking_percent"), 5)
+        _DUCK_SAVED_VOLUMES[deck_id] = current_vol
+        current_vol = duck_pct
+        print(f"[scheduler] Ducking active. Starting music on {deck_id} at {duck_pct}% (saved {_DUCK_SAVED_VOLUMES[deck_id]}%)")
+
     if s["type"] == "track":
         filename = s["target_id"]
         if not (MEDIA_DIR / filename).exists():
@@ -124,10 +131,12 @@ async def _trigger_music_schedule(s: dict):
         DECKS[deck_id]["is_loop"]    = loop
         DECKS[deck_id]["playlist_id"]    = None
         DECKS[deck_id]["playlist_index"] = None
+        DECKS[deck_id]["volume"]     = current_vol
         filepath = str(Path("/library") / filename)
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": loop})
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{current_vol}")
         except Exception as e:
             print(f"[scheduler] play track error: {e}")
     elif s["type"] == "playlist":
@@ -144,11 +153,13 @@ async def _trigger_music_schedule(s: dict):
             "track": tracks[0], "is_playing": True, "is_paused": False,
             "is_loop": False, "playlist_id": s["target_id"],
             "playlist_index": 0, "playlist_loop": loop,
+            "volume": current_vol,
         })
         filepath = str(Path("/library") / tracks[0])
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{current_vol}")
         except Exception as e:
             print(f"[scheduler] play playlist error: {e}")
     elif s["type"] == "multi_track":
@@ -161,11 +172,13 @@ async def _trigger_music_schedule(s: dict):
             "track": tracks[0], "is_playing": True, "is_paused": False,
             "is_loop": False, "playlist_id": "multi_track",
             "playlist_index": 0, "playlist_loop": loop,
+            "volume": current_vol,
         })
         filepath = str(Path("/library") / tracks[0])
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": False})
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{current_vol}")
         except Exception as e:
             print(f"[scheduler] play multi_track error: {e}")
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
@@ -254,45 +267,58 @@ async def _trigger_recurring_mixer_schedule(rs: dict):
 
 async def _stop_recurring_mixer_schedule(rs: dict):
     """
-    Full mixer-stop sequence:
+    Full mixer-stop sequence for multiple decks:
       1. Fade out deck volume
       2. Stop the deck
       3. Play outro jingle (optional)
-    Called at stop_time each active day.
+    Called when a mixer schedule is stopped.
     """
-    deck_id  = rs["deck_id"]
+    deck_ids = _get_deck_ids(rs)
+    if not deck_ids:
+        return
+
     fade_out = rs.get("fade_out", 3)
 
     # Step 1 — fade out
-    current_vol = DECKS.get(deck_id, {}).get("volume", 80)
     steps = max(1, fade_out * 5)
     delay = fade_out / steps if steps else 0.1
-    delta = current_vol / steps
-    vol   = float(current_vol)
+    current_vols = {did: DECKS.get(did, {}).get("volume", 80) for did in deck_ids}
+    deltas = {did: current_vols[did] / steps for did in deck_ids}
+    vols   = {did: float(current_vols[did]) for did in deck_ids}
+    
     try:
         async with httpx.AsyncClient(timeout=3) as c:
             for _ in range(steps):
-                vol -= delta
-                v = max(0, round(vol))
-                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{v}")
+                tasks = []
+                for did in deck_ids:
+                    vols[did] -= deltas[did]
+                    v = max(0, round(vols[did]))
+                    tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{v}"))
+                await asyncio.gather(*tasks, return_exceptions=True)
                 await asyncio.sleep(delay)
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/0")
+            final_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/0") for did in deck_ids]
+            await asyncio.gather(*final_tasks, return_exceptions=True)
     except Exception:
         pass
 
     # Step 2 — stop
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
+            stop_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/stop") for did in deck_ids]
+            await asyncio.gather(*stop_tasks, return_exceptions=True)
     except Exception:
         pass
-    DECKS[deck_id]["is_playing"] = False
-    DECKS[deck_id]["is_paused"]  = False
-    DECKS[deck_id]["volume"]     = rs.get("volume", 80)   # restore stored volume
+        
+    for did in deck_ids:
+        DECKS[did]["is_playing"] = False
+        DECKS[did]["is_paused"]  = False
+        DECKS[did]["volume"]     = rs.get("volume", 80)   # restore stored volume
+        
     # Also restore volume on ffmpeg side
     try:
         async with httpx.AsyncClient(timeout=3) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{rs.get('volume', 80)}")
+            restore_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{rs.get('volume', 80)}") for did in deck_ids]
+            await asyncio.gather(*restore_tasks, return_exceptions=True)
     except Exception:
         pass
 
@@ -300,7 +326,8 @@ async def _stop_recurring_mixer_schedule(rs: dict):
 
     # Step 3 — outro jingle
     if rs.get("jingle_end"):
-        await _play_jingle_and_wait(deck_id, rs["jingle_end"])
+        jingle_tasks = [_play_jingle_and_wait(did, rs["jingle_end"]) for did in deck_ids]
+        await asyncio.gather(*jingle_tasks)
 
 
 def _time_matches(target_hhmm: Optional[str], now: datetime, window_seconds: int = 45) -> bool:
@@ -318,9 +345,12 @@ def _time_matches(target_hhmm: Optional[str], now: datetime, window_seconds: int
 
 
 async def scheduler_task():
+    print("[scheduler] Scheduler started and monitoring tasks...")
     while True:
-        await asyncio.sleep(10)
-        now = datetime.now()
+        try:
+            await asyncio.sleep(10)
+            now = datetime.now()
+            # print(f"[scheduler] check heartbeat: {now}") # Heartbeat
         # ── Announcements ────────────────────────────────────────
         for ann in list(ANNOUNCEMENTS):
             if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
@@ -337,8 +367,13 @@ async def scheduler_task():
                             deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
                             
                             # Queue the trigger instead of blocking the scheduler loop
+                            # Queue the trigger instead of blocking the scheduler loop
                             asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
                             
+                            # Persist status to DB
+                            asyncio.create_task(db.update_announcement_status(ann["id"], "Played"))
+
+                            await manager.broadcast({"type": "NOTIFICATION", "message": f"Triggered: {ann['name']}", "style": "success"})
                             await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
                             await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
                 except Exception as e:
@@ -350,12 +385,17 @@ async def scheduler_task():
                     scheduled_at = _parse_iso_datetime(s["scheduled_at"])
                     if scheduled_at and scheduled_at <= now:
                         s["status"] = "Played"
-                        await _trigger_music_schedule(s)
-                        try:
-                            await asyncio.get_event_loop().run_in_executor(
-                                None, db.update_music_schedule_status, s["id"], "Played"
-                            )
-                        except Exception: pass
+                        
+                        async def _run_music_task(_s=s):
+                            await _trigger_music_schedule(_s)
+                            await manager.broadcast({"type": "NOTIFICATION", "message": f"Scheduled Music: {_s['name']} (Deck {_s['deck_id'].upper()})", "style": "info"})
+                            try:
+                                await asyncio.get_event_loop().run_in_executor(
+                                    None, db.update_music_schedule_status, _s["id"], "Played"
+                                )
+                            except Exception: pass
+                        
+                        asyncio.create_task(_run_music_task())
                 except Exception as e:
                     print(f"[scheduler] music schedule error: {e}")
         # ── Recurring Schedules (Mic/Announcement) ───────────────
@@ -400,6 +440,7 @@ async def scheduler_task():
                             # play schedule-level jingles around the announcement if configured.
 
                         asyncio.create_task(_run_ann_schedule())
+                        await manager.broadcast({"type": "NOTIFICATION", "message": f"Recurring Announcement: {rs['name']}", "style": "success"})
                         await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
 
                 elif rs["type"] in ("microphone", "Microphone"):
@@ -415,6 +456,7 @@ async def scheduler_task():
                                 await _play_jingle_and_wait(did, jingle_start)
                         await mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids]), _user=None)
                     asyncio.create_task(_run_mic_schedule())
+                    await manager.broadcast({"type": "NOTIFICATION", "message": f"Automated Mic: {rs['name']}", "style": "info"})
 
             # stop_time removed — mic feed ends when user manually turns it off
 
@@ -429,7 +471,12 @@ async def scheduler_task():
                 rs["last_run_date"] = today_str
                 asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
                 asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
+                await manager.broadcast({"type": "NOTIFICATION", "message": f"Mixer Start: {rs['name']}", "style": "success"})
                 print(f"[mixer-scheduler] Started '{rs['name']}' on decks {_get_deck_ids(rs)}")
+
+        except Exception as loop_error:
+            print(f"[scheduler] FATAL ERROR in scheduler loop: {loop_error}")
+            await asyncio.sleep(5) # Cooldown before retry
 
             # stop_time removed — music plays until track/playlist ends naturally via track_ended callback
 
@@ -786,7 +833,10 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
         print(f"[trigger] announcement locked — {Path(filepath).name}")
         try:
             # STATE 2: PRE-TRIGGER (music still at normal volume)
-            await _play_chime_and_wait(deck_ids)
+            try:
+                await asyncio.wait_for(_play_chime_and_wait(deck_ids), timeout=10.0)
+            except asyncio.TimeoutError:
+                print("[trigger] Chime timeout, proceeding anyway.")
 
             # STATE 3: DUCK MUSIC (normal → 5%)
             await _duck_acquire(level=level)
@@ -809,15 +859,21 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
                                json={"filepath": filepath})
                         for did in deck_ids
                     ]
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    responses = await asyncio.gather(*tasks, return_exceptions=True)
+                    for did, resp in zip(deck_ids, responses):
+                        # If a deck failed to start, set its event immediately so we don't hang the sequencer
+                        if not(isinstance(resp, httpx.Response) and resp.status_code == 200):
+                             if did in _ANNOUNCEMENT_EVENTS:
+                                 _ANNOUNCEMENT_EVENTS[did].set()
+                             print(f"[trigger] Error starting announcement on deck {did}: {resp}")
             except Exception as e:
                 print(f"[trigger] play error: {e}")
 
-            # Wait for ALL decks to finish the announcement (up to 5 min safety timeout)
+            # Wait for ALL decks to finish the announcement (up to 60s safety timeout per user recommendation)
             try:
-                await asyncio.wait_for(asyncio.gather(*events), timeout=300.0)
+                await asyncio.wait_for(asyncio.gather(*events), timeout=60.0)
             except asyncio.TimeoutError:
-                print("[trigger] Announcement wait timeout! Forcing restore.")
+                print("[trigger] Announcement wait timeout (60s)! Forcing restore.")
 
             for did in deck_ids:
                 _ANNOUNCEMENT_EVENTS.pop(did, None)
@@ -1399,6 +1455,27 @@ async def update_settings(req: SettingUpdateRequest, _user=Depends(verify_token)
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
     return {"status": "ok", "settings": SETTINGS}
 
+# ── Trigger Management ─────────────────────────────────────
+@app.post("/api/trigger/reset")
+async def reset_trigger_lock(_user=Depends(verify_token)):
+    """Force release the trigger lock if system gets stuck."""
+    if _TRIGGER_LOCK.locked():
+        try:
+            _TRIGGER_LOCK.release()
+            print("[trigger] Force released lock via API")
+            return {"status": "ok", "message": "Trigger lock force released"}
+        except RuntimeError:
+            return {"status": "error", "message": "Lock not held"}
+    return {"status": "ok", "message": "Lock was not held"}
+
+@app.post("/api/trigger/announcement")
+async def trigger_test_announcement(_user=Depends(verify_token)):
+    """Manual trigger for the most recent announcement (for testing)."""
+    if not ANNOUNCEMENTS:
+        raise HTTPException(status_code=404, detail="No announcements available")
+    ann = ANNOUNCEMENTS[0]
+    return await play_announcement(ann["id"], _user=_user)
+
 @app.post("/api/settings/db-test")
 async def test_db_connection(req: SettingUpdateRequest, _user=Depends(verify_token)):
     mode = req.value.get("db_mode", SETTINGS.get("db_mode", "local"))
@@ -1521,6 +1598,7 @@ async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCrea
         "target_decks": req.target_decks,
         "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
         "enabled": req.enabled,
+        "last_run_date": None, # Reset allowing immediate re-testing
     })
     RECURRING_SCHEDULES[idx] = updated
     try:
@@ -1591,6 +1669,7 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
         "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
         "multi_tracks": req.multi_tracks,
         "enabled": req.enabled,
+        "last_run_date": None, # Reset allowing immediate re-testing
     })
     RECURRING_MIXER_SCHEDULES[idx] = updated
     try:

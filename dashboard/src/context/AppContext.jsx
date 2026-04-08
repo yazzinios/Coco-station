@@ -152,6 +152,13 @@ export function AppProvider({ children }) {
       case 'RECURRING_SCHEDULES_UPDATED':       if (msg.schedules) setRecurringSchedules(msg.schedules); break;
       case 'RECURRING_MIXER_SCHEDULES_UPDATED': if (msg.schedules) setRecurringMixerSchedules(msg.schedules); break;
       case 'REQUESTS_UPDATED': if (msg.requests) setMusicRequests(msg.requests); break;
+      case 'NOTIFICATION':
+        if (msg.message) {
+          if (msg.style === 'success') toast.success(msg.message);
+          else if (msg.style === 'error') toast.error(msg.message);
+          else toast.info(msg.message);
+        }
+        break;
       default: break;
     }
   }, [fetchLibrary]);
