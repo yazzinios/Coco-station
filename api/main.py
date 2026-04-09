@@ -514,6 +514,8 @@ async def scheduler_task():
 async def lifespan(app: FastAPI):
     global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES
     print("CocoStation API Starting...")
+    print(f"[startup] FFMPEG_URL: {FFMPEG_URL}")
+    print(f"[startup] MEDIAMTX_API: {MEDIAMTX_API}")
 
     loop = asyncio.get_event_loop()
 
@@ -1293,7 +1295,7 @@ async def get_listeners():
                         "source": item.get("source", {}).get("type", "unknown") if item.get("source") else "none",
                     }
     except Exception as e:
-        print(f"[listeners] Failed to query mediamtx: {e}")
+        print(f"[listeners] Failed to query mediamtx at {MEDIAMTX_API}/v3/paths/list: {e}")
     # Summarize per deck
     decks_summary = {}
     total = 0
