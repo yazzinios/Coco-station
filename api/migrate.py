@@ -92,6 +92,48 @@ def run_migrations_local(db_url: str):
     cur.execute(BASE_SCHEMA_SQL)
     print("[migrate] Base schema applied.")
 
+    # ── Schema Repair ──────────────────────────────────────────
+    # Force-fix known inconsistencies that might have bypassed migrations.
+    REPAIR_SQL = """
+    DO $$ 
+    BEGIN
+        -- Fix recurring_mixer_schedules
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN
+            -- 1. Remove stop_time (was causing NOT NULL violations)
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'stop_time') THEN
+                ALTER TABLE recurring_mixer_schedules DROP COLUMN stop_time;
+                RAISE NOTICE 'Dropped stop_time from recurring_mixer_schedules';
+            END IF;
+
+            -- 2. Ensure deck_ids exists
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_ids') THEN
+                ALTER TABLE recurring_mixer_schedules ADD COLUMN deck_ids JSONB DEFAULT '[]';
+                -- Migrate data if old column exists
+                IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_id') THEN
+                    UPDATE recurring_mixer_schedules SET deck_ids = jsonb_build_array(deck_id);
+                END IF;
+                RAISE NOTICE 'Added deck_ids to recurring_mixer_schedules';
+            END IF;
+
+            -- 3. Ensure multi_tracks exists
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'multi_tracks') THEN
+                ALTER TABLE recurring_mixer_schedules ADD COLUMN multi_tracks JSONB DEFAULT '[]';
+                RAISE NOTICE 'Added multi_tracks to recurring_mixer_schedules';
+            END IF;
+        END IF;
+
+        -- Fix recurring_schedules
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_schedules') THEN
+             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'stop_time') THEN
+                ALTER TABLE recurring_schedules DROP COLUMN stop_time;
+                RAISE NOTICE 'Dropped stop_time from recurring_schedules';
+            END IF;
+        END IF;
+    END $$;
+    """
+    print("[migrate] Patching schema inconsistencies...")
+    cur.execute(REPAIR_SQL)
+
     cur.execute("SELECT name FROM _migrations")
     applied = set(row[0] for row in cur.fetchall())
 
