@@ -109,6 +109,38 @@ def _normalize_hhmm(value: str) -> Optional[str]:
     mm = parts[1].zfill(2)
     return f"{hh}:{mm}"
 
+
+def _get_seconds_until_hhmm(target_hhmm: str, now: datetime) -> float:
+    """Calculate seconds until the next occurrence of HH:MM. Handles rollover to tomorrow."""
+    norm = _normalize_hhmm(target_hhmm)
+    if not norm:
+        return 999999.0
+    hh, mm = map(int, norm.split(":"))
+    target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if target < now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+def _get_seconds_remaining(target_dt: datetime, now: datetime) -> float:
+    """Calculate seconds until a fixed target datetime."""
+    return (target_dt - now).total_seconds()
+
+
+def _format_time_left(seconds: float) -> str:
+    """Format seconds into a human-readable string (e.g. '5m 30s' or '12s')."""
+    if seconds < 0:
+        return "NOW"
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    if mins < 60:
+        return f"{mins}m {secs}s"
+    hours = mins // 60
+    rem_mins = mins % 60
+    return f"{hours}h {rem_mins}m"
+
 async def _trigger_music_schedule(s: dict):
     """Load and play a track or playlist on the target deck."""
     deck_id = s.get("deck_id")
@@ -366,146 +398,120 @@ async def scheduler_task():
         try:
             await asyncio.sleep(10)
             now = datetime.now()
+            today_str = now.strftime("%Y-%m-%d")
+            day_of_week = now.weekday()
             
-            # Log heartbeat every ~60 seconds (every 6 ticks)
+            # ── Heartbeat & Time-Left Diagnostics ───────────────────
             counter += 1
-            if counter >= 6:
-                print(f"[scheduler] heartbeat: {now.strftime('%Y-%m-%d %H:%M:%S')} (local time)")
+            if counter >= 6:  # Every 60 seconds
+                upcoming = []
+                
+                # 1. One-off Announcements
+                for ann in ANNOUNCEMENTS:
+                    if ann.get("status") == "Scheduled" and ann.get("scheduled_at"):
+                        dt = _parse_iso_datetime(ann["scheduled_at"])
+                        if dt:
+                            diff = _get_seconds_remaining(dt, now)
+                            upcoming.append((diff, f"Ann: {ann['name']}"))
+                            
+                # 2. One-off Music
+                for s in MUSIC_SCHEDULES:
+                    if s.get("status") == "Scheduled" and s.get("scheduled_at"):
+                        dt = _parse_iso_datetime(s["scheduled_at"])
+                        if dt:
+                            diff = _get_seconds_remaining(dt, now)
+                            upcoming.append((diff, f"Music: {s['name']} (Deck {s.get('deck_id','?').upper()})"))
+
+                # 3. Recurring Schedules (Mic/Ann)
+                for rs in RECURRING_SCHEDULES:
+                    if rs.get("enabled") and (day_of_week in rs.get("active_days", [])) and (today_str not in rs.get("excluded_days", [])):
+                        if rs.get("last_run_date") != today_str:
+                            diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
+                            upcoming.append((diff, f"Recurring: {rs['name']} ({rs.get('start_time')})"))
+
+                # 4. Recurring Mixer
+                for rs in RECURRING_MIXER_SCHEDULES:
+                    if rs.get("enabled") and (now.weekday() in rs.get("active_days", [])) and (today_str not in rs.get("excluded_days", [])):
+                        if rs.get("last_run_date") != today_str:
+                            diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
+                            upcoming.append((diff, f"Mixer: {rs['name']} ({rs.get('start_time')})"))
+
+                # Sort and log
+                upcoming.sort(key=lambda x: x[0])
+                print(f"[scheduler] heartbeat: {now.strftime('%H:%M:%S')} | {len(upcoming)} pending tasks")
+                for diff, desc in upcoming[:3]: # Log top 3 next tasks
+                    print(f"  > Next: {desc} in {_format_time_left(diff)}")
                 counter = 0
-            # ── Announcements ────────────────────────────────────────
+
+            # ── Execution Logic ─────────────────────────────────────
+            
+            # Announcements
             for ann in list(ANNOUNCEMENTS):
                 if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
-                    try:
-                        # Parse and normalize timezone
-                        scheduled_at = _parse_iso_datetime(ann["scheduled_at"])
-                        if scheduled_at:
-                            # DEBUG: Uncomment to see drift in logs
-                            # print(f"[scheduler] check '{ann['name']}' ({scheduled_at}) vs now ({now})")
-                            if scheduled_at <= now:
-                                print(f"[scheduler] TRIGGERING one-off announcement: {ann['name']}")
-                                ann["status"] = "Played"
-                                filepath = str(Path("/announcements") / ann["filename"])
-                                deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-                                
-                                # Queue the trigger instead of blocking the scheduler loop
-                                # Queue the trigger instead of blocking the scheduler loop
-                                asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
-                                
-                                # Persist status to DB
-                                asyncio.create_task(db.update_announcement_status(ann["id"], "Played"))
+                    scheduled_at = _parse_iso_datetime(ann["scheduled_at"])
+                    if scheduled_at and scheduled_at <= now:
+                        print(f"[scheduler] TRIGGERING one-off announcement: {ann['name']} (scheduled {scheduled_at.strftime('%H:%M:%S')})")
+                        ann["status"] = "Played"
+                        filepath = str(Path("/announcements") / ann["filename"])
+                        deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
+                        asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
+                        asyncio.create_task(db.update_announcement_status(ann["id"], "Played"))
+                        await manager.broadcast({"type": "NOTIFICATION", "message": f"Triggered: {ann['name']}", "style": "success"})
+                        await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
 
-                                await manager.broadcast({"type": "NOTIFICATION", "message": f"Triggered: {ann['name']}", "style": "success"})
-                                await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
-                                await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
-                    except Exception as e:
-                        print(f"[scheduler] error triggering announcement {ann.get('id')}: {e}")
-            # ── Music Schedules ──────────────────────────────────────
+            # Music Schedules
             for s in list(MUSIC_SCHEDULES):
                 if s.get("status") == "Scheduled" and s.get("scheduled_at"):
-                    try:
-                        scheduled_at = _parse_iso_datetime(s["scheduled_at"])
-                        if scheduled_at and scheduled_at <= now:
-                            s["status"] = "Played"
-                            
-                            async def _run_music_task(_s=s):
-                                await _trigger_music_schedule(_s)
-                                await manager.broadcast({"type": "NOTIFICATION", "message": f"Scheduled Music: {_s['name']} (Deck {_s['deck_id'].upper()})", "style": "info"})
-                                try:
-                                    await asyncio.get_event_loop().run_in_executor(
-                                        None, db.update_music_schedule_status, _s["id"], "Played"
-                                    )
-                                except Exception: pass
-                            
-                            asyncio.create_task(_run_music_task())
-                    except Exception as e:
-                        print(f"[scheduler] music schedule error: {e}")
-            # ── Recurring Schedules (Mic/Announcement) ───────────────
-            day_of_week = now.weekday()
-            current_time_str = now.strftime("%H:%M")
-            today_str = now.strftime("%Y-%m-%d")
+                    scheduled_at = _parse_iso_datetime(s["scheduled_at"])
+                    if scheduled_at and scheduled_at <= now:
+                        print(f"[scheduler] TRIGGERING Music Schedule: {s['name']} (scheduled {scheduled_at.strftime('%H:%M:%S')})")
+                        s["status"] = "Played"
+                        asyncio.create_task(_trigger_music_schedule(s))
+                        asyncio.create_task(db.update_music_schedule_status(s["id"], "Played"))
+                        await manager.broadcast({"type": "NOTIFICATION", "message": f"Scheduled Music: {s['name']}", "style": "info"})
 
+            # Recurring (Mic/Announcement)
             for rs in RECURRING_SCHEDULES:
                 if not rs.get("enabled"): continue
                 if day_of_week not in rs.get("active_days", []): continue
                 if today_str in rs.get("excluded_days", []): continue
+                if rs.get("last_run_date") == today_str: continue
 
-                if _time_matches(rs.get("start_time"), now) and rs.get("last_run_date") != today_str:
-                    print(f"[scheduler] TRIGGERING recurring schedule '{rs['name']}' (type={rs.get('type')}, time={rs.get('start_time')})")
+                if _time_matches(rs.get("start_time"), now):
+                    print(f"[scheduler] TRIGGERING '{rs['name']}' ({rs['type']}) scheduled for {rs.get('start_time')}")
                     rs["last_run_date"] = today_str
-                    asyncio.create_task(_safe_run(f"db.update_recurring {rs['id']}", db.update_recurring_last_run(rs["id"], today_str)))
-
+                    asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
+                    
                     deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
-
-                    # Always play jingle_start before announcement/mic feed
-                    jingle_start = rs.get("jingle_start")
-                    jingle_end   = rs.get("jingle_end")
-
-                    if rs["type"] in ("announcement", "Announcement"):
+                    if rs["type"].lower() in ("announcement", "recurringannouncement"):
                         ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs.get("announcement_id")), None)
                         if ann:
-                            # Capture closure variables NOW (avoid late-binding bugs)
-                            _ann         = ann
-                            _deck_ids    = list(deck_ids)
-                            _jingle_start = jingle_start
-                            _jingle_end   = jingle_end
-                            _rs_name     = rs["name"]
-                            _level       = rs.get("music_volume")
+                             filepath = str(Path("/announcements") / ann["filename"])
+                             asyncio.create_task(fade_and_play_announcement(deck_ids, filepath, level=rs.get("music_volume")))
+                             await manager.broadcast({"type": "NOTIFICATION", "message": f"Recurring Announcement: {rs['name']}", "style": "success"})
+                    elif rs["type"].lower() in ("microphone", "recurringmicrophone"):
+                         asyncio.create_task(mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids])))
+                         await manager.broadcast({"type": "NOTIFICATION", "message": f"Automated Mic: {rs['name']}", "style": "info"})
 
-                            async def _run_ann_schedule(
-                                ann=_ann, deck_ids=_deck_ids,
-                                jingle_start=_jingle_start, jingle_end=_jingle_end,
-                                level=_level
-                            ):
-                                filepath   = str(Path("/announcements") / ann["filename"])
-                                local_path = ANNOUNCEMENTS_DIR / ann["filename"]
-                                print(f"[scheduler] Running announcement '{ann['name']}' on decks {deck_ids}")
-                                await fade_and_play_announcement(deck_ids, filepath, level=level)
-
-                            asyncio.create_task(_safe_run(f"ann_schedule:{_rs_name}", _run_ann_schedule()))
-                            await manager.broadcast({"type": "NOTIFICATION", "message": f"Recurring Announcement: {rs['name']}", "style": "success"})
-                            await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
-
-                    elif rs["type"] in ("microphone", "Microphone"):
-                        _deck_ids_mic  = list(deck_ids)
-                        _jingle_start_mic = jingle_start
-                        _mic_rs_name  = rs["name"]
-
-                        async def _run_mic_schedule(
-                            deck_ids=_deck_ids_mic, jingle_start=_jingle_start_mic
-                        ):
-                            print(f"[scheduler] Running mic schedule on decks {deck_ids}")
-                            if jingle_start:
-                                for did in deck_ids:
-                                    await _play_jingle_and_wait(did, jingle_start)
-                            await mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids]), _user=None)
-                        asyncio.create_task(_safe_run(f"mic_schedule:{_mic_rs_name}", _run_mic_schedule()))
-                        await manager.broadcast({"type": "NOTIFICATION", "message": f"Automated Mic: {rs['name']}", "style": "info"})
-
-                # stop_time removed — mic feed ends when user manually turns it off
-
-            # ── Recurring Mixer Schedules ────────────────────────────
+            # Recurring Mixer
             for rs in RECURRING_MIXER_SCHEDULES:
                 if not rs.get("enabled"): continue
                 if day_of_week not in rs.get("active_days", []): continue
                 if today_str in rs.get("excluded_days", []): continue
+                if rs.get("last_run_date") == today_str: continue
 
-                # START
-                if _time_matches(rs.get("start_time"), now) and rs.get("last_run_date") != today_str:
-                    print(f"[mixer-scheduler] TRIGGERING '{rs['name']}' on decks {_get_deck_ids(rs)} at {rs.get('start_time')}")
+                if _time_matches(rs.get("start_time"), now):
+                    print(f"[mixer-scheduler] TRIGGERING '{rs['name']}' at {rs.get('start_time')}")
                     rs["last_run_date"] = today_str
-                    asyncio.create_task(_safe_run(f"db.update_mixer_last_run {rs['id']}", db.update_recurring_mixer_last_run(rs["id"], today_str)))
-                    asyncio.create_task(_safe_run(f"mixer_schedule:{rs['name']}", _trigger_recurring_mixer_schedule(rs)))
+                    asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
+                    asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
                     await manager.broadcast({"type": "NOTIFICATION", "message": f"Mixer Start: {rs['name']}", "style": "success"})
-                elif rs.get("last_run_date") == today_str:
-                    pass  # already ran — silent, expected
-                elif not _time_matches(rs.get("start_time"), now):
-                    pass  # not time yet — silent, expected
 
         except Exception as loop_error:
             import traceback
             print(f"[scheduler] FATAL ERROR in scheduler loop: {loop_error}")
             traceback.print_exc()
-            await asyncio.sleep(5) # Cooldown before retry
+            await asyncio.sleep(5)
 
             # stop_time removed — music plays until track/playlist ends naturally via track_ended callback
 
@@ -514,10 +520,13 @@ async def scheduler_task():
 async def lifespan(app: FastAPI):
     global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES
     print("CocoStation API Starting...")
-    print(f"[startup] FFMPEG_URL: {FFMPEG_URL}")
-    print(f"[startup] MEDIAMTX_API: {MEDIAMTX_API}")
-
     loop = asyncio.get_event_loop()
+
+    now = datetime.now()
+    utcnow = datetime.utcnow()
+    print(f"[startup] Local system time: {now.strftime('%Y-%m-%d %H:%M:%S')} (offset: {now.astimezone().strftime('%z')})")
+    print(f"[startup] UTC system time:   {utcnow.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"[startup] FFMPEG_URL: {FFMPEG_URL}")
 
     try:
         ANNOUNCEMENTS = await loop.run_in_executor(None, db.get_announcements)
