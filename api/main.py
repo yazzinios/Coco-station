@@ -111,6 +111,12 @@ def _normalize_hhmm(value: str) -> Optional[str]:
 
 async def _trigger_music_schedule(s: dict):
     """Load and play a track or playlist on the target deck."""
+    deck_id = s.get("deck_id")
+    loop    = s.get("loop", True)
+    if not deck_id or deck_id not in DECKS:
+        print(f"[scheduler] ERROR _trigger_music_schedule — invalid deck_id '{deck_id}' in schedule '{s.get('name')}'")
+        return
+    print(f"[scheduler] _trigger_music_schedule START — deck={deck_id} type={s.get('type')} name='{s.get('name')}'")
     # If currently ducked, we don't blast the music; we start it ducked.
     current_vol = s.get("volume", 80) if s.get("type") != "multi_track" else 80
     if _DUCK_REFCOUNT > 0:
@@ -344,6 +350,14 @@ def _time_matches(target_hhmm: Optional[str], now: datetime, window_seconds: int
         return False
 
 
+async def _safe_run(name: str, coro):
+    """Wrap a coroutine so exceptions are logged rather than silently swallowed."""
+    try:
+        await coro
+    except Exception as e:
+        print(f"[scheduler] ERROR in task '{name}': {type(e).__name__}: {e}")
+
+
 async def scheduler_task():
     print("[scheduler] Scheduler started and monitoring tasks...")
     while True:
@@ -409,8 +423,9 @@ async def scheduler_task():
                 if today_str in rs.get("excluded_days", []): continue
 
                 if _time_matches(rs.get("start_time"), now) and rs.get("last_run_date") != today_str:
+                    print(f"[scheduler] TRIGGERING recurring schedule '{rs['name']}' (type={rs.get('type')}, time={rs.get('start_time')})")
                     rs["last_run_date"] = today_str
-                    asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
+                    asyncio.create_task(_safe_run(f"db.update_recurring {rs['id']}", db.update_recurring_last_run(rs["id"], today_str)))
 
                     deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
 
@@ -426,36 +441,37 @@ async def scheduler_task():
                             _deck_ids    = list(deck_ids)
                             _jingle_start = jingle_start
                             _jingle_end   = jingle_end
+                            _rs_name     = rs["name"]
+                            _level       = rs.get("music_volume")
 
                             async def _run_ann_schedule(
                                 ann=_ann, deck_ids=_deck_ids,
-                                jingle_start=_jingle_start, jingle_end=_jingle_end
+                                jingle_start=_jingle_start, jingle_end=_jingle_end,
+                                level=_level
                             ):
                                 filepath   = str(Path("/announcements") / ann["filename"])
                                 local_path = ANNOUNCEMENTS_DIR / ann["filename"]
-                                # Reuse the master duck-play-restore sequence
-                                level = rs.get("music_volume") if rs else None
+                                print(f"[scheduler] Running announcement '{ann['name']}' on decks {deck_ids}")
                                 await fade_and_play_announcement(deck_ids, filepath, level=level)
-                                # Jingles are already handled by fade_and_play_announcement via chime;
-                                # play schedule-level jingles around the announcement if configured.
 
-                            asyncio.create_task(_run_ann_schedule())
+                            asyncio.create_task(_safe_run(f"ann_schedule:{_rs_name}", _run_ann_schedule()))
                             await manager.broadcast({"type": "NOTIFICATION", "message": f"Recurring Announcement: {rs['name']}", "style": "success"})
                             await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
 
                     elif rs["type"] in ("microphone", "Microphone"):
                         _deck_ids_mic  = list(deck_ids)
                         _jingle_start_mic = jingle_start
+                        _mic_rs_name  = rs["name"]
 
                         async def _run_mic_schedule(
                             deck_ids=_deck_ids_mic, jingle_start=_jingle_start_mic
                         ):
-                            # Jingle before mic
+                            print(f"[scheduler] Running mic schedule on decks {deck_ids}")
                             if jingle_start:
                                 for did in deck_ids:
                                     await _play_jingle_and_wait(did, jingle_start)
                             await mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids]), _user=None)
-                        asyncio.create_task(_run_mic_schedule())
+                        asyncio.create_task(_safe_run(f"mic_schedule:{_mic_rs_name}", _run_mic_schedule()))
                         await manager.broadcast({"type": "NOTIFICATION", "message": f"Automated Mic: {rs['name']}", "style": "info"})
 
                 # stop_time removed — mic feed ends when user manually turns it off
@@ -468,14 +484,20 @@ async def scheduler_task():
 
                 # START
                 if _time_matches(rs.get("start_time"), now) and rs.get("last_run_date") != today_str:
+                    print(f"[mixer-scheduler] TRIGGERING '{rs['name']}' on decks {_get_deck_ids(rs)} at {rs.get('start_time')}")
                     rs["last_run_date"] = today_str
-                    asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
-                    asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
+                    asyncio.create_task(_safe_run(f"db.update_mixer_last_run {rs['id']}", db.update_recurring_mixer_last_run(rs["id"], today_str)))
+                    asyncio.create_task(_safe_run(f"mixer_schedule:{rs['name']}", _trigger_recurring_mixer_schedule(rs)))
                     await manager.broadcast({"type": "NOTIFICATION", "message": f"Mixer Start: {rs['name']}", "style": "success"})
-                    print(f"[mixer-scheduler] Started '{rs['name']}' on decks {_get_deck_ids(rs)}")
+                elif rs.get("last_run_date") == today_str:
+                    pass  # already ran — silent, expected
+                elif not _time_matches(rs.get("start_time"), now):
+                    pass  # not time yet — silent, expected
 
         except Exception as loop_error:
+            import traceback
             print(f"[scheduler] FATAL ERROR in scheduler loop: {loop_error}")
+            traceback.print_exc()
             await asyncio.sleep(5) # Cooldown before retry
 
             # stop_time removed — music plays until track/playlist ends naturally via track_ended callback
@@ -1454,6 +1476,77 @@ async def update_settings(req: SettingUpdateRequest, _user=Depends(verify_token)
         print(f"[DB] Failed to persist settings: {e}")
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
     return {"status": "ok", "settings": SETTINGS}
+
+# ── Scheduler Status ───────────────────────────────────────
+@app.get("/api/scheduler/status")
+def scheduler_status():
+    """Live view of scheduler state — useful for debugging without reading Docker logs."""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    def _will_run(rs):
+        return (
+            rs.get("enabled", False) and
+            now.weekday() in rs.get("active_days", []) and
+            today not in rs.get("excluded_days", []) and
+            rs.get("last_run_date") != today
+        )
+    return {
+        "time_now": now.strftime("%H:%M:%S"),
+        "today": today,
+        "day_of_week": now.weekday(),
+        "trigger_lock_held": _TRIGGER_LOCK.locked(),
+        "duck_refcount": _DUCK_REFCOUNT,
+        "recurring_mixer_schedules": [
+            {
+                "id": rs["id"],
+                "name": rs["name"],
+                "enabled": rs.get("enabled"),
+                "start_time": rs.get("start_time"),
+                "active_days": rs.get("active_days"),
+                "last_run_date": rs.get("last_run_date"),
+                "will_run_today": _will_run(rs),
+            }
+            for rs in RECURRING_MIXER_SCHEDULES
+        ],
+        "recurring_schedules": [
+            {
+                "id": rs["id"],
+                "name": rs["name"],
+                "enabled": rs.get("enabled"),
+                "start_time": rs.get("start_time"),
+                "active_days": rs.get("active_days"),
+                "last_run_date": rs.get("last_run_date"),
+                "will_run_today": _will_run(rs),
+            }
+            for rs in RECURRING_SCHEDULES
+        ],
+    }
+
+@app.post("/api/recurring-mixer-schedules/{schedule_id}/reset")
+async def reset_mixer_schedule(schedule_id: str, _user=Depends(verify_token)):
+    """Clear last_run_date so the schedule can fire again today (useful for testing)."""
+    rs = next((x for x in RECURRING_MIXER_SCHEDULES if x["id"] == schedule_id), None)
+    if not rs:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    rs["last_run_date"] = None
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.update_recurring_mixer_last_run, schedule_id, None)
+    except Exception as e:
+        print(f"[DB] Failed to reset mixer last_run_date: {e}")
+    return {"status": "ok", "message": f"'{rs['name']}' reset — will fire next matching window"}
+
+@app.post("/api/recurring-schedules/{schedule_id}/reset")
+async def reset_recurring_schedule(schedule_id: str, _user=Depends(verify_token)):
+    """Clear last_run_date so the schedule can fire again today (useful for testing)."""
+    rs = next((x for x in RECURRING_SCHEDULES if x["id"] == schedule_id), None)
+    if not rs:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    rs["last_run_date"] = None
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.update_recurring_last_run, schedule_id, None)
+    except Exception as e:
+        print(f"[DB] Failed to reset recurring last_run_date: {e}")
+    return {"status": "ok", "message": f"'{rs['name']}' reset — will fire next matching window"}
 
 # ── Trigger Management ─────────────────────────────────────
 @app.post("/api/trigger/reset")
