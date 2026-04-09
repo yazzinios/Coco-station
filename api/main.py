@@ -361,11 +361,17 @@ async def _safe_run(name: str, coro):
 
 async def scheduler_task():
     print("[scheduler] Scheduler started and monitoring tasks...")
+    counter = 0
     while True:
         try:
             await asyncio.sleep(10)
             now = datetime.now()
-            # print(f"[scheduler] check heartbeat: {now}") # Heartbeat
+            
+            # Log heartbeat every ~60 seconds (every 6 ticks)
+            counter += 1
+            if counter >= 6:
+                print(f"[scheduler] heartbeat: {now.strftime('%Y-%m-%d %H:%M:%S')} (local time)")
+                counter = 0
             # ── Announcements ────────────────────────────────────────
             for ann in list(ANNOUNCEMENTS):
                 if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
