@@ -1,3 +1,4 @@
+-- Migration 004: create recurring_mixer_schedules with deck_ids
 CREATE TABLE IF NOT EXISTS recurring_mixer_schedules (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

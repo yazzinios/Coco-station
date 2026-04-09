@@ -336,8 +336,9 @@ async def _stop_recurring_mixer_schedule(rs: dict):
         await asyncio.gather(*jingle_tasks)
 
 
-def _time_matches(target_hhmm: Optional[str], now: datetime, window_seconds: int = 45) -> bool:
-    """Return True if `now` is within `window_seconds` of the target HH:MM time today."""
+def _time_matches(target_hhmm: Optional[str], now: datetime, window_seconds: int = 90) -> bool:
+    """Return True if `now` is within `window_seconds` of the target HH:MM time today.
+    Window is 90s (9 scheduler ticks) so container restarts and slow startups don't miss triggers."""
     norm = _normalize_hhmm(target_hhmm)
     if not norm:
         return False
@@ -550,12 +551,18 @@ async def lifespan(app: FastAPI):
 
     try:
         RECURRING_SCHEDULES = await loop.run_in_executor(None, db.get_recurring_schedules)
+        # Clear last_run_date in memory so schedules always get a fresh chance after restart
+        for rs in RECURRING_SCHEDULES:
+            rs["last_run_date"] = None
         print(f"[startup] Loaded {len(RECURRING_SCHEDULES)} recurring schedule(s) from DB.")
     except Exception as e:
         print(f"[startup] Failed to load recurring schedules: {e}")
 
     try:
         RECURRING_MIXER_SCHEDULES = await loop.run_in_executor(None, db.get_recurring_mixer_schedules)
+        # Clear last_run_date in memory so schedules always get a fresh chance after restart
+        for rs in RECURRING_MIXER_SCHEDULES:
+            rs["last_run_date"] = None
         print(f"[startup] Loaded {len(RECURRING_MIXER_SCHEDULES)} recurring mixer schedule(s) from DB.")
     except Exception as e:
         print(f"[startup] Failed to load recurring mixer schedules: {e}")
