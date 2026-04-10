@@ -10,6 +10,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import List, Dict, Optional
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from pathlib import Path
 
 FFMPEG_HOST    = os.getenv("FFMPEG_HOST", "ffmpeg-mixer")
@@ -66,7 +69,11 @@ MUSIC_SCHEDULES: List[dict] = []
 RECURRING_SCHEDULES: List[dict] = []
 RECURRING_MIXER_SCHEDULES: List[dict] = []   # ← NEW
 MUSIC_REQUESTS: List[dict] = []               # listener song requests
-_FORCE_SCHEDULER_LOG: bool = False             # if True, scheduler prints impending tasks immediately
+
+# ── APScheduler instance ────────────────────────────────────
+ap_scheduler = AsyncIOScheduler(
+    job_defaults={'max_instances': 1, 'misfire_grace_time': 120},
+)
 
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
@@ -408,184 +415,266 @@ async def _safe_run(name: str, coro):
         print(f"[scheduler] ERROR in task '{name}': {type(e).__name__}: {e}")
 
 
-async def scheduler_task():
-    print("[scheduler] Scheduler started and monitoring tasks...")
-    global _FORCE_SCHEDULER_LOG
-    counter = 0
-    debug_counter = 0  # detailed debug every 30 ticks (~5 min)
-    while True:
-        try:
-            await asyncio.sleep(10)
-            now = datetime.now()
-            today_str = now.strftime("%Y-%m-%d")
-            day_of_week = now.weekday()
-            
-            # ── Heartbeat & Time-Left Diagnostics ───────────────────
-            counter += 1
-            if counter >= 6 or _FORCE_SCHEDULER_LOG:  # Every 60 seconds OR forced refresh
-                upcoming = []
-                
-                # 1. One-off Announcements
-                for ann in ANNOUNCEMENTS:
-                    if ann.get("status") == "Scheduled" and ann.get("scheduled_at"):
-                        dt = _parse_iso_datetime(ann["scheduled_at"])
-                        if dt:
-                            diff = _get_seconds_remaining(dt, now)
-                            upcoming.append((diff, f"Ann: {ann['name']}"))
-                            
-                # 2. One-off Music
-                for s in MUSIC_SCHEDULES:
-                    if s.get("status") == "Scheduled" and s.get("scheduled_at"):
-                        dt = _parse_iso_datetime(s["scheduled_at"])
-                        if dt:
-                            diff = _get_seconds_remaining(dt, now)
-                            upcoming.append((diff, f"Music: {s['name']} (Deck {s.get('deck_id','?').upper()})"))
+# ═══════════════════════════════════════════════════════════
+#  APScheduler-based scheduling engine
+#
+#  Jobs:
+#    'heartbeat'       — IntervalTrigger 60s, logs upcoming tasks
+#    'oneoff_checker'  — IntervalTrigger 10s, fires one-off schedules
+#    'recurring_{id}'  — CronTrigger, fires recurring announcements/mic
+#    'mixer_{id}'      — CronTrigger, fires recurring mixer schedules
+# ═══════════════════════════════════════════════════════════
 
-                # 3. Recurring Schedules (Mic/Ann)
-                for rs in RECURRING_SCHEDULES:
-                    if rs.get("enabled") and (day_of_week in rs.get("active_days", [])) and (today_str not in rs.get("excluded_days", [])):
-                        if rs.get("last_run_date") != today_str:
-                            diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
-                            upcoming.append((diff, f"Recurring: {rs['name']} ({rs.get('start_time')})"))
+def _parse_hhmm(hhmm: str):
+    """Parse 'HH:MM' string into (hour, minute) tuple."""
+    norm = _normalize_hhmm(hhmm)
+    if not norm:
+        return None, None
+    parts = norm.split(':')
+    return int(parts[0]), int(parts[1])
 
-                # 4. Recurring Mixer
-                for rs in RECURRING_MIXER_SCHEDULES:
-                    if rs.get("enabled") and (now.weekday() in rs.get("active_days", [])) and (today_str not in rs.get("excluded_days", [])):
-                        if rs.get("last_run_date") != today_str:
-                            diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
-                            upcoming.append((diff, f"Mixer: {rs['name']} ({rs.get('start_time')})"))
 
-                # Sort and log
-                upcoming.sort(key=lambda x: x[0])
-                pending_count = len(upcoming)
-                reason = "Refresh" if _FORCE_SCHEDULER_LOG else "heartbeat"
-                print(f"[scheduler] {reason}: {now.strftime('%H:%M:%S')} | {pending_count} pending tasks")
-                if pending_count > 0:
-                    for diff, desc in upcoming[:3]: # Log top 3 next tasks
-                        print(f"  > Next: {desc} in {_format_time_left(diff)}")
-                else:
-                    print("  > No pending tasks scheduled.")
-                
-                counter = 0
-                _FORCE_SCHEDULER_LOG = False
+def register_recurring_job(rs: dict):
+    """Register or re-register a CronTrigger job for a recurring schedule."""
+    job_id = f"recurring_{rs['id']}"
+    try:
+        ap_scheduler.remove_job(job_id)
+    except Exception:
+        pass
 
-            # ── Execution Logic ─────────────────────────────────────
-            
-            # Announcements
-            for ann in list(ANNOUNCEMENTS):
-                if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
-                    scheduled_at = _parse_iso_datetime(ann["scheduled_at"])
-                    if scheduled_at and scheduled_at <= now:
-                        print(f"[scheduler] TRIGGERING one-off announcement: {ann['name']} (scheduled {scheduled_at.strftime('%H:%M:%S')})")
-                        ann["status"] = "Played"
-                        filepath = str(Path("/announcements") / ann["filename"])
-                        deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
-                        asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
-                        asyncio.create_task(db.update_announcement_status(ann["id"], "Played"))
-                        await manager.broadcast({"type": "NOTIFICATION", "message": f"Triggered: {ann['name']}", "style": "success"})
-                        await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
+    if not rs.get("enabled"):
+        print(f"[apscheduler] Schedule '{rs.get('name')}' is disabled — not registered")
+        return
 
-            # Music Schedules
-            for s in list(MUSIC_SCHEDULES):
-                if s.get("status") == "Scheduled" and s.get("scheduled_at"):
-                    scheduled_at = _parse_iso_datetime(s["scheduled_at"])
-                    if scheduled_at and scheduled_at <= now:
-                        print(f"[scheduler] TRIGGERING Music Schedule: {s['name']} (scheduled {scheduled_at.strftime('%H:%M:%S')})")
-                        s["status"] = "Played"
-                        asyncio.create_task(_trigger_music_schedule(s))
-                        asyncio.create_task(db.update_music_schedule_status(s["id"], "Played"))
-                        await manager.broadcast({"type": "NOTIFICATION", "message": f"Scheduled Music: {s['name']}", "style": "info"})
+    hour, minute = _parse_hhmm(rs.get("start_time", ""))
+    if hour is None:
+        print(f"[apscheduler] Schedule '{rs.get('name')}' has invalid start_time '{rs.get('start_time')}'")
+        return
 
-            # ── Detailed debug logging (every ~5 minutes) ──────────────
-            debug_counter += 1
-            show_debug = (debug_counter >= 30)
-            if show_debug:
-                debug_counter = 0
+    active_days = rs.get("active_days", [])
+    if not active_days:
+        print(f"[apscheduler] Schedule '{rs.get('name')}' has no active_days")
+        return
 
-            # Recurring (Mic/Announcement)
-            for rs in RECURRING_SCHEDULES:
-                sname = rs.get('name', '?')
-                if not rs.get("enabled"):
-                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': disabled")
-                    continue
-                if day_of_week not in rs.get("active_days", []):
-                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': today={day_of_week} not in active_days={rs.get('active_days')}")
-                    continue
-                if today_str in rs.get("excluded_days", []):
-                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': today excluded")
-                    continue
-                if rs.get("last_run_date") == today_str:
-                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': already ran today (last_run_date={rs.get('last_run_date')})")
-                    continue
+    day_of_week = ','.join(str(d) for d in active_days)
+    ap_scheduler.add_job(
+        _ap_trigger_recurring,
+        CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute),
+        id=job_id,
+        name=f"Recurring: {rs.get('name')}",
+        args=[rs['id']],
+        replace_existing=True,
+    )
+    print(f"[apscheduler] ✓ Registered '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
 
-                time_match = _time_matches(rs.get("start_time"), now)
-                if show_debug and not time_match:
-                    diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
-                    print(f"[scheduler-debug] WAITING '{sname}': start_time={rs.get('start_time')} time_match={time_match} diff={_format_time_left(diff)}")
 
-                if time_match:
-                    print(f"\n{'='*60}")
-                    print(f"[scheduler] 🔔 TRIGGERING '{sname}' ({rs['type']}) scheduled for {rs.get('start_time')}")
-                    print(f"[scheduler]    Time now: {now.strftime('%H:%M:%S')} | day_of_week={day_of_week} | last_run_date={rs.get('last_run_date')}")
-                    print(f"{'='*60}\n")
-                    rs["last_run_date"] = today_str
-                    asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
-                    
-                    deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
-                    if rs["type"].lower() in ("announcement", "recurringannouncement"):
-                        ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs.get("announcement_id")), None)
-                        if ann:
-                             filepath = str(Path("/announcements") / ann["filename"])
-                             asyncio.create_task(fade_and_play_announcement(deck_ids, filepath, level=rs.get("music_volume")))
-                             await manager.broadcast({"type": "NOTIFICATION", "message": f"🔔 Triggered: {sname} (Recurring Announcement)", "style": "success"})
-                        else:
-                             print(f"[scheduler] WARNING: announcement_id={rs.get('announcement_id')} not found for '{sname}'")
-                             await manager.broadcast({"type": "NOTIFICATION", "message": f"⚠️ {sname}: Announcement not found!", "style": "error"})
-                    elif rs["type"].lower() in ("microphone", "recurringmicrophone"):
-                         asyncio.create_task(mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids])))
-                         await manager.broadcast({"type": "NOTIFICATION", "message": f"🎙️ Triggered: {sname} (Automated Mic)", "style": "info"})
-                    await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
+def register_mixer_job(rs: dict):
+    """Register or re-register a CronTrigger job for a recurring mixer schedule."""
+    job_id = f"mixer_{rs['id']}"
+    try:
+        ap_scheduler.remove_job(job_id)
+    except Exception:
+        pass
 
-            # Recurring Mixer
-            for rs in RECURRING_MIXER_SCHEDULES:
-                sname = rs.get('name', '?')
-                if not rs.get("enabled"):
-                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': disabled")
-                    continue
-                if day_of_week not in rs.get("active_days", []):
-                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': today={day_of_week} not in active_days={rs.get('active_days')}")
-                    continue
-                if today_str in rs.get("excluded_days", []):
-                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': today excluded")
-                    continue
-                if rs.get("last_run_date") == today_str:
-                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': already ran today (last_run_date={rs.get('last_run_date')})")
-                    continue
+    if not rs.get("enabled"):
+        print(f"[apscheduler] Mixer '{rs.get('name')}' is disabled — not registered")
+        return
 
-                time_match = _time_matches(rs.get("start_time"), now)
-                if show_debug and not time_match:
-                    diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
-                    print(f"[mixer-debug] WAITING '{sname}': start_time={rs.get('start_time')} time_match={time_match} diff={_format_time_left(diff)}")
+    hour, minute = _parse_hhmm(rs.get("start_time", ""))
+    if hour is None:
+        print(f"[apscheduler] Mixer '{rs.get('name')}' has invalid start_time '{rs.get('start_time')}'")
+        return
 
-                if time_match:
-                    print(f"\n{'='*60}")
-                    print(f"[mixer-scheduler] 🔔 TRIGGERING '{sname}' at {rs.get('start_time')}")
-                    print(f"[mixer-scheduler]    Time now: {now.strftime('%H:%M:%S')} | day_of_week={day_of_week} | deck_ids={_get_deck_ids(rs)}")
-                    print(f"[mixer-scheduler]    type={rs.get('type')} target_id={rs.get('target_id')} volume={rs.get('volume')} loop={rs.get('loop')}")
-                    print(f"{'='*60}\n")
-                    rs["last_run_date"] = today_str
-                    asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
-                    asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
-                    await manager.broadcast({"type": "NOTIFICATION", "message": f"🎵 Triggered: {sname} (Mixer Start)", "style": "success"})
-                    await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
+    active_days = rs.get("active_days", [])
+    if not active_days:
+        print(f"[apscheduler] Mixer '{rs.get('name')}' has no active_days")
+        return
 
-        except Exception as loop_error:
-            import traceback
-            print(f"[scheduler] FATAL ERROR in scheduler loop: {loop_error}")
-            traceback.print_exc()
-            await asyncio.sleep(5)
+    day_of_week = ','.join(str(d) for d in active_days)
+    ap_scheduler.add_job(
+        _ap_trigger_mixer,
+        CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute),
+        id=job_id,
+        name=f"Mixer: {rs.get('name')}",
+        args=[rs['id']],
+        replace_existing=True,
+    )
+    print(f"[apscheduler] ✓ Registered mixer '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
 
-            # stop_time removed — music plays until track/playlist ends naturally via track_ended callback
+
+def unregister_job(job_id: str):
+    """Remove a job from the APScheduler."""
+    try:
+        ap_scheduler.remove_job(job_id)
+        print(f"[apscheduler] Removed job '{job_id}'")
+    except Exception:
+        pass
+
+
+async def _ap_trigger_recurring(schedule_id: str):
+    """APScheduler CronTrigger callback for recurring (mic/announcement) schedules."""
+    rs = next((x for x in RECURRING_SCHEDULES if x["id"] == schedule_id), None)
+    if not rs:
+        print(f"[scheduler] Job 'recurring_{schedule_id}' — schedule not found in memory, skipping")
+        return
+
+    sname = rs.get('name', '?')
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+
+    # Safety: check excluded days (CronTrigger can't handle dynamic exclusions)
+    if today_str in rs.get("excluded_days", []):
+        print(f"[scheduler] SKIP '{sname}': today {today_str} is excluded")
+        return
+
+    # Safety: prevent double-fire on same day
+    if rs.get("last_run_date") == today_str:
+        print(f"[scheduler] SKIP '{sname}': already ran today")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"[scheduler] 🔔 TRIGGERING '{sname}' ({rs['type']}) at {rs.get('start_time')}")
+    print(f"[scheduler]    Time: {now.strftime('%H:%M:%S')} | day={now.weekday()} | via APScheduler CronTrigger")
+    print(f"{'='*60}\n")
+
+    rs["last_run_date"] = today_str
+    asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
+
+    deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
+    if rs["type"].lower() in ("announcement", "recurringannouncement"):
+        ann = next((a for a in ANNOUNCEMENTS if a["id"] == rs.get("announcement_id")), None)
+        if ann:
+            filepath = str(Path("/announcements") / ann["filename"])
+            asyncio.create_task(fade_and_play_announcement(deck_ids, filepath, level=rs.get("music_volume")))
+            await manager.broadcast({"type": "NOTIFICATION", "message": f"🔔 Triggered: {sname} (Recurring Announcement)", "style": "success"})
+        else:
+            print(f"[scheduler] WARNING: announcement_id={rs.get('announcement_id')} not found for '{sname}'")
+            await manager.broadcast({"type": "NOTIFICATION", "message": f"⚠️ {sname}: Announcement not found!", "style": "error"})
+    elif rs["type"].lower() in ("microphone", "recurringmicrophone"):
+        asyncio.create_task(mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids])))
+        await manager.broadcast({"type": "NOTIFICATION", "message": f"🎙️ Triggered: {sname} (Automated Mic)", "style": "info"})
+
+    await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
+
+
+async def _ap_trigger_mixer(schedule_id: str):
+    """APScheduler CronTrigger callback for recurring mixer schedules."""
+    rs = next((x for x in RECURRING_MIXER_SCHEDULES if x["id"] == schedule_id), None)
+    if not rs:
+        print(f"[mixer-scheduler] Job 'mixer_{schedule_id}' — schedule not found in memory, skipping")
+        return
+
+    sname = rs.get('name', '?')
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+
+    if today_str in rs.get("excluded_days", []):
+        print(f"[mixer-scheduler] SKIP '{sname}': today {today_str} is excluded")
+        return
+
+    if rs.get("last_run_date") == today_str:
+        print(f"[mixer-scheduler] SKIP '{sname}': already ran today")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"[mixer-scheduler] 🔔 TRIGGERING '{sname}' at {rs.get('start_time')}")
+    print(f"[mixer-scheduler]    Time: {now.strftime('%H:%M:%S')} | deck_ids={_get_deck_ids(rs)} | via APScheduler CronTrigger")
+    print(f"[mixer-scheduler]    type={rs.get('type')} target_id={rs.get('target_id')} volume={rs.get('volume')} loop={rs.get('loop')}")
+    print(f"{'='*60}\n")
+
+    rs["last_run_date"] = today_str
+    asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
+    asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
+    await manager.broadcast({"type": "NOTIFICATION", "message": f"🎵 Triggered: {sname} (Mixer Start)", "style": "success"})
+    await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
+
+
+async def _ap_check_oneoffs():
+    """APScheduler interval job: check one-off announcements and music schedules."""
+    now = datetime.now()
+
+    # One-off Announcements
+    for ann in list(ANNOUNCEMENTS):
+        if ann.get("scheduled_at") and ann.get("status") == "Scheduled":
+            scheduled_at = _parse_iso_datetime(ann["scheduled_at"])
+            if scheduled_at and scheduled_at <= now:
+                print(f"[scheduler] TRIGGERING one-off announcement: {ann['name']} (scheduled {scheduled_at.strftime('%H:%M:%S')})")
+                ann["status"] = "Played"
+                filepath = str(Path("/announcements") / ann["filename"])
+                deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
+                asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
+                asyncio.create_task(db.update_announcement_status(ann["id"], "Played"))
+                await manager.broadcast({"type": "NOTIFICATION", "message": f"Triggered: {ann['name']}", "style": "success"})
+                await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
+
+    # One-off Music Schedules
+    for s in list(MUSIC_SCHEDULES):
+        if s.get("status") == "Scheduled" and s.get("scheduled_at"):
+            scheduled_at = _parse_iso_datetime(s["scheduled_at"])
+            if scheduled_at and scheduled_at <= now:
+                print(f"[scheduler] TRIGGERING Music Schedule: {s['name']} (scheduled {scheduled_at.strftime('%H:%M:%S')})")
+                s["status"] = "Played"
+                asyncio.create_task(_trigger_music_schedule(s))
+                asyncio.create_task(db.update_music_schedule_status(s["id"], "Played"))
+                await manager.broadcast({"type": "NOTIFICATION", "message": f"Scheduled Music: {s['name']}", "style": "info"})
+
+
+async def _ap_heartbeat():
+    """APScheduler interval job: log upcoming tasks and diagnostics."""
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    day_of_week = now.weekday()
+    upcoming = []
+
+    # 1. One-off Announcements
+    for ann in ANNOUNCEMENTS:
+        if ann.get("status") == "Scheduled" and ann.get("scheduled_at"):
+            dt = _parse_iso_datetime(ann["scheduled_at"])
+            if dt:
+                diff = _get_seconds_remaining(dt, now)
+                upcoming.append((diff, f"Ann: {ann['name']}"))
+
+    # 2. One-off Music
+    for s in MUSIC_SCHEDULES:
+        if s.get("status") == "Scheduled" and s.get("scheduled_at"):
+            dt = _parse_iso_datetime(s["scheduled_at"])
+            if dt:
+                diff = _get_seconds_remaining(dt, now)
+                upcoming.append((diff, f"Music: {s['name']} (Deck {s.get('deck_id','?').upper()})"))
+
+    # 3. Recurring Schedules (Mic/Ann)
+    for rs in RECURRING_SCHEDULES:
+        if rs.get("enabled") and (day_of_week in rs.get("active_days", [])) and (today_str not in rs.get("excluded_days", [])):
+            if rs.get("last_run_date") != today_str:
+                diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
+                upcoming.append((diff, f"Recurring: {rs['name']} ({rs.get('start_time')})"))
+
+    # 4. Recurring Mixer
+    for rs in RECURRING_MIXER_SCHEDULES:
+        if rs.get("enabled") and (day_of_week in rs.get("active_days", [])) and (today_str not in rs.get("excluded_days", [])):
+            if rs.get("last_run_date") != today_str:
+                diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
+                upcoming.append((diff, f"Mixer: {rs['name']} ({rs.get('start_time')})"))
+
+    # Sort and log
+    upcoming.sort(key=lambda x: x[0])
+    pending_count = len(upcoming)
+
+    # APScheduler job stats
+    jobs = ap_scheduler.get_jobs()
+    cron_jobs = [j for j in jobs if j.id not in ('heartbeat', 'oneoff_checker')]
+
+    print(f"[scheduler] heartbeat: {now.strftime('%H:%M:%S')} | {pending_count} pending | {len(cron_jobs)} cron jobs")
+    if pending_count > 0:
+        for diff, desc in upcoming[:5]:
+            print(f"  > Next: {desc} in {_format_time_left(diff)}")
+    else:
+        print("  > No pending tasks scheduled.")
+
+    # Show registered APScheduler cron jobs
+    for j in cron_jobs:
+        next_run = j.next_run_time.strftime('%H:%M:%S') if j.next_run_time else 'None'
+        print(f"  > CronJob: {j.name} → next_run={next_run}")
 
 
 @asynccontextmanager
@@ -669,9 +758,38 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] Failed to load recurring mixer schedules: {e}")
 
-    task = asyncio.create_task(scheduler_task())
+    # ── Register APScheduler jobs ────────────────────────────
+    # Heartbeat: logs upcoming tasks every 60 seconds
+    ap_scheduler.add_job(
+        _ap_heartbeat,
+        IntervalTrigger(seconds=60),
+        id='heartbeat',
+        name='Heartbeat Logger',
+        replace_existing=True,
+    )
+    # One-off checker: scans for due one-off announcements/music every 10 seconds
+    ap_scheduler.add_job(
+        _ap_check_oneoffs,
+        IntervalTrigger(seconds=10),
+        id='oneoff_checker',
+        name='One-off Checker',
+        replace_existing=True,
+    )
+    # Register CronTrigger jobs for each recurring schedule
+    for rs in RECURRING_SCHEDULES:
+        register_recurring_job(rs)
+    for rs in RECURRING_MIXER_SCHEDULES:
+        register_mixer_job(rs)
+
+    ap_scheduler.start()
+    jobs = ap_scheduler.get_jobs()
+    print(f"[startup] APScheduler started with {len(jobs)} job(s):")
+    for j in jobs:
+        next_run = j.next_run_time.strftime('%H:%M:%S') if j.next_run_time else 'None'
+        print(f"  > {j.id:20} | {j.name:30} | next: {next_run}")
+
     yield
-    task.cancel()
+    ap_scheduler.shutdown(wait=False)
 
 app = FastAPI(lifespan=lifespan, title="CocoStation API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -1728,8 +1846,6 @@ async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(v
                 "loop": req.loop, "status": "Scheduled", "created_at": datetime.now().isoformat()}
     MUSIC_SCHEDULES.append(schedule)
     MUSIC_SCHEDULES.sort(key=lambda x: x["scheduled_at"])
-    global _FORCE_SCHEDULER_LOG
-    _FORCE_SCHEDULER_LOG = True
     print(f"[api] Created Music Schedule: {req.name} (at {req.scheduled_at})")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.create_music_schedule, schedule)
@@ -1782,9 +1898,8 @@ async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=D
         "created_at": datetime.now().isoformat(),
     }
     RECURRING_SCHEDULES.append(schedule)
-    global _FORCE_SCHEDULER_LOG
-    _FORCE_SCHEDULER_LOG = True
     print(f"[api] Created Recurring Schedule: {req.name} ({req.type} at {req.start_time})")
+    register_recurring_job(schedule)
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, schedule)
     except Exception as e:
@@ -1809,9 +1924,8 @@ async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCrea
         "last_run_date": None, # Reset allowing immediate re-testing
     })
     RECURRING_SCHEDULES[idx] = updated
-    global _FORCE_SCHEDULER_LOG
-    _FORCE_SCHEDULER_LOG = True
     print(f"[api] Updated Recurring Schedule: {req.name} ({req.type} at {req.start_time})")
+    register_recurring_job(updated)
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, updated)
     except Exception as e:
@@ -1823,6 +1937,7 @@ async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCrea
 async def delete_recurring_schedule(schedule_id: str, _user=Depends(verify_token)):
     global RECURRING_SCHEDULES
     RECURRING_SCHEDULES = [x for x in RECURRING_SCHEDULES if x["id"] != schedule_id]
+    unregister_job(f"recurring_{schedule_id}")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.delete_recurring_schedule, schedule_id)
     except Exception: pass
@@ -1856,9 +1971,8 @@ async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateReque
         "created_at": datetime.now().isoformat(),
     }
     RECURRING_MIXER_SCHEDULES.append(schedule)
-    global _FORCE_SCHEDULER_LOG
-    _FORCE_SCHEDULER_LOG = True
     print(f"[api] Created Recurring Mixer Schedule: {req.name} (at {req.start_time})")
+    register_mixer_job(schedule)
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, schedule)
     except Exception as e:
@@ -1886,9 +2000,8 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
         "last_run_date": None, # Reset allowing immediate re-testing
     })
     RECURRING_MIXER_SCHEDULES[idx] = updated
-    global _FORCE_SCHEDULER_LOG
-    _FORCE_SCHEDULER_LOG = True
     print(f"[api] Updated Recurring Mixer Schedule: {req.name} (at {req.start_time})")
+    register_mixer_job(updated)
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, updated)
     except Exception as e:
@@ -1900,6 +2013,7 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
 async def delete_recurring_mixer_schedule(schedule_id: str, _user=Depends(verify_token)):
     global RECURRING_MIXER_SCHEDULES
     RECURRING_MIXER_SCHEDULES = [x for x in RECURRING_MIXER_SCHEDULES if x["id"] != schedule_id]
+    unregister_job(f"mixer_{schedule_id}")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.delete_recurring_mixer_schedule, schedule_id)
     except Exception: pass
