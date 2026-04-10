@@ -157,6 +157,24 @@ export function AppProvider({ children }) {
           if (msg.style === 'success') toast.success(msg.message);
           else if (msg.style === 'error') toast.error(msg.message);
           else toast.info(msg.message);
+          // Play audio beep for trigger notifications
+          try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = msg.style === 'error' ? 300 : msg.style === 'success' ? 880 : 660;
+            gain.gain.value = 0.15;
+            osc.start();
+            osc.stop(ctx.currentTime + 0.2);
+          } catch (e) { /* audio context not available */ }
+          // Show browser notification if permission granted
+          if (Notification.permission === 'granted') {
+            new Notification('CocoStation', { body: msg.message, icon: '/favicon.ico', tag: 'coco-trigger' });
+          } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission();
+          }
         }
         break;
       default: break;

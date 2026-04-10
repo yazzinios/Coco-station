@@ -160,6 +160,7 @@ async def _trigger_music_schedule(s: dict):
     loop    = s.get("loop", True)
     if not deck_id or deck_id not in DECKS:
         print(f"[scheduler] ERROR _trigger_music_schedule — invalid deck_id '{deck_id}' in schedule '{s.get('name')}'")
+        await manager.broadcast({"type": "NOTIFICATION", "message": f"❌ Schedule '{s.get('name')}' failed: invalid deck", "style": "error"})
         return
     print(f"[scheduler] _trigger_music_schedule START — deck={deck_id} type={s.get('type')} name='{s.get('name')}'")
     # If currently ducked, we don't blast the music; we start it ducked.
@@ -234,6 +235,8 @@ async def _trigger_music_schedule(s: dict):
             print(f"[scheduler] play multi_track error: {e}")
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
+    await manager.broadcast({"type": "NOTIFICATION", "message": f"▶️ Now playing: {s.get('name', 'Unknown')} on Deck {deck_id.upper()}", "style": "success"})
+    print(f"[scheduler] _trigger_music_schedule DONE — deck={deck_id} name='{s.get('name')}'")
 
 
 async def _play_library_track_on_deck(deck_id: str, filename: str):
@@ -282,6 +285,7 @@ async def _trigger_recurring_mixer_schedule(rs: dict):
     deck_ids = _get_deck_ids(rs)
     if not deck_ids:
         print(f"[mixer-scheduler] No valid decks for schedule '{rs.get('name')}'")
+        await manager.broadcast({"type": "NOTIFICATION", "message": f"❌ Mixer '{rs.get('name')}' failed: no valid decks", "style": "error"})
         return
 
     volume = rs.get("volume", 80)
@@ -408,6 +412,7 @@ async def scheduler_task():
     print("[scheduler] Scheduler started and monitoring tasks...")
     global _FORCE_SCHEDULER_LOG
     counter = 0
+    debug_counter = 0  # detailed debug every 30 ticks (~5 min)
     while True:
         try:
             await asyncio.sleep(10)
@@ -491,15 +496,38 @@ async def scheduler_task():
                         asyncio.create_task(db.update_music_schedule_status(s["id"], "Played"))
                         await manager.broadcast({"type": "NOTIFICATION", "message": f"Scheduled Music: {s['name']}", "style": "info"})
 
+            # ── Detailed debug logging (every ~5 minutes) ──────────────
+            debug_counter += 1
+            show_debug = (debug_counter >= 30)
+            if show_debug:
+                debug_counter = 0
+
             # Recurring (Mic/Announcement)
             for rs in RECURRING_SCHEDULES:
-                if not rs.get("enabled"): continue
-                if day_of_week not in rs.get("active_days", []): continue
-                if today_str in rs.get("excluded_days", []): continue
-                if rs.get("last_run_date") == today_str: continue
+                sname = rs.get('name', '?')
+                if not rs.get("enabled"):
+                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': disabled")
+                    continue
+                if day_of_week not in rs.get("active_days", []):
+                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': today={day_of_week} not in active_days={rs.get('active_days')}")
+                    continue
+                if today_str in rs.get("excluded_days", []):
+                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': today excluded")
+                    continue
+                if rs.get("last_run_date") == today_str:
+                    if show_debug: print(f"[scheduler-debug] SKIP '{sname}': already ran today (last_run_date={rs.get('last_run_date')})")
+                    continue
 
-                if _time_matches(rs.get("start_time"), now):
-                    print(f"[scheduler] TRIGGERING '{rs['name']}' ({rs['type']}) scheduled for {rs.get('start_time')}")
+                time_match = _time_matches(rs.get("start_time"), now)
+                if show_debug and not time_match:
+                    diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
+                    print(f"[scheduler-debug] WAITING '{sname}': start_time={rs.get('start_time')} time_match={time_match} diff={_format_time_left(diff)}")
+
+                if time_match:
+                    print(f"\n{'='*60}")
+                    print(f"[scheduler] 🔔 TRIGGERING '{sname}' ({rs['type']}) scheduled for {rs.get('start_time')}")
+                    print(f"[scheduler]    Time now: {now.strftime('%H:%M:%S')} | day_of_week={day_of_week} | last_run_date={rs.get('last_run_date')}")
+                    print(f"{'='*60}\n")
                     rs["last_run_date"] = today_str
                     asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
                     
@@ -509,24 +537,47 @@ async def scheduler_task():
                         if ann:
                              filepath = str(Path("/announcements") / ann["filename"])
                              asyncio.create_task(fade_and_play_announcement(deck_ids, filepath, level=rs.get("music_volume")))
-                             await manager.broadcast({"type": "NOTIFICATION", "message": f"Recurring Announcement: {rs['name']}", "style": "success"})
+                             await manager.broadcast({"type": "NOTIFICATION", "message": f"🔔 Triggered: {sname} (Recurring Announcement)", "style": "success"})
+                        else:
+                             print(f"[scheduler] WARNING: announcement_id={rs.get('announcement_id')} not found for '{sname}'")
+                             await manager.broadcast({"type": "NOTIFICATION", "message": f"⚠️ {sname}: Announcement not found!", "style": "error"})
                     elif rs["type"].lower() in ("microphone", "recurringmicrophone"):
                          asyncio.create_task(mic_on(MicControlRequest(targets=[d.upper() for d in deck_ids])))
-                         await manager.broadcast({"type": "NOTIFICATION", "message": f"Automated Mic: {rs['name']}", "style": "info"})
+                         await manager.broadcast({"type": "NOTIFICATION", "message": f"🎙️ Triggered: {sname} (Automated Mic)", "style": "info"})
+                    await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
 
             # Recurring Mixer
             for rs in RECURRING_MIXER_SCHEDULES:
-                if not rs.get("enabled"): continue
-                if day_of_week not in rs.get("active_days", []): continue
-                if today_str in rs.get("excluded_days", []): continue
-                if rs.get("last_run_date") == today_str: continue
+                sname = rs.get('name', '?')
+                if not rs.get("enabled"):
+                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': disabled")
+                    continue
+                if day_of_week not in rs.get("active_days", []):
+                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': today={day_of_week} not in active_days={rs.get('active_days')}")
+                    continue
+                if today_str in rs.get("excluded_days", []):
+                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': today excluded")
+                    continue
+                if rs.get("last_run_date") == today_str:
+                    if show_debug: print(f"[mixer-debug] SKIP '{sname}': already ran today (last_run_date={rs.get('last_run_date')})")
+                    continue
 
-                if _time_matches(rs.get("start_time"), now):
-                    print(f"[mixer-scheduler] TRIGGERING '{rs['name']}' at {rs.get('start_time')}")
+                time_match = _time_matches(rs.get("start_time"), now)
+                if show_debug and not time_match:
+                    diff = _get_seconds_until_hhmm(rs.get("start_time"), now)
+                    print(f"[mixer-debug] WAITING '{sname}': start_time={rs.get('start_time')} time_match={time_match} diff={_format_time_left(diff)}")
+
+                if time_match:
+                    print(f"\n{'='*60}")
+                    print(f"[mixer-scheduler] 🔔 TRIGGERING '{sname}' at {rs.get('start_time')}")
+                    print(f"[mixer-scheduler]    Time now: {now.strftime('%H:%M:%S')} | day_of_week={day_of_week} | deck_ids={_get_deck_ids(rs)}")
+                    print(f"[mixer-scheduler]    type={rs.get('type')} target_id={rs.get('target_id')} volume={rs.get('volume')} loop={rs.get('loop')}")
+                    print(f"{'='*60}\n")
                     rs["last_run_date"] = today_str
                     asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
                     asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
-                    await manager.broadcast({"type": "NOTIFICATION", "message": f"Mixer Start: {rs['name']}", "style": "success"})
+                    await manager.broadcast({"type": "NOTIFICATION", "message": f"🎵 Triggered: {sname} (Mixer Start)", "style": "success"})
+                    await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
 
         except Exception as loop_error:
             import traceback
