@@ -129,7 +129,7 @@ def _get_seconds_remaining(target_dt: datetime, now: datetime) -> float:
 
 def _format_time_left(seconds: float) -> str:
     """Format seconds into a human-readable string (e.g. '5m 30s' or '12s')."""
-    if seconds < 0:
+    if seconds <= 0:
         return "NOW"
     if seconds < 60:
         return f"{int(seconds)}s"
@@ -140,6 +140,18 @@ def _format_time_left(seconds: float) -> str:
     hours = mins // 60
     rem_mins = mins % 60
     return f"{hours}h {rem_mins}m"
+
+
+def _get_time_until_hhmm(target_hhmm: str) -> str:
+    """Helper for logging: returns human-readable 'in 5m' for a target time."""
+    diff = _get_seconds_until_hhmm(target_hhmm, datetime.now())
+    return _format_time_left(diff)
+
+
+def _get_time_until_dt(target_dt: datetime) -> str:
+    """Helper for logging: returns human-readable 'in 5m' for a target datetime."""
+    diff = _get_seconds_remaining(target_dt, datetime.now())
+    return _format_time_left(diff)
 
 async def _trigger_music_schedule(s: dict):
     """Load and play a track or playlist on the target deck."""
@@ -438,9 +450,13 @@ async def scheduler_task():
 
                 # Sort and log
                 upcoming.sort(key=lambda x: x[0])
-                print(f"[scheduler] heartbeat: {now.strftime('%H:%M:%S')} | {len(upcoming)} pending tasks")
-                for diff, desc in upcoming[:3]: # Log top 3 next tasks
-                    print(f"  > Next: {desc} in {_format_time_left(diff)}")
+                pending_count = len(upcoming)
+                print(f"[scheduler] heartbeat: {now.strftime('%H:%M:%S')} | {pending_count} pending tasks")
+                if pending_count > 0:
+                    for diff, desc in upcoming[:3]: # Log top 3 next tasks
+                        print(f"  > Next: {desc} in {_format_time_left(diff)}")
+                else:
+                    print("  > No pending tasks scheduled.")
                 counter = 0
 
             # ── Execution Logic ─────────────────────────────────────
@@ -524,9 +540,22 @@ async def lifespan(app: FastAPI):
 
     now = datetime.now()
     utcnow = datetime.utcnow()
+    print("----------------------------------------------------------------")
     print(f"[startup] Local system time: {now.strftime('%Y-%m-%d %H:%M:%S')} (offset: {now.astimezone().strftime('%z')})")
     print(f"[startup] UTC system time:   {utcnow.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"[startup] FFMPEG_URL: {FFMPEG_URL}")
+    print(f"[startup] FFMPEG_URL:        {FFMPEG_URL}")
+    print(f"[startup] MEDIAMTX_API:      {MEDIAMTX_API}")
+    
+    # Environment Diagnostics (Masking secrets)
+    safe_env = {}
+    for k, v in os.environ.items():
+        if any(secret in k.upper() for secret in ["KEY", "PASS", "SECRET", "TOKEN", "AUTH"]):
+            safe_env[k] = "********"
+        else:
+            safe_env[k] = v
+    
+    print(f"[startup] Selected ENV:      { {k: safe_env[k] for k in ['FFMPEG_HOST', 'MEDIAMTX_HOST', 'DATABASE_URL', 'DB_MODE'] if k in safe_env} }")
+    print("----------------------------------------------------------------")
 
     try:
         ANNOUNCEMENTS = await loop.run_in_executor(None, db.get_announcements)

@@ -128,6 +128,28 @@ def run_migrations_local(db_url: str):
                 ALTER TABLE recurring_schedules DROP COLUMN stop_time;
                 RAISE NOTICE 'Dropped stop_time from recurring_schedules';
             END IF;
+
+            -- Ensure excluded_days exists
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'excluded_days') THEN
+                ALTER TABLE recurring_schedules ADD COLUMN excluded_days TEXT NOT NULL DEFAULT '[]';
+                RAISE NOTICE 'Added excluded_days to recurring_schedules';
+            END IF;
+
+            -- Ensure jingle columns exist
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_start') THEN
+                ALTER TABLE recurring_schedules ADD COLUMN jingle_start TEXT;
+                RAISE NOTICE 'Added jingle_start to recurring_schedules';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_end') THEN
+                ALTER TABLE recurring_schedules ADD COLUMN jingle_end TEXT;
+                RAISE NOTICE 'Added jingle_end to recurring_schedules';
+            END IF;
+
+            -- Ensure target_decks exists
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'target_decks') THEN
+                ALTER TABLE recurring_schedules ADD COLUMN target_decks TEXT NOT NULL DEFAULT '[]';
+                RAISE NOTICE 'Added target_decks to recurring_schedules';
+            END IF;
         END IF;
     END $$;
     """
