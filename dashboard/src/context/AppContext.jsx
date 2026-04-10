@@ -44,6 +44,7 @@ export function AppProvider({ children }) {
   const [musicRequests,              setMusicRequests]              = useState([]);
   const [wsConnected,               setWsConnected]               = useState(false);
   const [settings,                  setSettings]                  = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
+  const [schedulerStatus,           setSchedulerStatus]           = useState(null);
   const [toasts,                    setToasts]                    = useState([]);
   const wsRef   = useRef(null);
   const toastId = useRef(0);
@@ -114,6 +115,14 @@ export function AppProvider({ children }) {
     try {
       const r = await fetch('/api/recurring-mixer-schedules');
       if (r.ok) setRecurringMixerSchedules(await r.json());
+    } catch {
+      // Best-effort refresh.
+    }
+  }, []);
+  const fetchSchedulerStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/scheduler/status');
+      if (r.ok) setSchedulerStatus(await r.json());
     } catch {
       // Best-effort refresh.
     }
@@ -212,9 +221,14 @@ export function AppProvider({ children }) {
       fetchPlaylists();
       fetchRecurringSchedules();
       fetchRecurringMixerSchedules();
+      fetchSchedulerStatus();
     }, 0);
+
+    const statusTimer = setInterval(fetchSchedulerStatus, 5000);
+
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearInterval(statusTimer);
       wsRef.current?.close();
     };
   }, [handleWsMessage, fetchAnnouncements, fetchLibrary, fetchPlaylists, fetchRecurringMixerSchedules, fetchRecurringSchedules]);
@@ -475,13 +489,14 @@ export function AppProvider({ children }) {
       const r = await fetch('/api/requests', { method: 'DELETE' });
       if (!r.ok) throw new Error(await parseError(r));
     },
+    getSchedulerStatus: fetchSchedulerStatus,
   };
 
   return (
     <AppContext.Provider value={{
       decks, library, announcements, playlists, musicSchedules,
       recurringSchedules, recurringMixerSchedules, musicRequests,
-      mic, wsConnected, settings, toast, api,
+      mic, wsConnected, settings, schedulerStatus, toast, api,
     }}>
       {children}
       <ToastContainer toasts={toasts} onRemove={removeToast} />

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Clock, Calendar, Play, Trash2, Music, ListMusic, TriangleAlert } from 'lucide-react';
+import { Clock, Calendar, Play, Trash2, Music, ListMusic, TriangleAlert, ShieldCheck, Activity, Timer } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 const DECK_OPTIONS = [
@@ -10,7 +10,7 @@ const DECK_OPTIONS = [
 ];
 
 export default function SchedulerPanel() {
-  const { library, playlists, musicSchedules, decks, toast, api } = useApp();
+  const { library, playlists, musicSchedules, decks, toast, api, schedulerStatus } = useApp();
 
   const [schedType,   setSchedType]   = useState('track');   // 'track' | 'playlist'
   const [deckId,      setDeckId]      = useState('a');
@@ -267,6 +267,92 @@ export default function SchedulerPanel() {
           )}
         </div>
       </div>
+
+      {/* ── Scheduler Engine Status ─────────────────────── */}
+      <div style={{ marginTop: '3rem', paddingTop: '2rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+        <h4 style={{
+          fontSize: '0.85rem', color: 'var(--text-secondary)', textTransform: 'uppercase',
+          letterSpacing: '1px', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.6rem'
+        }}>
+          <Activity size={14} /> Live Scheduler Engine
+        </h4>
+
+        {!schedulerStatus ? (
+          <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.2)', fontStyle: 'italic' }}>
+            Connecting to scheduler engine…
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
+            
+            {/* System Metrics */}
+            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.2rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontWeight: 'bold' }}>SYSTEM HEALTH</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                <Metric label="Trigger Lock" value={schedulerStatus.trigger_lock_held ? 'LOCKED (Busy)' : 'IDLE (Ready)'} 
+                        color={schedulerStatus.trigger_lock_held ? '#ff4757' : '#2ed573'} icon={<ShieldCheck size={14}/>} />
+                <Metric label="Ducking Level" value={schedulerStatus.duck_refcount > 0 ? `ACTIVE (${schedulerStatus.duck_refcount})` : 'Inactive'} 
+                        color={schedulerStatus.duck_refcount > 0 ? '#ffa502' : 'var(--text-secondary)'} icon={<Activity size={14}/>} />
+                <Metric label="Server Time" value={schedulerStatus.time_now} color="var(--accent-blue)" icon={<Clock size={14}/>} />
+              </div>
+            </div>
+
+            {/* Active Cron Jobs */}
+            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.2rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontWeight: 'bold' }}>APScheduler LIVE JOBS</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                {schedulerStatus.active_jobs?.length === 0 ? (
+                  <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.15)' }}>No active recurring jobs registered.</div>
+                ) : (
+                  schedulerStatus.active_jobs?.map(job => (
+                    <div key={job.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.82rem' }}>
+                      <span style={{ color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                         <Timer size={12} style={{ color: 'var(--accent-blue)' }} /> {job.name.replace('Recurring:', '').replace('Mixer:', '')}
+                      </span>
+                      <span style={{ color: '#2ed573', fontWeight: '600', fontFamily: 'monospace' }}>
+                        in {job.time_left || '...'}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Next Up Summary */}
+            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.2rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontWeight: 'bold' }}>NEXT UP TODAY</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                {(() => {
+                  const upcoming = [
+                    ...schedulerStatus.recurring_schedules.filter(s => s.will_run_today),
+                    ...schedulerStatus.recurring_mixer_schedules.filter(s => s.will_run_today)
+                  ].sort((a,b) => a.start_time.localeCompare(b.start_time));
+
+                  if (upcoming.length === 0) return <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.15)' }}>No more tasks scheduled for today.</div>;
+
+                  return upcoming.slice(0, 3).map(s => (
+                    <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.82rem' }}>
+                      <span style={{ color: 'rgba(255,255,255,0.7)' }}>{s.name}</span>
+                      <span style={{ color: 'var(--accent-blue)', opacity: 0.8 }}>{s.start_time}</span>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value, color, icon }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <span style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+        {icon} {label}
+      </span>
+      <span style={{ fontSize: '0.82rem', fontWeight: '600', color }}>{value}</span>
     </div>
   );
 }

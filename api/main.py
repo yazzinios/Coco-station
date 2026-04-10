@@ -1710,6 +1710,7 @@ def scheduler_status():
     """Live view of scheduler state — useful for debugging without reading Docker logs."""
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
+
     def _will_run(rs):
         return (
             rs.get("enabled", False) and
@@ -1717,12 +1718,32 @@ def scheduler_status():
             today not in rs.get("excluded_days", []) and
             rs.get("last_run_date") != today
         )
+
+    # Get actual APScheduler jobs and their next run times
+    jobs = []
+    for j in ap_scheduler.get_jobs():
+        if j.id in ('heartbeat', 'oneoff_checker'):
+            continue
+        next_run = j.next_run_time
+        time_left = ""
+        if next_run:
+            diff = (next_run - now.astimezone(next_run.tzinfo)).total_seconds()
+            time_left = _format_time_left(diff)
+        
+        jobs.append({
+            "id": j.id,
+            "name": j.name,
+            "next_run": next_run.isoformat() if next_run else None,
+            "time_left": time_left
+        })
+
     return {
         "time_now": now.strftime("%H:%M:%S"),
         "today": today,
         "day_of_week": now.weekday(),
         "trigger_lock_held": _TRIGGER_LOCK.locked(),
         "duck_refcount": _DUCK_REFCOUNT,
+        "active_jobs": jobs,
         "recurring_mixer_schedules": [
             {
                 "id": rs["id"],
@@ -1732,8 +1753,9 @@ def scheduler_status():
                 "active_days": rs.get("active_days"),
                 "last_run_date": rs.get("last_run_date"),
                 "will_run_today": _will_run(rs),
+                "time_until": _get_time_until_hhmm(rs.get("start_time")) if _will_run(rs) else ""
             }
-            for rs in RECURRING_MIXER_SCHEDULES
+            for rs in list(RECURRING_MIXER_SCHEDULES)
         ],
         "recurring_schedules": [
             {
@@ -1744,8 +1766,9 @@ def scheduler_status():
                 "active_days": rs.get("active_days"),
                 "last_run_date": rs.get("last_run_date"),
                 "will_run_today": _will_run(rs),
+                "time_until": _get_time_until_hhmm(rs.get("start_time")) if _will_run(rs) else ""
             }
-            for rs in RECURRING_SCHEDULES
+            for rs in list(RECURRING_SCHEDULES)
         ],
     }
 
