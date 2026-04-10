@@ -10,9 +10,21 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import List, Dict, Optional
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+# APScheduler is managed by scheduler.py — imported below
+from scheduler import (
+    ap_scheduler,
+    init_scheduler,
+    start_scheduler,
+    stop_scheduler,
+    register_recurring_job,
+    register_mixer_job,
+    unregister_job,
+    get_scheduler_status,
+    _trigger_music_schedule,
+    _trigger_recurring_mixer_schedule,
+    _stop_recurring_mixer_schedule,
+    format_time_left,
+)
 from pathlib import Path
 
 FFMPEG_HOST    = os.getenv("FFMPEG_HOST", "ffmpeg-mixer")
