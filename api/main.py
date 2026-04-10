@@ -1852,6 +1852,26 @@ async def test_db_connection(req: SettingUpdateRequest, _user=Depends(verify_tok
         except Exception as e: raise HTTPException(status_code=503, detail=f"Supabase unreachable: {e}")
 
 # ── Music Schedules ────────────────────────────────────────
+@app.post("/api/music-schedules/{schedule_id}/trigger")
+async def trigger_music_schedule(schedule_id: str, _user=Depends(verify_token)):
+    s = next((x for x in MUSIC_SCHEDULES if x["id"] == schedule_id), None)
+    if not s: raise HTTPException(404, "Schedule not found")
+    print(f"[api] Manual trigger for Music Schedule: {s.get('name')}")
+    asyncio.create_task(_trigger_music_schedule(s))
+    return {"status": "ok"}
+
+@app.post("/api/recurring-schedules/{schedule_id}/trigger")
+async def trigger_recurring_schedule(schedule_id: str, _user=Depends(verify_token)):
+    print(f"[api] Manual trigger for Recurring Schedule: {schedule_id}")
+    await _ap_trigger_recurring(schedule_id)
+    return {"status": "ok"}
+
+@app.post("/api/recurring-mixer-schedules/{schedule_id}/trigger")
+async def trigger_recurring_mixer_schedule(schedule_id: str, _user=Depends(verify_token)):
+    print(f"[api] Manual trigger for Recurring Mixer Schedule: {schedule_id}")
+    await _ap_trigger_mixer(schedule_id)
+    return {"status": "ok"}
+
 @app.get("/api/music-schedules")
 def list_music_schedules(): return MUSIC_SCHEDULES
 

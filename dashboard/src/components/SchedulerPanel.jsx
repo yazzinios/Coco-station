@@ -305,12 +305,36 @@ export default function SchedulerPanel() {
                 ) : (
                   schedulerStatus.active_jobs?.map(job => (
                     <div key={job.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.82rem' }}>
-                      <span style={{ color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                         <Timer size={12} style={{ color: 'var(--accent-blue)' }} /> {job.name.replace('Recurring:', '').replace('Mixer:', '')}
+                      <span style={{ color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0 }}>
+                         <Timer size={12} style={{ color: 'var(--accent-blue)', flexShrink: 0 }} /> 
+                         <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                           {job.name.replace('Recurring:', '').replace('Mixer:', '')}
+                         </span>
                       </span>
-                      <span style={{ color: '#2ed573', fontWeight: '600', fontFamily: 'monospace' }}>
-                        in {job.time_left || '...'}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexShrink: 0 }}>
+                        <span style={{ color: '#2ed573', fontWeight: '600', fontFamily: 'monospace' }}>
+                          in {job.time_left || '...'}
+                        </span>
+                        <button 
+                          onClick={async () => {
+                            try {
+                              const id = job.id.split('_')[1];
+                              if (job.id.startsWith('recurring_')) await api.triggerRecurringSchedule(id);
+                              else await api.triggerRecurringMixerSchedule(id);
+                              toast.success(`▶ Manually fired: ${job.name}`);
+                            } catch (e) { toast.error(e.message); }
+                          }}
+                          style={{
+                            width: '24px', height: '24px', borderRadius: '50%', border: 'none',
+                            background: 'rgba(0,212,255,0.1)', color: 'var(--accent-blue)',
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            transition: 'all 0.2s'
+                          }}
+                          title="Trigger manually now"
+                        >
+                          <Play size={10} fill="currentColor" />
+                        </button>
+                      </div>
                     </div>
                   ))
                 )}

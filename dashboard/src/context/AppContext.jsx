@@ -443,6 +443,10 @@ export function AppProvider({ children }) {
       const r = await fetch(`/api/recurring-schedules/${id}`, { method: 'DELETE' });
       if (!r.ok) throw new Error(await parseError(r));
     },
+    triggerRecurringSchedule: async (id) => {
+      const r = await fetch(`/api/recurring-schedules/${id}/trigger`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
     // ── Recurring Mixer Schedules (Music / Deck) ── NEW ──────────────────────
     createRecurringMixerSchedule: async (payload) => {
       const r = await fetch('/api/recurring-mixer-schedules', {
@@ -466,6 +470,10 @@ export function AppProvider({ children }) {
       const r = await fetch(`/api/recurring-mixer-schedules/${id}`, { method: 'DELETE' });
       if (!r.ok) throw new Error(await parseError(r));
       await fetchRecurringMixerSchedules();
+    },
+    triggerRecurringMixerSchedule: async (id) => {
+      const r = await fetch(`/api/recurring-mixer-schedules/${id}/trigger`, { method: 'POST' });
+      if (!r.ok) throw new Error(await parseError(r));
     },
     // ── Music Requests ──
     submitRequest: async (payload) => {
