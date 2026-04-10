@@ -175,7 +175,7 @@ async def _trigger_music_schedule(s: dict) -> None:
     if duck_refcount > 0:
         duck_pct = int(
             settings.get("mic_ducking_percent", 5)
-            if _state.get("duck_type") == "mic"
+            if _state["duck_type_ref"][0] == "mic"
             else settings.get("ducking_percent", 5)
         )
         _state["duck_saved_volumes"][deck_id] = current_vol
