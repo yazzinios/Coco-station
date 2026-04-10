@@ -66,6 +66,7 @@ MUSIC_SCHEDULES: List[dict] = []
 RECURRING_SCHEDULES: List[dict] = []
 RECURRING_MIXER_SCHEDULES: List[dict] = []   # ← NEW
 MUSIC_REQUESTS: List[dict] = []               # listener song requests
+_FORCE_SCHEDULER_LOG: bool = False             # if True, scheduler prints impending tasks immediately
 
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
@@ -405,6 +406,7 @@ async def _safe_run(name: str, coro):
 
 async def scheduler_task():
     print("[scheduler] Scheduler started and monitoring tasks...")
+    global _FORCE_SCHEDULER_LOG
     counter = 0
     while True:
         try:
@@ -415,7 +417,7 @@ async def scheduler_task():
             
             # ── Heartbeat & Time-Left Diagnostics ───────────────────
             counter += 1
-            if counter >= 6:  # Every 60 seconds
+            if counter >= 6 or _FORCE_SCHEDULER_LOG:  # Every 60 seconds OR forced refresh
                 upcoming = []
                 
                 # 1. One-off Announcements
@@ -451,13 +453,16 @@ async def scheduler_task():
                 # Sort and log
                 upcoming.sort(key=lambda x: x[0])
                 pending_count = len(upcoming)
-                print(f"[scheduler] heartbeat: {now.strftime('%H:%M:%S')} | {pending_count} pending tasks")
+                reason = "Refresh" if _FORCE_SCHEDULER_LOG else "heartbeat"
+                print(f"[scheduler] {reason}: {now.strftime('%H:%M:%S')} | {pending_count} pending tasks")
                 if pending_count > 0:
                     for diff, desc in upcoming[:3]: # Log top 3 next tasks
                         print(f"  > Next: {desc} in {_format_time_left(diff)}")
                 else:
                     print("  > No pending tasks scheduled.")
+                
                 counter = 0
+                _FORCE_SCHEDULER_LOG = False
 
             # ── Execution Logic ─────────────────────────────────────
             
@@ -1672,6 +1677,9 @@ async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(v
                 "loop": req.loop, "status": "Scheduled", "created_at": datetime.now().isoformat()}
     MUSIC_SCHEDULES.append(schedule)
     MUSIC_SCHEDULES.sort(key=lambda x: x["scheduled_at"])
+    global _FORCE_SCHEDULER_LOG
+    _FORCE_SCHEDULER_LOG = True
+    print(f"[api] Created Music Schedule: {req.name} (at {req.scheduled_at})")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.create_music_schedule, schedule)
     except Exception as e:
@@ -1723,6 +1731,9 @@ async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=D
         "created_at": datetime.now().isoformat(),
     }
     RECURRING_SCHEDULES.append(schedule)
+    global _FORCE_SCHEDULER_LOG
+    _FORCE_SCHEDULER_LOG = True
+    print(f"[api] Created Recurring Schedule: {req.name} ({req.type} at {req.start_time})")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, schedule)
     except Exception as e:
@@ -1747,6 +1758,9 @@ async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCrea
         "last_run_date": None, # Reset allowing immediate re-testing
     })
     RECURRING_SCHEDULES[idx] = updated
+    global _FORCE_SCHEDULER_LOG
+    _FORCE_SCHEDULER_LOG = True
+    print(f"[api] Updated Recurring Schedule: {req.name} ({req.type} at {req.start_time})")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, updated)
     except Exception as e:
@@ -1791,6 +1805,9 @@ async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateReque
         "created_at": datetime.now().isoformat(),
     }
     RECURRING_MIXER_SCHEDULES.append(schedule)
+    global _FORCE_SCHEDULER_LOG
+    _FORCE_SCHEDULER_LOG = True
+    print(f"[api] Created Recurring Mixer Schedule: {req.name} (at {req.start_time})")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, schedule)
     except Exception as e:
@@ -1818,6 +1835,9 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
         "last_run_date": None, # Reset allowing immediate re-testing
     })
     RECURRING_MIXER_SCHEDULES[idx] = updated
+    global _FORCE_SCHEDULER_LOG
+    _FORCE_SCHEDULER_LOG = True
+    print(f"[api] Updated Recurring Mixer Schedule: {req.name} (at {req.start_time})")
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, updated)
     except Exception as e:
