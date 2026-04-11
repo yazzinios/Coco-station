@@ -25,8 +25,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+# ── Timezone — all cron jobs fire in local park time ────────────────────────
+TIMEZONE = "Africa/Casablanca"
+
 # ── Shared APScheduler instance ─────────────────────────────────────────────
 ap_scheduler = AsyncIOScheduler(
+    timezone=TIMEZONE,
     job_defaults={"max_instances": 1, "misfire_grace_time": 120},
 )
 
@@ -627,7 +631,12 @@ def register_recurring_job(rs: dict) -> None:
 
     ap_scheduler.add_job(
         _ap_trigger_recurring,
-        CronTrigger(day_of_week=",".join(str(d) for d in active_days), hour=hour, minute=minute),
+        CronTrigger(
+            day_of_week=",".join(str(d) for d in active_days),
+            hour=hour,
+            minute=minute,
+            timezone=TIMEZONE,
+        ),
         id=job_id,
         name=f"Recurring: {rs.get('name')}",
         args=[rs["id"]],
@@ -657,7 +666,12 @@ def register_mixer_job(rs: dict) -> None:
 
     ap_scheduler.add_job(
         _ap_trigger_mixer,
-        CronTrigger(day_of_week=",".join(str(d) for d in active_days), hour=hour, minute=minute),
+        CronTrigger(
+            day_of_week=",".join(str(d) for d in active_days),
+            hour=hour,
+            minute=minute,
+            timezone=TIMEZONE,
+        ),
         id=job_id,
         name=f"Mixer: {rs.get('name')}",
         args=[rs["id"]],
@@ -703,7 +717,7 @@ def start_scheduler(recurring_schedules: list, recurring_mixer: list) -> None:
     ap_scheduler.start()
 
     jobs = ap_scheduler.get_jobs()
-    print(f"[apscheduler] Started with {len(jobs)} job(s):")
+    print(f"[apscheduler] Started with {len(jobs)} job(s) — timezone: {TIMEZONE}:")
     for j in jobs:
         nxt = j.next_run_time.strftime("%H:%M:%S") if j.next_run_time else "None"
         print(f"  > {j.id:28} | {j.name:35} | next: {nxt}")

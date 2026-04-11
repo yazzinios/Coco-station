@@ -27,6 +27,13 @@ hlsSegmentCount: 3
 webrtc: yes
 webrtcAddress: :8889
 
+# Tell MediaMTX its public hostname so ICE candidates are reachable from the internet.
+webrtcICEHostNAT1To1IPs:
+  - radio.cocopark.duckdns.org
+
+# Mux all WebRTC UDP traffic on a single port so only one firewall rule is needed.
+webrtcICEUDPMuxAddress: :8189
+
 ###############################################
 # Paths
 
