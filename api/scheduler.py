@@ -19,6 +19,7 @@ import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
+from zoneinfo import ZoneInfo
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -27,6 +28,14 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 # ── Timezone — all cron jobs fire in local park time ────────────────────────
 TIMEZONE = "Africa/Casablanca"
+_TZ      = ZoneInfo(TIMEZONE)
+
+def _now() -> datetime:
+    """Return the current local (Casablanca) time as a naive datetime.
+    Always use this instead of datetime.now() so the container's UTC
+    system clock doesn't cause 1-hour countdown / last_run_date errors.
+    """
+    return datetime.now(_TZ).replace(tzinfo=None)
 
 # ── Shared APScheduler instance ─────────────────────────────────────────────
 ap_scheduler = AsyncIOScheduler(
@@ -94,7 +103,8 @@ def _parse_iso_datetime(value: str) -> Optional[datetime]:
     except Exception:
         return None
     if parsed.tzinfo is not None:
-        return parsed.astimezone().replace(tzinfo=None)
+        # Convert to local Casablanca time, strip tzinfo for naive comparisons
+        return parsed.astimezone(_TZ).replace(tzinfo=None)
     return parsed
 
 
@@ -129,7 +139,7 @@ def format_time_left(seconds: float) -> str:
 
 
 def _get_time_until_hhmm(target_hhmm: str) -> str:
-    return format_time_left(_get_seconds_until_hhmm(target_hhmm, datetime.now()))
+    return format_time_left(_get_seconds_until_hhmm(target_hhmm, _now()))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -414,7 +424,7 @@ async def _ap_trigger_recurring(schedule_id: str) -> None:
         print(f"[scheduler] recurring_{schedule_id} — schedule not found, skipping"); return
 
     sname     = rs.get("name", "?")
-    now       = datetime.now()
+    now       = _now()
     today_str = now.strftime("%Y-%m-%d")
 
     if today_str in rs.get("excluded_days", []):
@@ -424,11 +434,12 @@ async def _ap_trigger_recurring(schedule_id: str) -> None:
 
     print(f"\n{'='*60}")
     print(f"[scheduler] 🔔 TRIGGERING '{sname}' ({rs['type']}) @ {rs.get('start_time')}")
-    print(f"[scheduler]    {now.strftime('%H:%M:%S')} | APScheduler CronTrigger")
+    print(f"[scheduler]    {now.strftime('%H:%M:%S')} local | APScheduler CronTrigger")
     print(f"{'='*60}\n")
 
     rs["last_run_date"] = today_str
-    asyncio.create_task(db.update_recurring_last_run(rs["id"], today_str))
+    # db methods are synchronous — call via to_thread so we don't block the event loop
+    asyncio.create_task(asyncio.to_thread(db.update_recurring_last_run, rs["id"], today_str))
 
     deck_ids = [d.lower() for d in rs.get("target_decks", ["A"])]
     stype    = rs["type"].lower()
@@ -476,7 +487,7 @@ async def _ap_trigger_mixer(schedule_id: str) -> None:
         print(f"[mixer-scheduler] mixer_{schedule_id} — schedule not found, skipping"); return
 
     sname     = rs.get("name", "?")
-    now       = datetime.now()
+    now       = _now()
     today_str = now.strftime("%Y-%m-%d")
 
     if today_str in rs.get("excluded_days", []):
@@ -486,11 +497,12 @@ async def _ap_trigger_mixer(schedule_id: str) -> None:
 
     print(f"\n{'='*60}")
     print(f"[mixer-scheduler] 🔔 TRIGGERING '{sname}' @ {rs.get('start_time')}")
-    print(f"[mixer-scheduler]    {now.strftime('%H:%M:%S')} | deck_ids={_get_deck_ids(rs)}")
+    print(f"[mixer-scheduler]    {now.strftime('%H:%M:%S')} local | deck_ids={_get_deck_ids(rs)}")
     print(f"{'='*60}\n")
 
     rs["last_run_date"] = today_str
-    asyncio.create_task(db.update_recurring_mixer_last_run(rs["id"], today_str))
+    # db methods are synchronous — use to_thread to avoid blocking the event loop
+    asyncio.create_task(asyncio.to_thread(db.update_recurring_mixer_last_run, rs["id"], today_str))
     asyncio.create_task(_trigger_recurring_mixer_schedule(rs))
 
     await manager.broadcast({
@@ -511,7 +523,7 @@ async def _ap_check_oneoffs() -> None:
     manager         = _state["manager"]
     db              = _state["db"]
     fade_and_play   = _state["fade_and_play_announcement"]
-    now             = datetime.now()
+    now             = _now()
 
     # One-off announcements
     for ann in list(announcements):
@@ -527,7 +539,7 @@ async def _ap_check_oneoffs() -> None:
                     else [t.lower() for t in ann.get("targets", [])]
                 )
                 asyncio.create_task(fade_and_play(deck_ids, filepath))
-                asyncio.create_task(db.update_announcement_status(ann["id"], "Played"))
+                asyncio.create_task(asyncio.to_thread(db.update_announcement_status, ann["id"], "Played"))
                 await manager.broadcast({
                     "type": "NOTIFICATION",
                     "message": f"Triggered: {ann['name']}",
@@ -543,7 +555,7 @@ async def _ap_check_oneoffs() -> None:
                 print(f"[scheduler] TRIGGERING music schedule: {s['name']}")
                 s["status"] = "Played"
                 asyncio.create_task(_trigger_music_schedule(s))
-                asyncio.create_task(db.update_music_schedule_status(s["id"], "Played"))
+                asyncio.create_task(asyncio.to_thread(db.update_music_schedule_status, s["id"], "Played"))
                 await manager.broadcast({
                     "type": "NOTIFICATION",
                     "message": f"Scheduled Music: {s['name']}",
@@ -561,7 +573,7 @@ async def _ap_heartbeat() -> None:
     music_schedules     = _state["music_schedules"]
     announcements       = _state["announcements"]
 
-    now       = datetime.now()
+    now       = _now()
     today_str = now.strftime("%Y-%m-%d")
     dow       = now.weekday()
     upcoming  = []
@@ -596,7 +608,7 @@ async def _ap_heartbeat() -> None:
     upcoming.sort(key=lambda x: x[0])
     cron_jobs = [j for j in ap_scheduler.get_jobs() if j.id not in ("heartbeat", "oneoff_checker")]
 
-    print(f"[scheduler] heartbeat: {now.strftime('%H:%M:%S')} | {len(upcoming)} pending | {len(cron_jobs)} cron jobs")
+    print(f"[scheduler] heartbeat: {now.strftime('%H:%M:%S')} local | {len(upcoming)} pending | {len(cron_jobs)} cron jobs")
     for diff, desc in upcoming[:5]:
         print(f"  > Next: {desc} in {format_time_left(diff)}")
     if not upcoming:
@@ -719,7 +731,7 @@ def start_scheduler(recurring_schedules: list, recurring_mixer: list) -> None:
     jobs = ap_scheduler.get_jobs()
     print(f"[apscheduler] Started with {len(jobs)} job(s) — timezone: {TIMEZONE}:")
     for j in jobs:
-        nxt = j.next_run_time.strftime("%H:%M:%S") if j.next_run_time else "None"
+        nxt = j.next_run_time.strftime("%H:%M:%S %Z") if j.next_run_time else "None"
         print(f"  > {j.id:28} | {j.name:35} | next: {nxt}")
 
 
@@ -740,7 +752,7 @@ def get_scheduler_status() -> dict:
     trigger_lock        = _state["trigger_lock_ref"][0]
     duck_refcount       = _state["duck_refcount_ref"][0]
 
-    now       = datetime.now()
+    now       = _now()
     today_str = now.strftime("%Y-%m-%d")
 
     def _will_run(rs: dict) -> bool:

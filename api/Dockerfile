@@ -3,11 +3,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install build tools in case any package needs to compile from source
+# Install build tools + tzdata so datetime.now() reflects the container TZ
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     curl \
+    tzdata \
   && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip/setuptools/wheel first so all modern wheels resolve correctly
