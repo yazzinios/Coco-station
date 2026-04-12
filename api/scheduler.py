@@ -40,7 +40,11 @@ def _now() -> datetime:
 # ── Shared APScheduler instance ─────────────────────────────────────────────
 ap_scheduler = AsyncIOScheduler(
     timezone=TIMEZONE,
-    job_defaults={"max_instances": 1, "misfire_grace_time": 120},
+    job_defaults={
+        "max_instances":      1,
+        "misfire_grace_time": 120,   # still fires if triggered up to 2 min late
+        "coalesce":           True,  # merge stacked missed runs into one, no pile-up
+    },
 )
 
 # ── Internal references (populated by init_scheduler) ───────────────────────
@@ -619,19 +623,38 @@ async def _ap_heartbeat() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  INTERNAL TRIGGER BUILDER
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _make_cron_trigger(hour: int, minute: int, active_days: list) -> CronTrigger:
+    return CronTrigger(
+        day_of_week=",".join(str(d) for d in active_days),
+        hour=hour,
+        minute=minute,
+        timezone=TIMEZONE,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  JOB REGISTRATION HELPERS (public API used by main.py)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def register_recurring_job(rs: dict) -> None:
-    """Register (or replace) a CronTrigger job for a recurring announcement/mic schedule."""
+    """Register or reschedule a CronTrigger job for a recurring announcement/mic schedule.
+
+    Uses reschedule_job() when the job already exists so APScheduler keeps the
+    same job object and avoids a missed-fire window that a remove+add pair creates.
+    """
     job_id = f"recurring_{rs['id']}"
-    try:
-        ap_scheduler.remove_job(job_id)
-    except Exception:
-        pass
 
     if not rs.get("enabled"):
-        print(f"[apscheduler] '{rs.get('name')}' disabled — not registered"); return
+        # Disabled — remove if it was previously registered
+        try:
+            ap_scheduler.remove_job(job_id)
+        except Exception:
+            pass
+        print(f"[apscheduler] '{rs.get('name')}' disabled — removed/not registered")
+        return
 
     hour, minute = _parse_hhmm(rs.get("start_time", ""))
     if hour is None:
@@ -641,32 +664,40 @@ def register_recurring_job(rs: dict) -> None:
     if not active_days:
         print(f"[apscheduler] '{rs.get('name')}' has no active_days"); return
 
-    ap_scheduler.add_job(
-        _ap_trigger_recurring,
-        CronTrigger(
-            day_of_week=",".join(str(d) for d in active_days),
-            hour=hour,
-            minute=minute,
-            timezone=TIMEZONE,
-        ),
-        id=job_id,
-        name=f"Recurring: {rs.get('name')}",
-        args=[rs["id"]],
-        replace_existing=True,
-    )
-    print(f"[apscheduler] ✓ Registered '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
+    trigger = _make_cron_trigger(hour, minute, active_days)
+
+    existing = ap_scheduler.get_job(job_id)
+    if existing:
+        # ✅ reschedule keeps the job alive — no missed-fire gap
+        ap_scheduler.reschedule_job(job_id, trigger=trigger)
+        print(f"[apscheduler] ↻ Rescheduled '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
+    else:
+        ap_scheduler.add_job(
+            _ap_trigger_recurring,
+            trigger,
+            id=job_id,
+            name=f"Recurring: {rs.get('name')}",
+            args=[rs["id"]],
+            replace_existing=True,
+        )
+        print(f"[apscheduler] ✓ Registered '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
 
 
 def register_mixer_job(rs: dict) -> None:
-    """Register (or replace) a CronTrigger job for a recurring mixer schedule."""
+    """Register or reschedule a CronTrigger job for a recurring mixer schedule.
+
+    Uses reschedule_job() when the job already exists so APScheduler keeps the
+    same job object and avoids a missed-fire window that a remove+add pair creates.
+    """
     job_id = f"mixer_{rs['id']}"
-    try:
-        ap_scheduler.remove_job(job_id)
-    except Exception:
-        pass
 
     if not rs.get("enabled"):
-        print(f"[apscheduler] Mixer '{rs.get('name')}' disabled — not registered"); return
+        try:
+            ap_scheduler.remove_job(job_id)
+        except Exception:
+            pass
+        print(f"[apscheduler] Mixer '{rs.get('name')}' disabled — removed/not registered")
+        return
 
     hour, minute = _parse_hhmm(rs.get("start_time", ""))
     if hour is None:
@@ -676,20 +707,23 @@ def register_mixer_job(rs: dict) -> None:
     if not active_days:
         print(f"[apscheduler] Mixer '{rs.get('name')}' has no active_days"); return
 
-    ap_scheduler.add_job(
-        _ap_trigger_mixer,
-        CronTrigger(
-            day_of_week=",".join(str(d) for d in active_days),
-            hour=hour,
-            minute=minute,
-            timezone=TIMEZONE,
-        ),
-        id=job_id,
-        name=f"Mixer: {rs.get('name')}",
-        args=[rs["id"]],
-        replace_existing=True,
-    )
-    print(f"[apscheduler] ✓ Registered mixer '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
+    trigger = _make_cron_trigger(hour, minute, active_days)
+
+    existing = ap_scheduler.get_job(job_id)
+    if existing:
+        # ✅ reschedule keeps the job alive — no missed-fire gap
+        ap_scheduler.reschedule_job(job_id, trigger=trigger)
+        print(f"[apscheduler] ↻ Rescheduled mixer '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
+    else:
+        ap_scheduler.add_job(
+            _ap_trigger_mixer,
+            trigger,
+            id=job_id,
+            name=f"Mixer: {rs.get('name')}",
+            args=[rs["id"]],
+            replace_existing=True,
+        )
+        print(f"[apscheduler] ✓ Registered mixer '{rs.get('name')}' → {rs.get('start_time')} on days {active_days}")
 
 
 def unregister_job(job_id: str) -> None:
