@@ -54,45 +54,6 @@ const tabBtn = (active) => ({
   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.45rem',
 });
 
-/* ─────────────────────── Jingle Picker ─────────────────── */
-// Jingles are ALWAYS required — no "None" option
-function JinglePicker({ label: lbl, value, onChange, library }) {
-  return (
-    <div>
-      <label style={labelStyle}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-          <Music2 size={11} /> {lbl}
-          <span style={{ color: '#ff4757', marginLeft: '2px' }}>*</span>
-        </span>
-      </label>
-      {library.length === 0 ? (
-        <div style={{ padding: '0.5rem', fontSize: '0.75rem', color: '#ffa502',
-          background: 'rgba(255,165,2,0.08)', borderRadius: '6px', border: '1px solid rgba(255,165,2,0.2)' }}>
-          ⚠ Upload a jingle track to the library first
-        </div>
-      ) : (
-        <select
-          value={value || library[0]?.filename || ''}
-          onChange={e => onChange(e.target.value)}
-          style={{ ...inputStyle, cursor: 'pointer',
-            outline: '1px solid rgba(165,94,234,0.5)',
-            borderColor: 'rgba(165,94,234,0.4)' }}
-          required
-        >
-          {library.map(f => (
-            <option key={f.filename} value={f.filename}>{f.filename.replace(/\.[^.]+$/, '')}</option>
-          ))}
-        </select>
-      )}
-      {value && (
-        <div style={{ marginTop: '0.25rem', fontSize: '0.7rem', color: '#a55eea', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-          <Music2 size={10} /> {value.replace(/\.[^.]+$/, '')}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ════════════════════════════════════════════════════════════
    MIXER DECK SCHEDULES — recurring music / playlist
 ════════════════════════════════════════════════════════════ */
@@ -100,16 +61,15 @@ const MIXER_DEFAULT = {
   name: '',
   type: 'track',
   target_id: '',
-  deck_ids: ['a'],   // multi-deck: play the same content on multiple decks simultaneously
+  deck_ids: ['a'],
   start_time: '09:00',
-  // stop_time removed — music plays until end of track/playlist naturally
   active_days: [0, 1, 2, 3, 4, 5, 6],
   excluded_days: [],
   fade_in: 3,
   fade_out: 3,
   volume: 80,
   loop: true,
-  jingle_start: null,   // populated from library[0] on mount
+  jingle_start: null,   // auto-filled from library[0], not shown in UI
   jingle_end: null,
   multi_tracks: [],
   enabled: true,
@@ -122,10 +82,11 @@ function MixerSchedules() {
   const [form, setForm]           = useState(MIXER_DEFAULT);
   const [excludeInput, setExcludeInput] = useState('');
 
-  // Auto-fill jingles from first library track when library loads
+  // Auto-fill jingles silently from first library track — not exposed in UI
   React.useEffect(() => {
-    if (library.length > 0 && !form.jingle_start) {
-      setForm(f => ({ ...f,
+    if (library.length > 0) {
+      setForm(f => ({
+        ...f,
         jingle_start: f.jingle_start || library[0].filename,
         jingle_end:   f.jingle_end   || library[0].filename,
       }));
@@ -133,16 +94,17 @@ function MixerSchedules() {
   }, [library]); // eslint-disable-line
 
   const reset = () => {
-    setForm({ ...MIXER_DEFAULT,
+    setForm({
+      ...MIXER_DEFAULT,
       jingle_start: library[0]?.filename || null,
       jingle_end:   library[0]?.filename || null,
     });
     setEditingId(null); setIsAdding(false); setExcludeInput('');
   };
+
   const startEdit = (s) => {
     setForm({
       ...MIXER_DEFAULT, ...s,
-      // Normalise: old records may have deck_id (string) instead of deck_ids (array)
       deck_ids: s.deck_ids ?? (s.deck_id ? [s.deck_id] : ['a']),
       jingle_start: s.jingle_start || library[0]?.filename || null,
       jingle_end:   s.jingle_end   || library[0]?.filename || null,
@@ -158,25 +120,24 @@ function MixerSchedules() {
   };
 
   const addExcluded = () => {
-    if (!excludeInput) return;
-    if (form.excluded_days.includes(excludeInput)) return;
+    if (!excludeInput || form.excluded_days.includes(excludeInput)) return;
     setForm({ ...form, excluded_days: [...form.excluded_days, excludeInput] });
     setExcludeInput('');
   };
   const removeExcluded = (d) => setForm({ ...form, excluded_days: form.excluded_days.filter(x => x !== d) });
-  // Multi-deck toggle: at least one deck must stay selected
+
   const toggleDeck = (id) => {
     const next = form.deck_ids.includes(id)
       ? form.deck_ids.filter(d => d !== id)
       : [...form.deck_ids, id].sort();
-    if (next.length === 0) return; // prevent deselecting all
+    if (next.length === 0) return;
     setForm({ ...form, deck_ids: next });
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (form.type === 'track' && !form.target_id) { toast.error('Please select a track'); return; }
-    if (form.type === 'playlist' && !form.target_id) { toast.error('Please select a playlist'); return; }
+    if (form.type === 'track'       && !form.target_id)              { toast.error('Please select a track');     return; }
+    if (form.type === 'playlist'    && !form.target_id)              { toast.error('Please select a playlist');  return; }
     if (form.type === 'multi_track' && form.multi_tracks.length === 0) { toast.error('Please select at least one track'); return; }
     try {
       if (editingId) {
@@ -205,7 +166,6 @@ function MixerSchedules() {
 
   return (
     <div>
-      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
         <h3 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Music size={16} /> Mixer Deck Schedules
@@ -221,7 +181,6 @@ function MixerSchedules() {
         )}
       </div>
 
-      {/* Form */}
       {isAdding && (
         <form onSubmit={handleSubmit} style={{
           background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
@@ -263,18 +222,15 @@ function MixerSchedules() {
 
                 {form.type === 'multi_track' ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                    <div style={{ display: 'flex', gap: '0.4rem' }}>
-                      <select value=""
-                        onChange={e => {
-                          if (e.target.value && !form.multi_tracks.includes(e.target.value)) {
-                            setForm({ ...form, multi_tracks: [...form.multi_tracks, e.target.value] });
-                          }
-                        }}
-                        style={{ ...inputStyle, cursor: 'pointer', flex: 1 }}>
-                        <option value="">— Add a track —</option>
-                        {library.map(f => <option key={f.filename} value={f.filename}>{f.filename}</option>)}
-                      </select>
-                    </div>
+                    <select value=""
+                      onChange={e => {
+                        if (e.target.value && !form.multi_tracks.includes(e.target.value))
+                          setForm({ ...form, multi_tracks: [...form.multi_tracks, e.target.value] });
+                      }}
+                      style={{ ...inputStyle, cursor: 'pointer' }}>
+                      <option value="">— Add a track —</option>
+                      {library.map(f => <option key={f.filename} value={f.filename}>{f.filename}</option>)}
+                    </select>
                     {form.multi_tracks.length > 0 && (
                       <div style={{
                         display: 'flex', flexDirection: 'column', gap: '0.25rem',
@@ -288,7 +244,8 @@ function MixerSchedules() {
                             padding: '0.2rem 0.4rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px'
                           }}>
                             <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{idx + 1}. {t}</span>
-                            <button type="button" onClick={() => setForm({ ...form, multi_tracks: form.multi_tracks.filter((_, i) => i !== idx) })}
+                            <button type="button"
+                              onClick={() => setForm({ ...form, multi_tracks: form.multi_tracks.filter((_, i) => i !== idx) })}
                               style={{ background: 'none', border: 'none', color: '#ff4757', cursor: 'pointer', padding: '2px' }}>
                               <X size={12} />
                             </button>
@@ -317,7 +274,7 @@ function MixerSchedules() {
               </div>
 
               <div>
-                <label style={labelStyle}>Target Decks <span style={{ color: 'var(--text-secondary)', fontWeight: '400', textTransform: 'none', letterSpacing: 0, fontSize: '0.7rem' }}>(select one or more)</span></label>
+                <label style={labelStyle}>Target Decks</label>
                 <div style={{ display: 'flex', gap: '0.4rem' }}>
                   {DECK_OPTIONS.map(d => (
                     <button key={d.id} type="button" onClick={() => toggleDeck(d.id)}
@@ -341,29 +298,6 @@ function MixerSchedules() {
                 <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
                   Music plays until the track / playlist ends naturally.
                 </div>
-              </div>
-
-              {/* ── Jingles (always required) ────────────── */}
-              <div style={{
-                padding: '0.85rem', borderRadius: '10px',
-                background: 'rgba(165,94,234,0.08)', border: '1px solid rgba(165,94,234,0.35)',
-                display: 'flex', flexDirection: 'column', gap: '0.75rem',
-              }}>
-                <div style={{ fontSize: '0.72rem', color: '#a55eea', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <Music2 size={11} /> Jingles — played before &amp; after every feed
-                </div>
-                <JinglePicker
-                  label="Intro Jingle (plays before music starts)"
-                  value={form.jingle_start || library[0]?.filename}
-                  onChange={v => setForm({ ...form, jingle_start: v })}
-                  library={library}
-                />
-                <JinglePicker
-                  label="Outro Jingle (plays when music stops)"
-                  value={form.jingle_end || library[0]?.filename}
-                  onChange={v => setForm({ ...form, jingle_end: v })}
-                  library={library}
-                />
               </div>
             </div>
 
@@ -477,14 +411,12 @@ function MixerSchedules() {
         </form>
       )}
 
-      {/* Cards */}
       {recurringMixerSchedules.length === 0 ? (
         <EmptyState icon={<Music size={40} />} title="No mixer schedules" sub="Automate music playback on any deck." onAdd={() => setIsAdding(true)} show={!isAdding} />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1rem' }}>
           {recurringMixerSchedules.map(s => (
-            <MixerCard key={s.id} s={s}
-              onEdit={startEdit} onDelete={handleDelete} onToggle={toggleStatus} />
+            <MixerCard key={s.id} s={s} onEdit={startEdit} onDelete={handleDelete} onToggle={toggleStatus} />
           ))}
         </div>
       )}
@@ -499,10 +431,7 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
       border: '1px solid var(--panel-border)', borderRadius: '12px', padding: '1rem',
       position: 'relative', overflow: 'hidden', opacity: s.enabled ? 1 : 0.6, transition: 'all 0.3s',
     }}>
-      <div style={{
-        position: 'absolute', top: 0, left: 0, width: '4px', height: '100%',
-        background: s.enabled ? 'var(--accent-blue)' : '#555',
-      }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '4px', height: '100%', background: s.enabled ? 'var(--accent-blue)' : '#555' }} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
         <div>
           <div style={{ fontWeight: '600', fontSize: '0.95rem', marginBottom: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -519,8 +448,8 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
           <ActionBtn onClick={() => onToggle(s)} color={s.enabled ? '#2ed573' : 'var(--text-secondary)'}
             bg={s.enabled ? 'rgba(46,213,115,0.12)' : 'rgba(255,255,255,0.05)'}
             icon={s.enabled ? <Check size={13} /> : <Pause size={13} />} />
-          <ActionBtn onClick={() => onEdit(s)} color="var(--text-secondary)" bg="rgba(255,255,255,0.05)" icon={<Edit3 size={13} />} />
-          <ActionBtn onClick={() => onDelete(s.id)} color="#ff4757" bg="rgba(255,71,87,0.1)" icon={<Trash2 size={13} />} />
+          <ActionBtn onClick={() => onEdit(s)}   color="var(--text-secondary)" bg="rgba(255,255,255,0.05)"  icon={<Edit3  size={13} />} />
+          <ActionBtn onClick={() => onDelete(s.id)} color="#ff4757"            bg="rgba(255,71,87,0.1)"     icon={<Trash2 size={13} />} />
         </div>
       </div>
 
@@ -529,9 +458,7 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
       {s.excluded_days?.length > 0 && (
         <div style={{ marginTop: '0.4rem', display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
           {s.excluded_days.map(d => (
-            <span key={d} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '10px', background: 'rgba(255,71,87,0.1)', color: '#ff6b7a' }}>
-              ✕ {d}
-            </span>
+            <span key={d} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '10px', background: 'rgba(255,71,87,0.1)', color: '#ff6b7a' }}>✕ {d}</span>
           ))}
         </div>
       )}
@@ -544,9 +471,6 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
           {s.jingle_start && <StatChip icon={<Music2 size={10} />} val="Intro ♪" color="#a55eea" />}
           {s.jingle_end   && <StatChip icon={<Music2 size={10} />} val="Outro ♪" color="#a55eea" />}
         </div>
-        <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>
-          {s.type === 'playlist' ? <ListMusic size={11} /> : s.type === 'multi_track' ? <Play size={11} /> : <Music size={11} />}
-        </span>
       </div>
     </div>
   );
@@ -561,13 +485,12 @@ const ANN_DEFAULT = {
   announcement_id: '',
   deck_id: 'a',
   start_time: '09:00',
-  // stop_time removed — announcement runs until it ends naturally
   active_days: [0, 1, 2, 3, 4, 5, 6],
   excluded_days: [],
   fade_duration: 5,
   music_volume: 10,
   target_decks: ['a'],
-  jingle_start: null,
+  jingle_start: null,   // auto-filled from library[0], not shown in UI
   jingle_end: null,
   enabled: true,
 };
@@ -579,10 +502,11 @@ function AnnSchedules() {
   const [form, setForm]           = useState(ANN_DEFAULT);
   const [excludeInput, setExcludeInput] = useState('');
 
-  // Auto-fill jingles from first library track when library loads
+  // Auto-fill jingles silently from first library track — not exposed in UI
   React.useEffect(() => {
-    if (library.length > 0 && !form.jingle_start) {
-      setForm(f => ({ ...f,
+    if (library.length > 0) {
+      setForm(f => ({
+        ...f,
         jingle_start: f.jingle_start || library[0].filename,
         jingle_end:   f.jingle_end   || library[0].filename,
       }));
@@ -590,12 +514,14 @@ function AnnSchedules() {
   }, [library]); // eslint-disable-line
 
   const reset = () => {
-    setForm({ ...ANN_DEFAULT,
+    setForm({
+      ...ANN_DEFAULT,
       jingle_start: library[0]?.filename || null,
       jingle_end:   library[0]?.filename || null,
     });
     setEditingId(null); setIsAdding(false); setExcludeInput('');
   };
+
   const startEdit = (s) => {
     setForm({
       ...ANN_DEFAULT, ...s,
@@ -658,7 +584,6 @@ function AnnSchedules() {
 
   return (
     <div>
-      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
         <h3 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Mic size={16} /> Mic & Announcement Schedules
@@ -674,7 +599,6 @@ function AnnSchedules() {
         )}
       </div>
 
-      {/* Form */}
       {isAdding && (
         <form onSubmit={handleSubmit} style={{
           background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
@@ -744,29 +668,6 @@ function AnnSchedules() {
                     </button>
                   ))}
                 </div>
-              </div>
-
-              {/* ── Jingles (always required) ────────────── */}
-              <div style={{
-                padding: '0.85rem', borderRadius: '10px',
-                background: 'rgba(165,94,234,0.08)', border: '1px solid rgba(165,94,234,0.35)',
-                display: 'flex', flexDirection: 'column', gap: '0.75rem',
-              }}>
-                <div style={{ fontSize: '0.72rem', color: '#a55eea', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <Music2 size={11} /> Jingles — played before &amp; after every feed
-                </div>
-                <JinglePicker
-                  label="Intro Jingle (plays before mic / announcement)"
-                  value={form.jingle_start || library[0]?.filename}
-                  onChange={v => setForm({ ...form, jingle_start: v })}
-                  library={library}
-                />
-                <JinglePicker
-                  label="Outro Jingle (plays after mic / announcement)"
-                  value={form.jingle_end || library[0]?.filename}
-                  onChange={v => setForm({ ...form, jingle_end: v })}
-                  library={library}
-                />
               </div>
             </div>
 
@@ -861,7 +762,6 @@ function AnnSchedules() {
         </form>
       )}
 
-      {/* Cards */}
       {recurringSchedules.length === 0 ? (
         <EmptyState icon={<Mic size={40} />} title="No mic / announcement schedules" sub="Automate announcements and microphone activation." onAdd={() => setIsAdding(true)} show={!isAdding} />
       ) : (
@@ -882,10 +782,7 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
       border: '1px solid var(--panel-border)', borderRadius: '12px', padding: '1rem',
       position: 'relative', overflow: 'hidden', opacity: s.enabled ? 1 : 0.6, transition: 'all 0.3s',
     }}>
-      <div style={{
-        position: 'absolute', top: 0, left: 0, width: '4px', height: '100%',
-        background: s.enabled ? '#a55eea' : '#555',
-      }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '4px', height: '100%', background: s.enabled ? '#a55eea' : '#555' }} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
         <div>
           <div style={{ fontWeight: '600', fontSize: '0.95rem', marginBottom: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -899,8 +796,8 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
           <ActionBtn onClick={() => onToggle(s)} color={s.enabled ? '#2ed573' : 'var(--text-secondary)'}
             bg={s.enabled ? 'rgba(46,213,115,0.12)' : 'rgba(255,255,255,0.05)'}
             icon={s.enabled ? <Check size={13} /> : <Pause size={13} />} />
-          <ActionBtn onClick={() => onEdit(s)} color="var(--text-secondary)" bg="rgba(255,255,255,0.05)" icon={<Edit3 size={13} />} />
-          <ActionBtn onClick={() => onDelete(s.id)} color="#ff4757" bg="rgba(255,71,87,0.1)" icon={<Trash2 size={13} />} />
+          <ActionBtn onClick={() => onEdit(s)}      color="var(--text-secondary)" bg="rgba(255,255,255,0.05)"  icon={<Edit3  size={13} />} />
+          <ActionBtn onClick={() => onDelete(s.id)} color="#ff4757"               bg="rgba(255,71,87,0.1)"     icon={<Trash2 size={13} />} />
         </div>
       </div>
 
@@ -909,9 +806,7 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
       {s.excluded_days?.length > 0 && (
         <div style={{ marginTop: '0.4rem', display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
           {s.excluded_days.map(d => (
-            <span key={d} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '10px', background: 'rgba(255,71,87,0.1)', color: '#ff6b7a' }}>
-              ✕ {d}
-            </span>
+            <span key={d} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '10px', background: 'rgba(255,71,87,0.1)', color: '#ff6b7a' }}>✕ {d}</span>
           ))}
         </div>
       )}
@@ -960,8 +855,7 @@ function ActionBtn({ onClick, color, bg, icon }) {
     <button onClick={onClick} style={{
       width: '32px', height: '32px', borderRadius: '8px', border: 'none',
       background: bg, color, cursor: 'pointer',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      transition: 'all 0.15s',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s',
     }}>
       {icon}
     </button>
@@ -1006,8 +900,8 @@ function EmptyState({ icon, title, sub, onAdd, show }) {
    PAGE ROOT
 ════════════════════════════════════════════════════════════ */
 const TABS = [
-  { id: 'mixer', label: 'Mixer Deck',         icon: <Music size={16} /> },
-  { id: 'ann',   label: 'Mic & Announcements', icon: <Mic size={16} /> },
+  { id: 'mixer', label: 'Mixer Deck',          icon: <Music size={16} /> },
+  { id: 'ann',   label: 'Mic & Announcements', icon: <Mic   size={16} /> },
 ];
 
 export default function SchedulesPage() {
@@ -1019,7 +913,6 @@ export default function SchedulesPage() {
         <Calendar size={22} /> Schedules
       </h2>
 
-      {/* Tab switcher */}
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '2rem', background: 'rgba(255,255,255,0.03)', padding: '0.4rem', borderRadius: '10px', border: '1px solid var(--panel-border)' }}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={tabBtn(tab === t.id)}>
