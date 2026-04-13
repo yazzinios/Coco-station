@@ -601,6 +601,50 @@ export function AppProvider({ children }) {
       if (!r.ok) throw new Error(await parseError(r));
     },
     getSchedulerStatus: fetchSchedulerStatus,
+    // ── Users ──
+    authFetch,
+    getUsers: async () => {
+      const r = await authFetch('/api/users');
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    createUser: async (payload) => {
+      const r = await authFetch('/api/users', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    updateUser: async (id, payload) => {
+      const r = await authFetch(`/api/users/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    deleteUser: async (id) => {
+      const r = await authFetch(`/api/users/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    // ── LDAP ──
+    testLdap: async (payload) => {
+      const r = await authFetch('/api/settings/ldap/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      return r.json();
+    },
+    saveLdap: async (payload, enabled) => {
+      const r = await authFetch(`/api/settings/ldap/save?enabled=${enabled}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      return r.json();
+    },
   };
 
   return (

@@ -10,6 +10,7 @@ import SettingsPage from './pages/SettingsPage';
 import SchedulesPage from './pages/SchedulesPage';
 import RequestPage from './pages/RequestPage';
 import LoginPage from './pages/LoginPage';
+import UsersPage from './pages/UsersPage';
 import { useApp } from './context/useApp';
 
 function AppHeader() {
@@ -79,6 +80,7 @@ function AppLayout() {
           <Route path="/schedules"     element={<SchedulesPage />} />
           <Route path="/stats"         element={<StatisticsPage />} />
           <Route path="/settings"      element={<SettingsPage />} />
+          <Route path="/users"         element={<UsersPage />} />
           <Route path="*"              element={<Navigate to="/" replace />} />
         </Routes>
       </main>

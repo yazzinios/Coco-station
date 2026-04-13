@@ -46,7 +46,7 @@ from schemas import (
 )
 from tts import generate_tts
 from db_client import db
-from auth import verify_token, verify_password, create_token
+from auth import verify_token, verify_password, create_token, verify_ldap_credentials, test_ldap_connection
 
 MEDIA_DIR         = Path("data/library")
 ANNOUNCEMENTS_DIR = Path("data/announcements")
@@ -76,6 +76,19 @@ SETTINGS: dict = {
     "jingle_outro": None,    # filename in /data/chimes/ — plays after every feed
     "timezone": "Africa/Casablanca",
     "session_hours": 8,
+    # LDAP
+    "ldap_enabled":        False,
+    "ldap_server":         "",
+    "ldap_port":           389,
+    "ldap_base_dn":        "",
+    "ldap_bind_dn":        "",
+    "ldap_bind_pw":        "",
+    "ldap_user_filter":    "(sAMAccountName={username})",
+    "ldap_attr_name":      "cn",
+    "ldap_attr_email":     "mail",
+    "ldap_role_admin_group": "",
+    "ldap_use_ssl":        False,
+    "ldap_tls_verify":     True,
 }
 MIC_STATE: dict = {"active": False, "targets": []}
 
@@ -218,11 +231,49 @@ class LoginRequest(_PydanticBase):
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
-    """Public endpoint — returns JWT on valid credentials."""
-    conn = None
+    """Public endpoint — returns JWT on valid credentials.
+    Flow: if LDAP enabled → try LDAP first → fallback to local DB.
+    """
+    expiry_hours = int(SETTINGS.get("session_hours", 8))
+
+    # ── Try LDAP first if enabled ────────────────────────────
+    if SETTINGS.get("ldap_enabled"):
+        ldap_cfg = {
+            "server":           SETTINGS.get("ldap_server", ""),
+            "port":             SETTINGS.get("ldap_port", 389),
+            "base_dn":          SETTINGS.get("ldap_base_dn", ""),
+            "bind_dn":          SETTINGS.get("ldap_bind_dn", ""),
+            "bind_pw":          SETTINGS.get("ldap_bind_pw", ""),
+            "user_filter":      SETTINGS.get("ldap_user_filter", "(sAMAccountName={username})"),
+            "attr_name":        SETTINGS.get("ldap_attr_name", "cn"),
+            "attr_email":       SETTINGS.get("ldap_attr_email", "mail"),
+            "role_admin_group": SETTINGS.get("ldap_role_admin_group", ""),
+            "use_ssl":          SETTINGS.get("ldap_use_ssl", False),
+            "tls_verify":       SETTINGS.get("ldap_tls_verify", True),
+        }
+        loop = asyncio.get_event_loop()
+        ldap_user = await loop.run_in_executor(
+            None, verify_ldap_credentials, req.username, req.password, ldap_cfg
+        )
+        if ldap_user:
+            token = create_token(ldap_user, expiry_hours=expiry_hours)
+            return {
+                "access_token":    token,
+                "token_type":      "bearer",
+                "expires_in_hours": expiry_hours,
+                "user": {
+                    "id":           ldap_user["id"],
+                    "username":     ldap_user["username"],
+                    "display_name": ldap_user.get("display_name") or ldap_user["username"],
+                    "role":         ldap_user.get("role", "operator"),
+                    "source":       "ldap",
+                },
+            }
+        # If LDAP is enabled but user not found, still try local (allows cocoadmin to log in)
+        print(f"[auth] LDAP failed for '{req.username}' — falling back to local DB")
+
+    # ── Local DB login ───────────────────────────────────────
     try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
         user_row = await asyncio.get_event_loop().run_in_executor(
             None, _db_get_user_by_username, req.username
         )
@@ -237,11 +288,10 @@ async def login(req: LoginRequest):
     if not verify_password(req.password, user_row.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    expiry_hours = int(SETTINGS.get("session_hours", 8))
     token = create_token(user_row, expiry_hours=expiry_hours)
     return {
-        "access_token": token,
-        "token_type": "bearer",
+        "access_token":    token,
+        "token_type":      "bearer",
         "expires_in_hours": expiry_hours,
         "user": {
             "id":           str(user_row["id"]),
@@ -259,6 +309,57 @@ async def get_me(user: dict = Depends(verify_token)):
         "username": user.get("username"),
         "role":     user.get("role", "operator"),
     }
+
+# ── LDAP test + save ─────────────────────────────────────────────
+
+class LdapTestRequest(_PydanticBase):
+    server: str
+    port: int = 389
+    base_dn: str = ""
+    bind_dn: str = ""
+    bind_pw: str = ""
+    user_filter: str = "(sAMAccountName={username})"
+    attr_name: str = "cn"
+    attr_email: str = "mail"
+    role_admin_group: str = ""
+    use_ssl: bool = False
+    tls_verify: bool = True
+
+@app.post("/api/settings/ldap/test")
+async def ldap_test(req: LdapTestRequest, _user: dict = Depends(verify_token)):
+    """Test LDAP connectivity without saving (admin only)."""
+    if _user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, test_ldap_connection, req.dict())
+    if result["ok"]:
+        return {"status": "ok", "detail": result["detail"]}
+    raise HTTPException(status_code=503, detail=result["detail"])
+
+@app.post("/api/settings/ldap/save")
+async def ldap_save(req: LdapTestRequest, enabled: bool = True, _user: dict = Depends(verify_token)):
+    """Save LDAP settings and enable/disable (admin only)."""
+    if _user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    patch = {
+        "ldap_enabled":          enabled,
+        "ldap_server":           req.server,
+        "ldap_port":             req.port,
+        "ldap_base_dn":          req.base_dn,
+        "ldap_bind_dn":          req.bind_dn,
+        "ldap_bind_pw":          req.bind_pw,
+        "ldap_user_filter":      req.user_filter,
+        "ldap_attr_name":        req.attr_name,
+        "ldap_attr_email":       req.attr_email,
+        "ldap_role_admin_group": req.role_admin_group,
+        "ldap_use_ssl":          req.use_ssl,
+        "ldap_tls_verify":       req.tls_verify,
+    }
+    SETTINGS.update(patch)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, db.save_settings, patch)
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
+    return {"status": "ok"}
 
 def _db_get_user_by_username(username: str) -> Optional[dict]:
     """Synchronous helper — runs in a thread executor."""
@@ -1442,4 +1543,91 @@ async def clear_all_requests(_user=Depends(verify_token)):
     global MUSIC_REQUESTS
     MUSIC_REQUESTS = []
     await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
+    return {"status": "ok"}
+
+# ═══════════════════════════════════════════════════════════
+#  USER MANAGEMENT ENDPOINTS (admin only)
+# ═══════════════════════════════════════════════════════════
+
+class UserCreateRequest(_PydanticBase):
+    username: str
+    display_name: Optional[str] = None
+    password: str
+    role: str = "operator"
+
+class UserUpdateRequest(_PydanticBase):
+    display_name: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+    enabled: Optional[bool] = None
+
+@app.get("/api/users")
+async def list_users(_user: dict = Depends(verify_token)):
+    loop = asyncio.get_event_loop()
+    users = await loop.run_in_executor(None, db.list_users)
+    return [{k: v for k, v in u.items() if k != "password_hash"} for u in users]
+
+@app.post("/api/users", status_code=201)
+async def create_user(req: UserCreateRequest, _user: dict = Depends(verify_token)):
+    if _user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if req.role not in ("admin", "operator"):
+        raise HTTPException(status_code=400, detail="role must be 'admin' or 'operator'")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    from auth import hash_password
+    pw_hash = hash_password(req.password)
+    user_id = str(uuid.uuid4())
+    loop = asyncio.get_event_loop()
+    try:
+        user = await loop.run_in_executor(None, db.create_user, user_id,
+                                           req.username.strip(),
+                                           req.display_name or req.username.strip(),
+                                           pw_hash, req.role)
+    except Exception as e:
+        msg = str(e)
+        if "unique" in msg.lower() or "duplicate" in msg.lower():
+            raise HTTPException(status_code=409, detail="Username already exists")
+        raise HTTPException(status_code=500, detail=f"DB error: {msg}")
+    return {k: v for k, v in user.items() if k != "password_hash"}
+
+@app.put("/api/users/{user_id}")
+async def update_user(user_id: str, req: UserUpdateRequest, _user: dict = Depends(verify_token)):
+    is_admin = _user.get("role") == "admin"
+    is_self  = _user.get("sub") == user_id
+    if not is_admin and not is_self:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not is_admin and (req.role is not None or req.enabled is not None):
+        raise HTTPException(status_code=403, detail="Only admins can change role or enabled status")
+    if req.role is not None and req.role not in ("admin", "operator"):
+        raise HTTPException(status_code=400, detail="role must be 'admin' or 'operator'")
+    fields = {}
+    if req.display_name is not None: fields["display_name"] = req.display_name
+    if req.role        is not None:  fields["role"]         = req.role
+    if req.enabled     is not None:  fields["enabled"]      = req.enabled
+    if req.password    is not None:
+        if len(req.password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        from auth import hash_password
+        fields["password_hash"] = hash_password(req.password)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, db.update_user, user_id, fields)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
+    return {"status": "ok"}
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(user_id: str, _user: dict = Depends(verify_token)):
+    if _user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if _user.get("sub") == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, db.delete_user, user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
     return {"status": "ok"}

@@ -20,7 +20,8 @@ services:
     container_name: cc_ffmpeg
     restart: unless-stopped
     depends_on:
-      - mediamtx
+      mediamtx:
+        condition: service_started
     volumes:
       - ./data/library:/library:ro
       - ./data/announcements:/announcements:ro
@@ -54,9 +55,17 @@ services:
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY:-}
       - FFMPEG_HOST=ffmpeg-mixer
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12          # wait up to 60s for the API to boot
+      start_period: 15s    # give it 15s grace before first check
     depends_on:
-      - db
-      - ffmpeg-mixer
+      db:
+        condition: service_healthy
+      ffmpeg-mixer:
+        condition: service_started
 
   db:
     image: postgres:16-alpine
@@ -70,6 +79,12 @@ services:
       - ./data/db:/var/lib/postgresql/data
     ports:
       - "5432:5432" # Exposed for debugging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coco} -d ${POSTGRES_DB:-cocostation}"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   dashboard:
     build:
@@ -86,7 +101,8 @@ services:
       - VITE_SUPABASE_URL=${SUPABASE_URL:-}
       - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 configs:
   mediamtx_config:

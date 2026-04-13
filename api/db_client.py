@@ -789,5 +789,108 @@ class DBClient:
             finally:
                 self._put_conn(conn)
 
+    # ── User Management ──────────────────────────────────────
+
+    def list_users(self) -> list:
+        if self.mode == "cloud":
+            try:
+                r = self.supabase.table("users").select("id,username,display_name,role,enabled,created_at").order("created_at").execute()
+                return r.data or []
+            except Exception as e:
+                print(f"[DB] list_users (cloud) failed: {e}"); return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id::text, username, display_name, role, enabled, created_at::text FROM users ORDER BY created_at")
+                    cols = [d[0] for d in cur.description]
+                    return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except Exception as e:
+                print(f"[DB] list_users (local) failed: {e}"); return []
+            finally:
+                self._put_conn(conn)
+
+    def get_user_by_username(self, username: str) -> dict:
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT id::text, username, display_name, password_hash, role, enabled FROM users WHERE username = %s", (username,))
+                row = cur.fetchone()
+                if not row: return None
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+        except Exception as e:
+            print(f"[DB] get_user_by_username failed: {e}"); return None
+        finally:
+            self._put_conn(conn)
+
+    def create_user(self, user_id: str, username: str, display_name: str, password_hash: str, role: str) -> dict:
+        if self.mode == "cloud":
+            try:
+                r = self.supabase.table("users").insert({
+                    "id": user_id, "username": username, "display_name": display_name,
+                    "password_hash": password_hash, "role": role, "enabled": True,
+                }).execute()
+                return r.data[0] if r.data else {}
+            except Exception as e:
+                print(f"[DB] create_user (cloud) failed: {e}"); raise
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO users (id, username, display_name, password_hash, role, enabled) "
+                        "VALUES (%s, %s, %s, %s, %s, true) RETURNING id::text, username, display_name, role, enabled",
+                        (user_id, username, display_name, password_hash, role),
+                    )
+                    cols = [d[0] for d in cur.description]
+                    return dict(zip(cols, cur.fetchone()))
+            except Exception as e:
+                print(f"[DB] create_user (local) failed: {e}"); raise
+            finally:
+                self._put_conn(conn)
+
+    def update_user(self, user_id: str, fields: dict):
+        """Update any subset of: display_name, role, enabled, password_hash."""
+        allowed = {"display_name", "role", "enabled", "password_hash"}
+        data = {k: v for k, v in fields.items() if k in allowed}
+        if not data: return
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("users").update(data).eq("id", user_id).execute()
+            except Exception as e:
+                print(f"[DB] update_user (cloud) failed: {e}"); raise
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                set_clause = ", ".join(f"{k} = %s" for k in data)
+                with conn.cursor() as cur:
+                    cur.execute(f"UPDATE users SET {set_clause} WHERE id = %s", list(data.values()) + [user_id])
+            except Exception as e:
+                print(f"[DB] update_user (local) failed: {e}"); raise
+            finally:
+                self._put_conn(conn)
+
+    def delete_user(self, user_id: str):
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("users").delete().eq("id", user_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_user (cloud) failed: {e}"); raise
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            except Exception as e:
+                print(f"[DB] delete_user (local) failed: {e}"); raise
+            finally:
+                self._put_conn(conn)
+
 
 db = DBClient()

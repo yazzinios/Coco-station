@@ -33,6 +33,24 @@ export default function SettingsPage() {
   const [dbTesting,    setDbTesting]    = useState(false);
   const [dbStatus,     setDbStatus]     = useState(null);
 
+  // LDAP
+  const [ldapEnabled,       setLdapEnabled]       = useState(false);
+  const [ldapServer,        setLdapServer]        = useState('');
+  const [ldapPort,          setLdapPort]          = useState(389);
+  const [ldapBaseDn,        setLdapBaseDn]        = useState('');
+  const [ldapBindDn,        setLdapBindDn]        = useState('');
+  const [ldapBindPw,        setLdapBindPw]        = useState('');
+  const [ldapUserFilter,    setLdapUserFilter]    = useState('(sAMAccountName={username})');
+  const [ldapAttrName,      setLdapAttrName]      = useState('cn');
+  const [ldapAttrEmail,     setLdapAttrEmail]     = useState('mail');
+  const [ldapAdminGroup,    setLdapAdminGroup]    = useState('');
+  const [ldapUseSsl,        setLdapUseSsl]        = useState(false);
+  const [ldapTlsVerify,     setLdapTlsVerify]     = useState(true);
+  const [ldapTesting,       setLdapTesting]       = useState(false);
+  const [ldapSaving,        setLdapSaving]        = useState(false);
+  const [ldapStatus,        setLdapStatus]        = useState(null);
+  const [ldapExpanded,      setLdapExpanded]      = useState(false);
+
   // Chime
   const [chimeEnabled,   setChimeEnabled]   = useState(false);
   const [chimeExists,    setChimeExists]    = useState(false);
@@ -63,6 +81,19 @@ export default function SettingsPage() {
     if (settings?.db_mode)                    setDbMode(settings.db_mode);
     if (settings?.timezone)                   setTimezone(settings.timezone);
     if (settings?.session_hours != null)      setSessionHours(Number(settings.session_hours));
+    // LDAP
+    setLdapEnabled(settings?.ldap_enabled ?? false);
+    if (settings?.ldap_server)      setLdapServer(settings.ldap_server);
+    if (settings?.ldap_port)        setLdapPort(settings.ldap_port);
+    if (settings?.ldap_base_dn)     setLdapBaseDn(settings.ldap_base_dn);
+    if (settings?.ldap_bind_dn)     setLdapBindDn(settings.ldap_bind_dn);
+    if (settings?.ldap_bind_pw)     setLdapBindPw(settings.ldap_bind_pw);
+    if (settings?.ldap_user_filter) setLdapUserFilter(settings.ldap_user_filter);
+    if (settings?.ldap_attr_name)   setLdapAttrName(settings.ldap_attr_name);
+    if (settings?.ldap_attr_email)  setLdapAttrEmail(settings.ldap_attr_email);
+    if (settings?.ldap_role_admin_group !== undefined) setLdapAdminGroup(settings.ldap_role_admin_group || '');
+    setLdapUseSsl(settings?.ldap_use_ssl ?? false);
+    setLdapTlsVerify(settings?.ldap_tls_verify ?? true);
   }, [settings]);
 
   // Load chime + jingle status on mount
@@ -128,7 +159,7 @@ export default function SettingsPage() {
     setDbTesting(true); setDbStatus(null);
     try {
       const payload = { value: { db_mode: dbMode, ...(dbMode === 'cloud' && { supabase_url: supabaseUrl, supabase_key: supabaseKey }) } };
-      const res = await fetch('/api/settings/db-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const res = await api.authFetch('/api/settings/db-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (res.ok) {
         const data = await res.json();
         setDbStatus('ok');
@@ -170,6 +201,37 @@ export default function SettingsPage() {
       toast.success('Settings saved! Timezone change requires API restart to take effect.');
     } catch (err) { toast.error(`Save failed: ${err.message}`); }
     finally { setSaving(false); }
+  };
+
+  // ── LDAP handlers ──
+  const ldapPayload = () => ({
+    server: ldapServer, port: ldapPort, base_dn: ldapBaseDn,
+    bind_dn: ldapBindDn, bind_pw: ldapBindPw,
+    user_filter: ldapUserFilter, attr_name: ldapAttrName,
+    attr_email: ldapAttrEmail, role_admin_group: ldapAdminGroup,
+    use_ssl: ldapUseSsl, tls_verify: ldapTlsVerify,
+  });
+
+  const handleLdapTest = async () => {
+    if (!ldapServer) { toast.error('LDAP Server URL required'); return; }
+    setLdapTesting(true); setLdapStatus(null);
+    try {
+      const r = await api.testLdap(ldapPayload());
+      setLdapStatus('ok');
+      toast.success('LDAP connected! ' + r.detail);
+    } catch (e) { setLdapStatus('error'); toast.error('LDAP error: ' + e.message); }
+    finally { setLdapTesting(false); }
+  };
+
+  const handleLdapSave = async (enabled) => {
+    if (enabled && !ldapServer) { toast.error('LDAP Server URL required'); return; }
+    setLdapSaving(true);
+    try {
+      await api.saveLdap(ldapPayload(), enabled);
+      setLdapEnabled(enabled);
+      toast.success(enabled ? 'LDAP enabled & saved!' : 'LDAP disabled.');
+    } catch (e) { toast.error('Save failed: ' + e.message); }
+    finally { setLdapSaving(false); }
   };
 
   const panel = { marginBottom: '0', padding: '1.5rem' };
@@ -286,6 +348,151 @@ export default function SettingsPage() {
         </div>
 
         {/* Timezone & Session */}
+
+        {/* LDAP / Active Directory */}
+        <div className="glass-panel" style={panel}>
+          <div
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
+            onClick={() => setLdapExpanded(v => !v)}
+          >
+            <h3 style={{ margin: 0, color: ldapEnabled ? '#a55eea' : 'var(--accent-blue)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              🔑 LDAP / Active Directory
+              {ldapEnabled && <span style={{ fontSize: '0.7rem', background: 'rgba(165,94,234,0.15)', color: '#a55eea', padding: '0.1rem 0.5rem', borderRadius: '10px', border: '1px solid rgba(165,94,234,0.3)' }}>ENABLED</span>}
+            </h3>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{ldapExpanded ? '▲' : '▼'}</span>
+          </div>
+
+          {!ldapExpanded && (
+            <p style={{ marginTop: '0.6rem', marginBottom: 0, fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+              {ldapEnabled
+                ? `Active — users authenticate via ${ldapServer || 'LDAP'}. Local fallback always available.`
+                : 'Not configured. Click to expand and set up LDAP/AD authentication.'}
+            </p>
+          )}
+
+          {ldapExpanded && (
+            <div style={{ marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-secondary)', padding: '0.6rem 0.85rem', background: 'rgba(165,94,234,0.06)', borderRadius: '8px', border: '1px solid rgba(165,94,234,0.15)' }}>
+                📌 When enabled, users log in with their LDAP/AD credentials. Local accounts (like <strong>cocoadmin</strong>) always remain available as fallback.
+              </p>
+
+              {/* Server + Port */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.75rem' }}>
+                <div>
+                  <label style={lbl}>LDAP Server URL</label>
+                  <input type="text" style={inp} value={ldapServer} onChange={e => setLdapServer(e.target.value)}
+                    placeholder="ldap://192.168.1.10 or ldaps://dc.company.com" />
+                </div>
+                <div style={{ width: '90px' }}>
+                  <label style={lbl}>Port</label>
+                  <input type="number" style={inp} value={ldapPort} onChange={e => setLdapPort(Number(e.target.value))}
+                    placeholder="389" />
+                </div>
+              </div>
+
+              {/* Base DN */}
+              <div>
+                <label style={lbl}>Base DN</label>
+                <input type="text" style={inp} value={ldapBaseDn} onChange={e => setLdapBaseDn(e.target.value)}
+                  placeholder="dc=company,dc=com" />
+              </div>
+
+              {/* Bind DN + Bind PW */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div>
+                  <label style={lbl}>Service Account DN</label>
+                  <input type="text" style={inp} value={ldapBindDn} onChange={e => setLdapBindDn(e.target.value)}
+                    placeholder="cn=svc-coco,dc=company,dc=com" />
+                </div>
+                <div>
+                  <label style={lbl}>Service Account Password</label>
+                  <input type="password" style={inp} value={ldapBindPw} onChange={e => setLdapBindPw(e.target.value)}
+                    placeholder="••••••••" />
+                </div>
+              </div>
+
+              {/* User filter */}
+              <div>
+                <label style={lbl}>User Search Filter <span style={{ color: 'var(--text-secondary)', textTransform: 'none', fontWeight: 400 }}>({'{username}'} is replaced at login)</span></label>
+                <input type="text" style={inp} value={ldapUserFilter} onChange={e => setLdapUserFilter(e.target.value)}
+                  placeholder="(sAMAccountName={username})" />
+              </div>
+
+              {/* Attribute mapping */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div>
+                  <label style={lbl}>Display Name Attribute</label>
+                  <input type="text" style={inp} value={ldapAttrName} onChange={e => setLdapAttrName(e.target.value)}
+                    placeholder="cn" />
+                </div>
+                <div>
+                  <label style={lbl}>Email Attribute</label>
+                  <input type="text" style={inp} value={ldapAttrEmail} onChange={e => setLdapAttrEmail(e.target.value)}
+                    placeholder="mail" />
+                </div>
+              </div>
+
+              {/* Admin group */}
+              <div>
+                <label style={lbl}>Admin Group DN <span style={{ color: 'var(--text-secondary)', textTransform: 'none', fontWeight: 400 }}>(members get role=admin — leave blank to make all LDAP users operators)</span></label>
+                <input type="text" style={inp} value={ldapAdminGroup} onChange={e => setLdapAdminGroup(e.target.value)}
+                  placeholder="cn=CocoAdmins,ou=Groups,dc=company,dc=com" />
+              </div>
+
+              {/* SSL + TLS */}
+              <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.88rem' }}>
+                  <input type="checkbox" checked={ldapUseSsl} onChange={e => { setLdapUseSsl(e.target.checked); if (e.target.checked) setLdapPort(636); else setLdapPort(389); }}
+                    style={{ accentColor: '#a55eea' }} />
+                  Use LDAPS (SSL) — port 636
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.88rem' }}>
+                  <input type="checkbox" checked={ldapTlsVerify} onChange={e => setLdapTlsVerify(e.target.checked)}
+                    style={{ accentColor: '#a55eea' }} />
+                  Verify TLS certificate
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>(uncheck for self-signed)</span>
+                </label>
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', paddingTop: '0.5rem', borderTop: '1px solid var(--panel-border)' }}>
+                <button onClick={handleLdapTest} disabled={ldapTesting || !ldapServer}
+                  style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', fontFamily: 'inherit', borderRadius: '8px', cursor: (ldapTesting || !ldapServer) ? 'default' : 'pointer',
+                    background: 'rgba(165,94,234,0.1)', border: '1px solid rgba(165,94,234,0.35)', color: '#a55eea',
+                    display: 'flex', alignItems: 'center', gap: '0.45rem', opacity: (ldapTesting || !ldapServer) ? 0.5 : 1 }}>
+                  {ldapTesting ? '⟳ Testing…' : '⚡ Test Connection'}
+                </button>
+
+                {ldapStatus && (
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', padding: '0.3rem 0.75rem', borderRadius: '20px',
+                    background: ldapStatus === 'ok' ? 'rgba(46,213,115,0.15)' : 'rgba(255,71,87,0.15)',
+                    border: `1px solid ${ldapStatus === 'ok' ? 'rgba(46,213,115,0.4)' : 'rgba(255,71,87,0.4)'}`,
+                    color: ldapStatus === 'ok' ? '#2ed573' : '#ff4757' }}>
+                    {ldapStatus === 'ok' ? '✓ Reachable' : '✕ Unreachable'}
+                  </span>
+                )}
+
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.6rem' }}>
+                  {ldapEnabled && (
+                    <button onClick={() => handleLdapSave(false)} disabled={ldapSaving}
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', fontFamily: 'inherit', borderRadius: '8px', cursor: 'pointer',
+                        background: 'rgba(255,71,87,0.1)', border: '1px solid rgba(255,71,87,0.35)', color: '#ff4757',
+                        display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                      🔴 Disable LDAP
+                    </button>
+                  )}
+                  <button onClick={() => handleLdapSave(true)} disabled={ldapSaving || !ldapServer}
+                    style={{ padding: '0.5rem 1.1rem', fontSize: '0.85rem', fontFamily: 'inherit', borderRadius: '8px',
+                      cursor: (ldapSaving || !ldapServer) ? 'default' : 'pointer',
+                      background: 'rgba(46,213,115,0.15)', border: '1px solid rgba(46,213,115,0.4)', color: '#2ed573',
+                      display: 'flex', alignItems: 'center', gap: '0.45rem', opacity: (ldapSaving || !ldapServer) ? 0.5 : 1 }}>
+                    {ldapSaving ? '⟳ Saving…' : '💾 Save & Enable LDAP'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
         <div className="glass-panel" style={panel}>
           <h3 style={{ marginBottom: '1.1rem', color: 'var(--accent-blue)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Globe size={16} /> Time & Session

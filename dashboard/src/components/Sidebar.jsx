@@ -1,8 +1,12 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Sliders, Mic2, BarChart2, Settings, Calendar, LogOut, FolderOpen } from 'lucide-react';
+import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut } from 'lucide-react';
+import { useApp } from '../context/useApp';
 
 export default function Sidebar({ onNavClick }) {
+  const { currentUser, logout } = useApp();
+  const isAdmin = currentUser?.role === 'admin';
+
   const navItems = [
     { name: 'Mixer',         path: '/',              icon: <Sliders size={20} /> },
     { name: 'Library',       path: '/library',       icon: <FolderOpen size={20} /> },
@@ -11,6 +15,10 @@ export default function Sidebar({ onNavClick }) {
     { name: 'Statistics',    path: '/stats',         icon: <BarChart2 size={20} /> },
     { name: 'Settings',      path: '/settings',      icon: <Settings size={20} /> },
   ];
+
+  if (isAdmin) {
+    navItems.push({ name: 'Users', path: '/users', icon: <Users size={20} /> });
+  }
 
   return (
     <nav className="glass-panel" style={{
@@ -69,7 +77,7 @@ export default function Sidebar({ onNavClick }) {
 
       <div style={{ marginTop: 'auto', paddingTop: '2rem', borderTop: '1px solid var(--panel-border)' }}>
         <button
-          onClick={() => { console.log('Logout'); onNavClick?.(); }}
+          onClick={() => { logout(); onNavClick?.(); }}
           style={{
             display: 'flex',
             alignItems: 'center',
