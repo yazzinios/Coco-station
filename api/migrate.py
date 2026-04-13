@@ -48,8 +48,8 @@ CREATE TABLE IF NOT EXISTS announcements (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add 'status' column to announcements if it was created without it
 ALTER TABLE announcements ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'Ready';
+ALTER TABLE announcements ADD COLUMN IF NOT EXISTS lang VARCHAR(10) DEFAULT 'en';
 
 CREATE TABLE IF NOT EXISTS playlists (
     id UUID PRIMARY KEY,
@@ -73,6 +73,16 @@ CREATE TABLE IF NOT EXISTS stats (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(100) UNIQUE NOT NULL,
+    display_name VARCHAR(255),
+    password_hash TEXT,
+    role VARCHAR(20) NOT NULL DEFAULT 'operator',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 INSERT INTO decks (id, name, volume, is_playing) VALUES
     ('a', 'Castle',  100, false),
     ('b', 'Deck B',  100, false),
@@ -80,6 +90,30 @@ INSERT INTO decks (id, name, volume, is_playing) VALUES
     ('d', 'Deck D',  100, false)
 ON CONFLICT (id) DO NOTHING;
 """
+
+
+def _seed_admin(cur):
+    """Insert default admin user (cocoadmin / Coco@coco) if not present."""
+    cur.execute("SELECT id FROM users WHERE username = 'cocoadmin'")
+    if cur.fetchone():
+        print("[migrate] Admin user already exists — skipping seed.")
+        return
+    try:
+        import bcrypt
+        pw_hash = bcrypt.hashpw(b"Coco@coco", bcrypt.gensalt()).decode()
+    except ImportError:
+        # bcrypt not yet installed (first build) — store a placeholder
+        pw_hash = "__NEEDS_BCRYPT__"
+        print("[migrate] WARNING: bcrypt not available — admin password not set. Rebuild container.")
+    cur.execute(
+        """
+        INSERT INTO users (username, display_name, password_hash, role, enabled)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (username) DO NOTHING
+        """,
+        ("cocoadmin", "Coco Admin", pw_hash, "admin", True),
+    )
+    print("[migrate] Default admin user 'cocoadmin' created.")
 
 
 def run_migrations_local(db_url: str):
@@ -92,33 +126,26 @@ def run_migrations_local(db_url: str):
     cur.execute(BASE_SCHEMA_SQL)
     print("[migrate] Base schema applied.")
 
+    # ── Seed default admin ─────────────────────────────────────
+    _seed_admin(cur)
+
     # ── Schema Repair ──────────────────────────────────────────
-    # Force-fix known inconsistencies that might have bypassed migrations.
     REPAIR_SQL = """
     DO $$ 
     BEGIN
         -- Fix recurring_mixer_schedules
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN
-            -- 1. Remove stop_time (was causing NOT NULL violations)
             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'stop_time') THEN
                 ALTER TABLE recurring_mixer_schedules DROP COLUMN stop_time;
-                RAISE NOTICE 'Dropped stop_time from recurring_mixer_schedules';
             END IF;
-
-            -- 2. Ensure deck_ids exists
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_ids') THEN
                 ALTER TABLE recurring_mixer_schedules ADD COLUMN deck_ids JSONB DEFAULT '[]';
-                -- Migrate data if old column exists
                 IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_id') THEN
                     UPDATE recurring_mixer_schedules SET deck_ids = jsonb_build_array(deck_id);
                 END IF;
-                RAISE NOTICE 'Added deck_ids to recurring_mixer_schedules';
             END IF;
-
-            -- 3. Ensure multi_tracks exists
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'multi_tracks') THEN
                 ALTER TABLE recurring_mixer_schedules ADD COLUMN multi_tracks JSONB DEFAULT '[]';
-                RAISE NOTICE 'Added multi_tracks to recurring_mixer_schedules';
             END IF;
         END IF;
 
@@ -126,29 +153,25 @@ def run_migrations_local(db_url: str):
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_schedules') THEN
              IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'stop_time') THEN
                 ALTER TABLE recurring_schedules DROP COLUMN stop_time;
-                RAISE NOTICE 'Dropped stop_time from recurring_schedules';
             END IF;
-
-            -- Ensure excluded_days exists
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'excluded_days') THEN
                 ALTER TABLE recurring_schedules ADD COLUMN excluded_days TEXT NOT NULL DEFAULT '[]';
-                RAISE NOTICE 'Added excluded_days to recurring_schedules';
             END IF;
-
-            -- Ensure jingle columns exist
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_start') THEN
                 ALTER TABLE recurring_schedules ADD COLUMN jingle_start TEXT;
-                RAISE NOTICE 'Added jingle_start to recurring_schedules';
             END IF;
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_end') THEN
                 ALTER TABLE recurring_schedules ADD COLUMN jingle_end TEXT;
-                RAISE NOTICE 'Added jingle_end to recurring_schedules';
             END IF;
-
-            -- Ensure target_decks exists
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'target_decks') THEN
                 ALTER TABLE recurring_schedules ADD COLUMN target_decks TEXT NOT NULL DEFAULT '[]';
-                RAISE NOTICE 'Added target_decks to recurring_schedules';
+            END IF;
+        END IF;
+
+        -- Ensure users table has all required columns
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users') THEN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'display_name') THEN
+                ALTER TABLE users ADD COLUMN display_name VARCHAR(255);
             END IF;
         END IF;
     END $$;
@@ -182,78 +205,43 @@ def run_migrations_local(db_url: str):
 
 
 def run_migrations_cloud(supabase_url: str, supabase_key: str):
-    """
-    Run migrations via the Supabase Management API.
-    Requires the service_role key and the project ref from the URL.
-    Falls back to a best-effort REST approach if Management API is unavailable.
-    """
     import httpx
     import re
 
     print(f"[migrate] Running cloud migrations against {supabase_url}...")
-
-    # Extract project ref from URL: https://<ref>.supabase.co
     match = re.search(r"https://([^.]+)\.supabase\.co", supabase_url)
     project_ref = match.group(1) if match else None
-
-    mgmt_headers = {
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-    }
+    mgmt_headers = {"Authorization": f"Bearer {supabase_key}", "Content-Type": "application/json"}
 
     def run_sql(sql: str) -> bool:
-        """Try Management API first, then fall back to RPC exec_sql."""
         if project_ref:
             try:
                 r = httpx.post(
                     f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
-                    headers=mgmt_headers,
-                    json={"query": sql},
-                    timeout=30,
+                    headers=mgmt_headers, json={"query": sql}, timeout=30,
                 )
-                if r.status_code < 300:
-                    return True
-                print(f"[migrate] Management API returned {r.status_code}: {r.text[:200]}")
+                if r.status_code < 300: return True
+                print(f"[migrate] Management API {r.status_code}: {r.text[:200]}")
             except Exception as e:
                 print(f"[migrate] Management API error: {e}")
-
-        # Fallback: custom RPC function exec_sql (user must create this manually)
         try:
             r = httpx.post(
                 f"{supabase_url}/rest/v1/rpc/exec_sql",
-                headers={
-                    "apikey": supabase_key,
-                    "Authorization": f"Bearer {supabase_key}",
-                    "Content-Type": "application/json",
-                },
-                json={"sql": sql},
-                timeout=15,
+                headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}", "Content-Type": "application/json"},
+                json={"sql": sql}, timeout=15,
             )
-            if r.status_code < 300:
-                return True
-            print(f"[migrate] exec_sql RPC returned {r.status_code}: {r.text[:200]}")
+            if r.status_code < 300: return True
+            print(f"[migrate] exec_sql RPC {r.status_code}: {r.text[:200]}")
         except Exception as e:
             print(f"[migrate] exec_sql RPC error: {e}")
-
-        print("[migrate] WARNING: Could not run SQL via Management API or exec_sql RPC.")
-        print("[migrate] Run migrations manually in the Supabase dashboard SQL editor.")
         return False
 
     run_sql(BASE_SCHEMA_SQL)
 
-    # Check applied migrations via REST (table must exist first)
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
+    headers = {"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}",
+               "Content-Type": "application/json", "Prefer": "return=representation"}
     try:
-        r = httpx.get(
-            f"{supabase_url}/rest/v1/_migrations?select=name",
-            headers=headers,
-            timeout=10,
-        )
+        r = httpx.get(f"{supabase_url}/rest/v1/_migrations?select=name", headers=headers, timeout=10)
         applied = set(row["name"] for row in r.json()) if r.status_code == 200 else set()
     except Exception:
         applied = set()
