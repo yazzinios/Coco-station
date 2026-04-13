@@ -41,10 +41,11 @@ def create_token(user: dict, expiry_hours: int = DEFAULT_EXPIRY_HOURS) -> str:
     """Create a signed JWT for the given user dict."""
     expire = datetime.utcnow() + timedelta(hours=expiry_hours)
     payload = {
-        "sub":      str(user["id"]),
-        "username": user["username"],
-        "role":     user.get("role", "operator"),
-        "exp":      expire,
+        "sub":            str(user["id"]),
+        "username":       user["username"],
+        "role":           user.get("role", "operator"),
+        "is_super_admin": bool(user.get("is_super_admin", False)),
+        "exp":            expire,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

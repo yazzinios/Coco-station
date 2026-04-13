@@ -79,9 +79,33 @@ CREATE TABLE IF NOT EXISTS users (
     display_name VARCHAR(255),
     password_hash TEXT,
     role VARCHAR(20) NOT NULL DEFAULT 'operator',
+    is_super_admin BOOLEAN NOT NULL DEFAULT FALSE,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS user_permissions (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    allowed_decks JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+    can_announce  BOOLEAN NOT NULL DEFAULT TRUE,
+    can_schedule  BOOLEAN NOT NULL DEFAULT TRUE,
+    can_library   BOOLEAN NOT NULL DEFAULT TRUE,
+    can_requests  BOOLEAN NOT NULL DEFAULT TRUE,
+    can_settings  BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_logs (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     TEXT NOT NULL,
+    username    VARCHAR(100) NOT NULL,
+    action      VARCHAR(100) NOT NULL,
+    details     JSONB,
+    ip_address  VARCHAR(50),
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_logs_created ON user_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_logs_user    ON user_logs (user_id);
 
 INSERT INTO decks (id, name, volume, is_playing) VALUES
     ('a', 'Castle',  100, false),
@@ -107,11 +131,11 @@ def _seed_admin(cur):
         print("[migrate] WARNING: bcrypt not available — admin password not set. Rebuild container.")
     cur.execute(
         """
-        INSERT INTO users (username, display_name, password_hash, role, enabled)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (username) DO NOTHING
+        INSERT INTO users (username, display_name, password_hash, role, is_super_admin, enabled)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (username) DO UPDATE SET is_super_admin = TRUE
         """,
-        ("cocoadmin", "Coco Admin", pw_hash, "admin", True),
+        ("cocoadmin", "Coco Admin", pw_hash, "admin", True, True),
     )
     print("[migrate] Default admin user 'cocoadmin' created.")
 
@@ -173,6 +197,38 @@ def run_migrations_local(db_url: str):
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'display_name') THEN
                 ALTER TABLE users ADD COLUMN display_name VARCHAR(255);
             END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_super_admin') THEN
+                ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN NOT NULL DEFAULT FALSE;
+            END IF;
+        END IF;
+
+        -- Create user_permissions if missing
+        IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
+            CREATE TABLE user_permissions (
+                user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                allowed_decks JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+                can_announce  BOOLEAN NOT NULL DEFAULT TRUE,
+                can_schedule  BOOLEAN NOT NULL DEFAULT TRUE,
+                can_library   BOOLEAN NOT NULL DEFAULT TRUE,
+                can_requests  BOOLEAN NOT NULL DEFAULT TRUE,
+                can_settings  BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        END IF;
+
+        -- Create user_logs if missing
+        IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_logs') THEN
+            CREATE TABLE user_logs (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id     TEXT NOT NULL,
+                username    VARCHAR(100) NOT NULL,
+                action      VARCHAR(100) NOT NULL,
+                details     JSONB,
+                ip_address  VARCHAR(50),
+                created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX idx_user_logs_created ON user_logs (created_at DESC);
+            CREATE INDEX idx_user_logs_user    ON user_logs (user_id);
         END IF;
     END $$;
     """

@@ -645,6 +645,28 @@ export function AppProvider({ children }) {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
       return r.json();
     },
+    // ── Permissions ──
+    getPermissions: async (userId) => {
+      const r = await authFetch(`/api/users/${userId}/permissions`);
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    savePermissions: async (userId, perms) => {
+      const r = await authFetch(`/api/users/${userId}/permissions`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(perms),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    // ── Audit Logs ──
+    getLogs: async (limit = 200, userId = null, offset = 0) => {
+      let url = `/api/logs?limit=${limit}&offset=${offset}`;
+      if (userId) url += `&user_id=${userId}`;
+      const r = await authFetch(url);
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
   };
 
   return (

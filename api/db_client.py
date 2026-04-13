@@ -794,7 +794,7 @@ class DBClient:
     def list_users(self) -> list:
         if self.mode == "cloud":
             try:
-                r = self.supabase.table("users").select("id,username,display_name,role,enabled,created_at").order("created_at").execute()
+                r = self.supabase.table("users").select("id,username,display_name,role,is_super_admin,enabled,created_at").order("created_at").execute()
                 return r.data or []
             except Exception as e:
                 print(f"[DB] list_users (cloud) failed: {e}"); return []
@@ -803,9 +803,31 @@ class DBClient:
             try:
                 conn = self._get_conn()
                 with conn.cursor() as cur:
-                    cur.execute("SELECT id::text, username, display_name, role, enabled, created_at::text FROM users ORDER BY created_at")
+                    cur.execute("""
+                        SELECT u.id::text, u.username, u.display_name, u.role,
+                               COALESCE(u.is_super_admin, FALSE) as is_super_admin,
+                               u.enabled, u.created_at::text,
+                               p.allowed_decks, p.can_announce, p.can_schedule,
+                               p.can_library, p.can_requests, p.can_settings
+                        FROM users u
+                        LEFT JOIN user_permissions p ON p.user_id = u.id
+                        ORDER BY u.created_at
+                    """)
                     cols = [d[0] for d in cur.description]
-                    return [dict(zip(cols, row)) for row in cur.fetchall()]
+                    rows = []
+                    import json as _json
+                    for row in cur.fetchall():
+                        d = dict(zip(cols, row))
+                        # Nest permissions
+                        perm_keys = ['allowed_decks','can_announce','can_schedule','can_library','can_requests','can_settings']
+                        perm = {k: d.pop(k, None) for k in perm_keys}
+                        if isinstance(perm.get('allowed_decks'), str):
+                            perm['allowed_decks'] = _json.loads(perm['allowed_decks'])
+                        if perm['allowed_decks'] is None:
+                            perm['allowed_decks'] = ['a','b','c','d']
+                        d['permissions'] = perm
+                        rows.append(d)
+                    return rows
             except Exception as e:
                 print(f"[DB] list_users (local) failed: {e}"); return []
             finally:
@@ -826,7 +848,7 @@ class DBClient:
         finally:
             self._put_conn(conn)
 
-    def create_user(self, user_id: str, username: str, display_name: str, password_hash: str, role: str) -> dict:
+    def create_user(self, user_id: str, username: str, display_name: str, password_hash: str, role: str, is_super_admin: bool = False) -> dict:
         if self.mode == "cloud":
             try:
                 r = self.supabase.table("users").insert({
@@ -891,6 +913,100 @@ class DBClient:
                 print(f"[DB] delete_user (local) failed: {e}"); raise
             finally:
                 self._put_conn(conn)
+
+    # ── User Permissions ─────────────────────────────────────
+
+    def get_permissions(self, user_id: str) -> dict:
+        """Return permissions for a user. Returns defaults if none set."""
+        conn = None
+        default = {"allowed_decks": ["a","b","c","d"], "can_announce": True, "can_schedule": True,
+                   "can_library": True, "can_requests": True, "can_settings": False}
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT allowed_decks, can_announce, can_schedule, can_library, can_requests, can_settings FROM user_permissions WHERE user_id = %s", (user_id,))
+                row = cur.fetchone()
+                if not row: return default
+                cols = [d[0] for d in cur.description]
+                data = dict(zip(cols, row))
+                if isinstance(data.get("allowed_decks"), str):
+                    import json
+                    data["allowed_decks"] = json.loads(data["allowed_decks"])
+                return data
+        except Exception as e:
+            print(f"[DB] get_permissions failed: {e}"); return default
+        finally:
+            self._put_conn(conn)
+
+    def save_permissions(self, user_id: str, perms: dict):
+        import json
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO user_permissions (user_id, allowed_decks, can_announce, can_schedule, can_library, can_requests, can_settings, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        allowed_decks = EXCLUDED.allowed_decks,
+                        can_announce  = EXCLUDED.can_announce,
+                        can_schedule  = EXCLUDED.can_schedule,
+                        can_library   = EXCLUDED.can_library,
+                        can_requests  = EXCLUDED.can_requests,
+                        can_settings  = EXCLUDED.can_settings,
+                        updated_at    = NOW()
+                """, (
+                    user_id,
+                    json.dumps(perms.get("allowed_decks", ["a","b","c","d"])),
+                    perms.get("can_announce", True),
+                    perms.get("can_schedule", True),
+                    perms.get("can_library", True),
+                    perms.get("can_requests", True),
+                    perms.get("can_settings", False),
+                ))
+        except Exception as e:
+            print(f"[DB] save_permissions failed: {e}"); raise
+        finally:
+            self._put_conn(conn)
+
+    # ── Audit Logs ────────────────────────────────────────────
+
+    def log_action(self, user_id: str, username: str, action: str, details: dict = None, ip: str = None):
+        import json
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO user_logs (user_id, username, action, details, ip_address) VALUES (%s, %s, %s, %s, %s)",
+                    (str(user_id), username, action, json.dumps(details or {}), ip),
+                )
+        except Exception as e:
+            print(f"[DB] log_action failed: {e}")
+        finally:
+            self._put_conn(conn)
+
+    def get_logs(self, limit: int = 200, user_id: str = None, offset: int = 0) -> list:
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "SELECT id::text, user_id, username, action, details, ip_address, created_at::text FROM user_logs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        (user_id, limit, offset)
+                    )
+                else:
+                    cur.execute(
+                        "SELECT id::text, user_id, username, action, details, ip_address, created_at::text FROM user_logs ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        (limit, offset)
+                    )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as e:
+            print(f"[DB] get_logs failed: {e}"); return []
+        finally:
+            self._put_conn(conn)
 
 
 db = DBClient()

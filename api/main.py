@@ -48,6 +48,21 @@ from tts import generate_tts
 from db_client import db
 from auth import verify_token, verify_password, create_token, verify_ldap_credentials, test_ldap_connection
 
+# ── Audit log helper ──────────────────────────────────────────
+def _audit(request: Request, user: dict, action: str, details: dict = None):
+    """Fire-and-forget audit log — never raises."""
+    try:
+        ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
+        db.log_action(
+            user_id  = user.get("sub", "unknown"),
+            username = user.get("username", "unknown"),
+            action   = action,
+            details  = details or {},
+            ip       = ip,
+        )
+    except Exception as e:
+        print(f"[audit] log failed: {e}")
+
 MEDIA_DIR         = Path("data/library")
 ANNOUNCEMENTS_DIR = Path("data/announcements")
 CHIMES_DIR        = Path("data/chimes")
@@ -230,7 +245,7 @@ class LoginRequest(_PydanticBase):
     password: str
 
 @app.post("/api/auth/login")
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request):
     """Public endpoint — returns JWT on valid credentials.
     Flow: if LDAP enabled → try LDAP first → fallback to local DB.
     """
@@ -257,6 +272,11 @@ async def login(req: LoginRequest):
         )
         if ldap_user:
             token = create_token(ldap_user, expiry_hours=expiry_hours)
+            # Audit
+            try:
+                ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "").split(",")[0].strip()
+                db.log_action(ldap_user["id"], ldap_user["username"], "login", {"method": "ldap"}, ip)
+            except Exception: pass
             return {
                 "access_token":    token,
                 "token_type":      "bearer",
@@ -289,6 +309,11 @@ async def login(req: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     token = create_token(user_row, expiry_hours=expiry_hours)
+    # Audit login
+    try:
+        ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "").split(",")[0].strip()
+        db.log_action(str(user_row["id"]), user_row["username"], "login", {"method": "local"}, ip)
+    except Exception: pass
     return {
         "access_token":    token,
         "token_type":      "bearer",
@@ -1568,11 +1593,14 @@ async def list_users(_user: dict = Depends(verify_token)):
     return [{k: v for k, v in u.items() if k != "password_hash"} for u in users]
 
 @app.post("/api/users", status_code=201)
-async def create_user(req: UserCreateRequest, _user: dict = Depends(verify_token)):
-    if _user.get("role") != "admin":
+async def create_user(req: UserCreateRequest, request: Request, _user: dict = Depends(verify_token)):
+    if not (_user.get("role") == "admin" or _user.get("is_super_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
     if req.role not in ("admin", "operator"):
         raise HTTPException(status_code=400, detail="role must be 'admin' or 'operator'")
+    # Only super_admin can create other admins
+    if req.role == "admin" and not _user.get("is_super_admin"):
+        raise HTTPException(status_code=403, detail="Only super-admin can create admin accounts")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     from auth import hash_password
@@ -1589,16 +1617,21 @@ async def create_user(req: UserCreateRequest, _user: dict = Depends(verify_token
         if "unique" in msg.lower() or "duplicate" in msg.lower():
             raise HTTPException(status_code=409, detail="Username already exists")
         raise HTTPException(status_code=500, detail=f"DB error: {msg}")
+    _audit(request, _user, "user.create", {"target": req.username, "role": req.role})
     return {k: v for k, v in user.items() if k != "password_hash"}
 
 @app.put("/api/users/{user_id}")
-async def update_user(user_id: str, req: UserUpdateRequest, _user: dict = Depends(verify_token)):
+async def update_user(user_id: str, req: UserUpdateRequest, request: Request, _user: dict = Depends(verify_token)):
+    is_super = _user.get("is_super_admin", False)
     is_admin = _user.get("role") == "admin"
     is_self  = _user.get("sub") == user_id
-    if not is_admin and not is_self:
+    if not is_super and not is_admin and not is_self:
         raise HTTPException(status_code=403, detail="Admin access required")
-    if not is_admin and (req.role is not None or req.enabled is not None):
+    if not is_super and not is_admin and (req.role is not None or req.enabled is not None):
         raise HTTPException(status_code=403, detail="Only admins can change role or enabled status")
+    # Only super_admin can promote to admin
+    if req.role == "admin" and not is_super:
+        raise HTTPException(status_code=403, detail="Only super-admin can assign admin role")
     if req.role is not None and req.role not in ("admin", "operator"):
         raise HTTPException(status_code=400, detail="role must be 'admin' or 'operator'")
     fields = {}
@@ -1617,11 +1650,14 @@ async def update_user(user_id: str, req: UserUpdateRequest, _user: dict = Depend
         await loop.run_in_executor(None, db.update_user, user_id, fields)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB error: {e}")
+    safe = {k: v for k, v in fields.items() if k != "password_hash"}
+    _audit(request, _user, "user.update", {"target_id": user_id, "fields": list(safe.keys())})
     return {"status": "ok"}
 
 @app.delete("/api/users/{user_id}")
-async def delete_user(user_id: str, _user: dict = Depends(verify_token)):
-    if _user.get("role") != "admin":
+async def delete_user(user_id: str, request: Request, _user: dict = Depends(verify_token)):
+    is_super = _user.get("is_super_admin", False)
+    if not is_super and _user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     if _user.get("sub") == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
@@ -1630,4 +1666,44 @@ async def delete_user(user_id: str, _user: dict = Depends(verify_token)):
         await loop.run_in_executor(None, db.delete_user, user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB error: {e}")
+    _audit(request, _user, "user.delete", {"target_id": user_id})
     return {"status": "ok"}
+
+# ── Permissions ─────────────────────────────────────────────
+
+class PermissionsRequest(_PydanticBase):
+    allowed_decks: List[str] = ["a","b","c","d"]
+    can_announce:  bool = True
+    can_schedule:  bool = True
+    can_library:   bool = True
+    can_requests:  bool = True
+    can_settings:  bool = False
+
+@app.get("/api/users/{user_id}/permissions")
+async def get_user_permissions(user_id: str, _user: dict = Depends(verify_token)):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, db.get_permissions, user_id)
+
+@app.put("/api/users/{user_id}/permissions")
+async def save_user_permissions(user_id: str, req: PermissionsRequest, request: Request, _user: dict = Depends(verify_token)):
+    if not (_user.get("is_super_admin") or _user.get("role") == "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, db.save_permissions, user_id, req.dict())
+    _audit(request, _user, "user.permissions", {"target_id": user_id, "decks": req.allowed_decks})
+    return {"status": "ok"}
+
+# ── Audit Logs ───────────────────────────────────────────────
+
+@app.get("/api/logs")
+async def get_audit_logs(
+    limit: int = 200,
+    user_id: Optional[str] = None,
+    offset: int = 0,
+    _user: dict = Depends(verify_token),
+):
+    """Admins see all logs; operators only see their own."""
+    if _user.get("role") != "admin" and not _user.get("is_super_admin"):
+        user_id = _user.get("sub")   # force own logs only
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, db.get_logs, limit, user_id, offset)
