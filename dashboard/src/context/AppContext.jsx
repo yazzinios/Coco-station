@@ -102,6 +102,34 @@ function getStoredUser()  {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  DEFAULT PERMISSION SETS  (mirror db_client.py defaults)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEFAULT_DECK_CONTROL = {
+  a: { view: true, control: true },
+  b: { view: true, control: true },
+  c: { view: true, control: true },
+  d: { view: true, control: true },
+};
+const DEFAULT_DECK_ACTIONS = [
+  'deck.play','deck.pause','deck.stop','deck.next','deck.previous',
+  'deck.volume','deck.load_track','deck.load_playlist',
+];
+const DEFAULT_PLAYLIST_PERMS = ['playlist.view','playlist.load'];
+
+const DEFAULT_PERMISSIONS = {
+  allowed_decks:  ['a','b','c','d'],
+  deck_control:   DEFAULT_DECK_CONTROL,
+  deck_actions:   DEFAULT_DECK_ACTIONS,
+  playlist_perms: DEFAULT_PLAYLIST_PERMS,
+  can_announce:   true,
+  can_schedule:   true,
+  can_library:    true,
+  can_requests:   true,
+  can_settings:   false,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_DECK = (id, name) => ({
   id, name, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false,
@@ -109,6 +137,8 @@ const DEFAULT_DECK = (id, name) => ({
 
 export function AppProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(getStoredUser);
+  const [userPermissions, setUserPermissions] = useState(null);   // ← NEW
+
   const [decks, setDecks] = useState({
     a: DEFAULT_DECK('a', 'Castle'),
     b: DEFAULT_DECK('b', 'Deck B'),
@@ -139,6 +169,7 @@ export function AppProvider({ children }) {
     localStorage.removeItem('coco_token');
     localStorage.removeItem('coco_user');
     setCurrentUser(null);
+    setUserPermissions(null);
     if (wsRef.current) wsRef.current.close();
   }, []);
 
@@ -170,6 +201,90 @@ export function AppProvider({ children }) {
     error:   (msg) => addToast(msg, 'error'),
     warning: (msg) => addToast(msg, 'warning'),
   };
+
+  // ── Fetch current user's permissions ────────────────────────
+  const fetchMyPermissions = useCallback(async (userId) => {
+    try {
+      const r = await authFetch(`/api/users/${userId}/permissions`);
+      if (r.ok) {
+        const p = await r.json();
+        setUserPermissions(p);
+      }
+    } catch (e) {
+      console.warn('[permissions] Failed to load:', e.message);
+      // Fall back to full-access defaults so the UI doesn't break
+      setUserPermissions(DEFAULT_PERMISSIONS);
+    }
+  }, [authFetch]);
+
+  // ── Load permissions when user changes ─────────────────────
+  useEffect(() => {
+    if (currentUser?.sub) {
+      fetchMyPermissions(currentUser.sub);
+    } else {
+      setUserPermissions(null);
+    }
+  }, [currentUser]); // eslint-disable-line
+
+  // ── Permission helper: is this user elevated (admin / super)? ─
+  const isElevated = Boolean(
+    currentUser?.role === 'admin' || currentUser?.is_super_admin
+  );
+
+  /**
+   * Check if the current user has a specific action permission.
+   * Admins always return true. Operators must have the perm in deck_actions
+   * or playlist_perms.
+   */
+  const hasPermission = useCallback((perm) => {
+    if (!currentUser) return false;
+    if (isElevated) return true;
+    const p = userPermissions || DEFAULT_PERMISSIONS;
+    const granted = [
+      ...(p.deck_actions   || []),
+      ...(p.playlist_perms || []),
+    ];
+    return granted.includes(perm);
+  }, [currentUser, isElevated, userPermissions]);
+
+  /**
+   * Check if the current user can VIEW a specific deck.
+   */
+  const canViewDeck = useCallback((deckId) => {
+    if (!currentUser) return false;
+    if (isElevated) return true;
+    const p = userPermissions || DEFAULT_PERMISSIONS;
+    const dc = p.deck_control || {};
+    const cfg = dc[deckId.toLowerCase()];
+    if (cfg !== undefined) return cfg.view !== false;
+    // fallback: old allowed_decks
+    return (p.allowed_decks || ['a','b','c','d']).includes(deckId.toLowerCase());
+  }, [currentUser, isElevated, userPermissions]);
+
+  /**
+   * Check if the current user can CONTROL a specific deck
+   * (i.e. send commands like play/stop/volume).
+   */
+  const canControlDeck = useCallback((deckId) => {
+    if (!currentUser) return false;
+    if (isElevated) return true;
+    const p = userPermissions || DEFAULT_PERMISSIONS;
+    const dc = p.deck_control || {};
+    const cfg = dc[deckId.toLowerCase()];
+    if (cfg !== undefined) return cfg.control === true;
+    // fallback: old allowed_decks = full control
+    return (p.allowed_decks || ['a','b','c','d']).includes(deckId.toLowerCase());
+  }, [currentUser, isElevated, userPermissions]);
+
+  /**
+   * Check a feature-level permission (can_announce, can_schedule, etc.)
+   */
+  const hasFeature = useCallback((feature) => {
+    if (!currentUser) return false;
+    if (isElevated) return true;
+    const p = userPermissions || DEFAULT_PERMISSIONS;
+    return p[feature] === true;
+  }, [currentUser, isElevated, userPermissions]);
 
   // ── WS URL builder ──────────────────────────────────────────
   function buildWsUrl(path = '/ws') {
@@ -275,23 +390,21 @@ export function AppProvider({ children }) {
 
   // ── WS connection ───────────────────────────────────────────
   useEffect(() => {
-    if (!currentUser) return; // don't connect if not logged in
+    if (!currentUser) return;
 
     let reconnectTimer = null;
     const connectWS = () => {
       const token  = getStoredToken();
       const wsUrl  = buildWsUrl('/ws') + (token ? `?token=${encodeURIComponent(token)}` : '');
-      console.log('[WS] Connecting to', wsUrl);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
-      ws.onopen  = () => { console.log('[WS] Connected'); setWsConnected(true); };
+      ws.onopen  = () => { setWsConnected(true); };
       ws.onmessage = (evt) => {
         try { handleWsMessage(JSON.parse(evt.data)); } catch { }
       };
       ws.onclose = (evt) => {
         setWsConnected(false);
-        if (evt.code === 4001) { logout(); return; } // 4001 = auth failure from server
-        console.log('[WS] Disconnected – retrying in 3s');
+        if (evt.code === 4001) { logout(); return; }
         reconnectTimer = setTimeout(connectWS, 3000);
       };
       ws.onerror = () => ws.close();
@@ -675,6 +788,14 @@ export function AppProvider({ children }) {
       decks, library, announcements, playlists, musicSchedules,
       recurringSchedules, recurringMixerSchedules, musicRequests,
       mic, wsConnected, settings, schedulerStatus, toast, api,
+      // ── Permission helpers ──────────────────────────────────
+      userPermissions,
+      isElevated,
+      hasPermission,
+      canViewDeck,
+      canControlDeck,
+      hasFeature,
+      fetchMyPermissions,
     }}>
       {children}
       <ToastContainer toasts={toasts} onRemove={removeToast} />

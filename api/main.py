@@ -1672,7 +1672,12 @@ async def delete_user(user_id: str, request: Request, _user: dict = Depends(veri
 # ── Permissions ─────────────────────────────────────────────
 
 class PermissionsRequest(_PydanticBase):
-    allowed_decks: List[str] = ["a","b","c","d"]
+    allowed_decks:  List[str]            = ["a","b","c","d"]
+    # ── Granular fields (008_extended_permissions) ───────────
+    deck_control:   Optional[dict]       = None   # {"a":{"view":bool,"control":bool}, ...}
+    deck_actions:   Optional[List[str]]  = None   # ["deck.play", ...]
+    playlist_perms: Optional[List[str]]  = None   # ["playlist.view", ...]
+    # ── Feature flags ────────────────────────────────────────
     can_announce:  bool = True
     can_schedule:  bool = True
     can_library:   bool = True
@@ -1688,8 +1693,14 @@ async def get_user_permissions(user_id: str, _user: dict = Depends(verify_token)
 async def save_user_permissions(user_id: str, req: PermissionsRequest, request: Request, _user: dict = Depends(verify_token)):
     if not (_user.get("is_super_admin") or _user.get("role") == "admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
+    from db_client import DEFAULT_DECK_CONTROL, DEFAULT_DECK_ACTIONS, DEFAULT_PLAYLIST_PERMS
+    perms = req.dict()
+    # Fill granular defaults if the old-style client omitted them
+    if perms["deck_control"]   is None: perms["deck_control"]   = DEFAULT_DECK_CONTROL
+    if perms["deck_actions"]   is None: perms["deck_actions"]   = DEFAULT_DECK_ACTIONS
+    if perms["playlist_perms"] is None: perms["playlist_perms"] = DEFAULT_PLAYLIST_PERMS
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, db.save_permissions, user_id, req.dict())
+    await loop.run_in_executor(None, db.save_permissions, user_id, perms)
     _audit(request, _user, "user.permissions", {"target_id": user_id, "decks": req.allowed_decks})
     return {"status": "ok"}
 

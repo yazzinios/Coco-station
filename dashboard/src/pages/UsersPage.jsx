@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Users, Plus, Edit2, Trash2, Key, ShieldCheck, Shield, Star,
-  Check, X, RefreshCw, Lock, Activity, ChevronDown, ChevronUp,
-  Sliders, Mic2, Calendar, FolderOpen, Settings2, Music2,
+  Check, X, RefreshCw, Lock, Activity, Sliders, Mic2, Calendar,
+  FolderOpen, Settings2, Music2, Eye, EyeOff, Play, Square, SkipForward,
+  Volume2, ListMusic,
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
@@ -12,13 +13,35 @@ const ROLE_CFG = {
   operator: { label: 'Operator', color: '#00d4ff', bg: 'rgba(0,212,255,0.08)', border: 'rgba(0,212,255,0.25)', Icon: Shield },
 };
 const DECK_LABELS = { a: 'Deck A', b: 'Deck B', c: 'Deck C', d: 'Deck D' };
-const PERM_DEFS = [
+const DECK_IDS    = ['a','b','c','d'];
+
+const FEATURE_DEFS = [
   { key: 'can_announce', label: 'Announcements', icon: <Mic2 size={13} />, desc: 'Play & create announcements' },
   { key: 'can_schedule', label: 'Schedules',     icon: <Calendar size={13} />, desc: 'Create & manage schedules' },
   { key: 'can_library',  label: 'Library',       icon: <FolderOpen size={13} />, desc: 'Upload & delete tracks' },
   { key: 'can_requests', label: 'Requests',      icon: <Music2 size={13} />, desc: 'Handle song requests' },
   { key: 'can_settings', label: 'Settings',      icon: <Settings2 size={13} />, desc: 'Access station settings' },
 ];
+
+const DECK_ACTION_DEFS = [
+  { key: 'deck.play',          label: 'Play',         icon: <Play size={12} /> },
+  { key: 'deck.pause',         label: 'Pause',        icon: <span style={{fontSize:'0.8rem'}}>⏸</span> },
+  { key: 'deck.stop',          label: 'Stop',         icon: <Square size={12} /> },
+  { key: 'deck.next',          label: 'Next Track',   icon: <SkipForward size={12} /> },
+  { key: 'deck.previous',      label: 'Prev Track',   icon: <span style={{fontSize:'0.8rem'}}>⏮</span> },
+  { key: 'deck.volume',        label: 'Volume',       icon: <Volume2 size={12} /> },
+  { key: 'deck.load_track',    label: 'Load Track',   icon: <FolderOpen size={12} /> },
+  { key: 'deck.load_playlist', label: 'Load Playlist',icon: <ListMusic size={12} /> },
+];
+
+const PLAYLIST_PERM_DEFS = [
+  { key: 'playlist.view',   label: 'View' },
+  { key: 'playlist.load',   label: 'Load' },
+  { key: 'playlist.edit',   label: 'Edit' },
+  { key: 'playlist.delete', label: 'Delete' },
+  { key: 'playlist.create', label: 'Create' },
+];
+
 const ACTION_ICONS = {
   'login':            '🔑',
   'user.create':      '➕',
@@ -32,15 +55,31 @@ const ACTION_ICONS = {
   'mic.off':          '🎙️',
   'announcement.play':'📢',
 };
+
 const EMPTY_FORM = { username: '', display_name: '', password: '', role: 'operator' };
-const DEFAULT_PERMS = { allowed_decks: ['a','b','c','d'], can_announce: true, can_schedule: true, can_library: true, can_requests: true, can_settings: false };
+
+const DEFAULT_DECK_CONTROL   = { a:{view:true,control:true}, b:{view:true,control:true}, c:{view:true,control:true}, d:{view:true,control:true} };
+const DEFAULT_DECK_ACTIONS   = ['deck.play','deck.pause','deck.stop','deck.next','deck.previous','deck.volume','deck.load_track','deck.load_playlist'];
+const DEFAULT_PLAYLIST_PERMS = ['playlist.view','playlist.load'];
+
+const DEFAULT_PERMS = {
+  allowed_decks:  ['a','b','c','d'],
+  deck_control:   DEFAULT_DECK_CONTROL,
+  deck_actions:   DEFAULT_DECK_ACTIONS,
+  playlist_perms: DEFAULT_PLAYLIST_PERMS,
+  can_announce:   true,
+  can_schedule:   true,
+  can_library:    true,
+  can_requests:   true,
+  can_settings:   false,
+};
 
 // ── Generic Modal ─────────────────────────────────────────
 function Modal({ title, onClose, children, wide }) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.75)', backdropFilter:'blur(6px)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:'1rem' }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background:'rgba(18,18,26,0.98)', border:'1px solid var(--panel-border)', borderRadius:'14px', padding:'1.75rem', width:'100%', maxWidth: wide ? '640px' : '480px', boxShadow:'0 24px 64px rgba(0,0,0,0.75)', maxHeight:'90vh', overflowY:'auto' }}>
+      <div style={{ background:'rgba(18,18,26,0.98)', border:'1px solid var(--panel-border)', borderRadius:'14px', padding:'1.75rem', width:'100%', maxWidth: wide ? '700px' : '480px', boxShadow:'0 24px 64px rgba(0,0,0,0.75)', maxHeight:'90vh', overflowY:'auto' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.25rem' }}>
           <h3 style={{ fontSize:'1rem', fontWeight:'600', margin:0 }}>{title}</h3>
           <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--text-secondary)', cursor:'pointer', fontSize:'1.1rem', padding:'2px 6px', borderRadius:'4px' }}>✕</button>
@@ -68,34 +107,53 @@ function RoleBadge({ role, isSuperAdmin }) {
   );
 }
 
+// ── Toggle Row ────────────────────────────────────────────
+function ToggleRow({ icon, label, desc, on, onChange, color='#2ed573' }) {
+  return (
+    <div onClick={onChange}
+      style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0.65rem 0.9rem', borderRadius:'9px', cursor:'pointer',
+        background: on ? `rgba(46,213,115,0.05)` : 'rgba(255,255,255,0.02)',
+        border: `1px solid ${on ? 'rgba(46,213,115,0.2)' : 'var(--panel-border)'}` }}>
+      <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
+        <span style={{ color: on ? color : 'var(--text-secondary)' }}>{icon}</span>
+        <div>
+          <div style={{ fontSize:'0.83rem', fontWeight:'500', color: on ? 'white' : 'var(--text-secondary)' }}>{label}</div>
+          {desc && <div style={{ fontSize:'0.7rem', color:'var(--text-secondary)' }}>{desc}</div>}
+        </div>
+      </div>
+      <div style={{ width:'34px', height:'18px', borderRadius:'9px', position:'relative',
+        background: on ? color : 'rgba(255,255,255,0.12)', transition:'background 0.2s', flexShrink:0 }}>
+        <div style={{ position:'absolute', top:'3px', left: on ? '17px' : '3px', width:'12px', height:'12px', borderRadius:'50%', background:'white', transition:'left 0.2s' }}/>
+      </div>
+    </div>
+  );
+}
+
 // ════════════════════════════════════════════════════════
 export default function UsersPage() {
   const { api, toast, currentUser } = useApp();
 
-  const [tab,         setTab]         = useState('users'); // 'users' | 'logs'
+  const [tab,         setTab]         = useState('users');
   const [users,       setUsers]       = useState([]);
   const [logs,        setLogs]        = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [logsLoading, setLogsLoading] = useState(false);
 
-  // User form
   const [showForm,    setShowForm]    = useState(false);
   const [editTarget,  setEditTarget]  = useState(null);
   const [form,        setForm]        = useState(EMPTY_FORM);
   const [saving,      setSaving]      = useState(false);
   const [deleting,    setDeleting]    = useState(null);
 
-  // Password modal
   const [pwModal,     setPwModal]     = useState(null);
   const [pwForm,      setPwForm]      = useState({ password:'', confirm:'' });
 
-  // Permissions modal
   const [permModal,   setPermModal]   = useState(null);
   const [perms,       setPerms]       = useState(DEFAULT_PERMS);
   const [permSaving,  setPermSaving]  = useState(false);
 
-  // Logs filter
   const [logFilter,   setLogFilter]   = useState('');
+  const [permTab,     setPermTab]     = useState('decks'); // 'decks' | 'actions' | 'features'
 
   const isSuper = currentUser?.is_super_admin;
   const isAdmin = currentUser?.role === 'admin' || isSuper;
@@ -122,8 +180,15 @@ export default function UsersPage() {
   const openPerms = async (u) => {
     try {
       const p = await api.getPermissions(u.id);
-      setPerms({ ...DEFAULT_PERMS, ...p });
+      setPerms({
+        ...DEFAULT_PERMS,
+        ...p,
+        deck_control:   p.deck_control   || DEFAULT_DECK_CONTROL,
+        deck_actions:   p.deck_actions   || DEFAULT_DECK_ACTIONS,
+        playlist_perms: p.playlist_perms || DEFAULT_PLAYLIST_PERMS,
+      });
       setPermModal(u);
+      setPermTab('decks');
     } catch(e) { toast.error(e.message); }
   };
 
@@ -131,11 +196,50 @@ export default function UsersPage() {
   const savePerms = async () => {
     setPermSaving(true);
     try {
-      await api.savePermissions(permModal.id, perms);
+      // Sync allowed_decks from deck_control (view=true)
+      const allowed_decks = DECK_IDS.filter(d => perms.deck_control?.[d]?.view);
+      await api.savePermissions(permModal.id, { ...perms, allowed_decks });
       toast.success(`Permissions saved for @${permModal.username}`);
       setPermModal(null);
+      await loadUsers();
     } catch(e) { toast.error(e.message); }
     finally { setPermSaving(false); }
+  };
+
+  // ── deck_control helpers ───────────────────────────────
+  const setDeckPerm = (deckId, level, value) => {
+    setPerms(p => ({
+      ...p,
+      deck_control: {
+        ...p.deck_control,
+        [deckId]: {
+          ...(p.deck_control?.[deckId] || { view: false, control: false }),
+          [level]: value,
+          // If enabling control, also enable view
+          ...(level === 'control' && value ? { view: true } : {}),
+          // If disabling view, also disable control
+          ...(level === 'view' && !value ? { control: false } : {}),
+        },
+      },
+    }));
+  };
+
+  const toggleDeckAction = (action) => {
+    setPerms(p => ({
+      ...p,
+      deck_actions: p.deck_actions?.includes(action)
+        ? p.deck_actions.filter(a => a !== action)
+        : [...(p.deck_actions || []), action],
+    }));
+  };
+
+  const togglePlaylistPerm = (perm) => {
+    setPerms(p => ({
+      ...p,
+      playlist_perms: p.playlist_perms?.includes(perm)
+        ? p.playlist_perms.filter(x => x !== perm)
+        : [...(p.playlist_perms || []), perm],
+    }));
   };
 
   // ── user form ──────────────────────────────────────────
@@ -193,7 +297,7 @@ export default function UsersPage() {
   };
 
   const filteredLogs = logs.filter(l =>
-    !logFilter || l.username.includes(logFilter) || l.action.includes(logFilter) || JSON.stringify(l.details||{}).includes(logFilter)
+    !logFilter || l.username?.includes(logFilter) || l.action?.includes(logFilter) || JSON.stringify(l.details||{}).includes(logFilter)
   );
 
   return (
@@ -241,7 +345,7 @@ export default function UsersPage() {
                 <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'700px' }}>
                   <thead>
                     <tr style={{ borderBottom:'1px solid var(--panel-border)', background:'rgba(0,0,0,0.2)' }}>
-                      {['User','Role','Decks','Status','Actions'].map(h => (
+                      {['User','Role','Deck Access','Status','Actions'].map(h => (
                         <th key={h} style={{ padding:'0.8rem 1rem', textAlign:'left', fontSize:'0.7rem', textTransform:'uppercase', letterSpacing:'0.5px', color:'var(--text-secondary)', fontWeight:'600', whiteSpace:'nowrap' }}>{h}</th>
                       ))}
                     </tr>
@@ -250,6 +354,7 @@ export default function UsersPage() {
                     {users.map((u, i) => {
                       const isSelf = u.id === currentUser?.id;
                       const canEdit = isSuper || (isAdmin && !u.is_super_admin) || isSelf;
+                      const dc = u.permissions?.deck_control || {};
                       return (
                         <tr key={u.id}
                           style={{ borderBottom: i<users.length-1 ? '1px solid var(--panel-border)':'none', opacity:u.enabled?1:0.4, transition:'background 0.15s' }}
@@ -277,25 +382,37 @@ export default function UsersPage() {
                             <RoleBadge role={u.role} isSuperAdmin={u.is_super_admin}/>
                           </td>
 
-                          {/* Allowed decks preview */}
+                          {/* Deck access — show V/C per deck */}
                           <td style={{ padding:'0.85rem 1rem' }}>
-                            <div style={{ display:'flex', gap:'0.25rem', flexWrap:'wrap' }}>
-                              {(u.role==='admin'||u.is_super_admin) ? (
-                                <span style={{ fontSize:'0.72rem', color:'var(--text-secondary)' }}>All decks</span>
-                              ) : (
-                                ['a','b','c','d'].map(d => (
-                                  <span key={d} style={{ padding:'0.1rem 0.45rem', borderRadius:'5px', fontSize:'0.72rem', fontWeight:'600',
-                                    background: (u.permissions?.allowed_decks||['a','b','c','d']).includes(d) ? 'rgba(0,212,255,0.12)':'rgba(255,255,255,0.04)',
-                                    border:`1px solid ${(u.permissions?.allowed_decks||['a','b','c','d']).includes(d)?'rgba(0,212,255,0.3)':'var(--panel-border)'}`,
-                                    color:(u.permissions?.allowed_decks||['a','b','c','d']).includes(d)?'var(--accent-blue)':'rgba(255,255,255,0.25)'}}>
-                                    {d.toUpperCase()}
-                                  </span>
-                                ))
-                              )}
-                            </div>
+                            {(u.role==='admin'||u.is_super_admin) ? (
+                              <span style={{ fontSize:'0.72rem', color:'#ffd700' }}>⭐ All decks</span>
+                            ) : (
+                              <div style={{ display:'flex', gap:'0.3rem', flexWrap:'wrap' }}>
+                                {DECK_IDS.map(d => {
+                                  const cfg = dc[d] || {};
+                                  const hasControl = cfg.control;
+                                  const hasView    = cfg.view;
+                                  if (!hasView && !hasControl) return (
+                                    <span key={d} style={{ padding:'0.1rem 0.45rem', borderRadius:'5px', fontSize:'0.7rem', background:'rgba(255,255,255,0.03)', border:'1px solid var(--panel-border)', color:'rgba(255,255,255,0.2)' }}>
+                                      {d.toUpperCase()}
+                                    </span>
+                                  );
+                                  return (
+                                    <span key={d} style={{ padding:'0.1rem 0.55rem', borderRadius:'5px', fontSize:'0.7rem', fontWeight:'600',
+                                      background: hasControl ? 'rgba(0,212,255,0.12)' : 'rgba(255,215,0,0.06)',
+                                      border:`1px solid ${hasControl ? 'rgba(0,212,255,0.3)' : 'rgba(255,215,0,0.2)'}`,
+                                      color: hasControl ? 'var(--accent-blue)' : '#ffd700',
+                                    }}
+                                    title={hasControl ? 'View + Control' : 'View only'}>
+                                      {d.toUpperCase()} {hasControl ? '🎛' : '👁'}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </td>
 
-                          {/* Status toggle */}
+                          {/* Status */}
                           <td style={{ padding:'0.85rem 1rem' }}>
                             {isAdmin && !isSelf && !u.is_super_admin ? (
                               <button onClick={() => toggleEnabled(u)}
@@ -315,12 +432,8 @@ export default function UsersPage() {
                           {/* Actions */}
                           <td style={{ padding:'0.85rem 1rem' }}>
                             <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap' }}>
-                              {canEdit && (
-                                <button onClick={() => openEdit(u)} style={mkBtn('blue')} title="Edit"><Edit2 size={12}/></button>
-                              )}
-                              {canEdit && (
-                                <button onClick={() => { setPwModal(u); setPwForm({password:'',confirm:''}); }} style={mkBtn('amber')} title="Password"><Key size={12}/></button>
-                              )}
+                              {canEdit && <button onClick={() => openEdit(u)} style={mkBtn('blue')} title="Edit"><Edit2 size={12}/></button>}
+                              {canEdit && <button onClick={() => { setPwModal(u); setPwForm({password:'',confirm:''}); }} style={mkBtn('amber')} title="Password"><Key size={12}/></button>}
                               {isAdmin && !isSelf && !u.is_super_admin && (
                                 <button onClick={() => openPerms(u)} style={mkBtn('purple')} title="Permissions"><Lock size={12}/></button>
                               )}
@@ -379,28 +492,15 @@ export default function UsersPage() {
                           onMouseEnter={e => e.currentTarget.style.background='rgba(255,255,255,0.02)'}
                           onMouseLeave={e => e.currentTarget.style.background='transparent'}>
                           <td style={{ padding:'0.7rem 1rem', fontSize:'0.75rem', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>
-                            {dt ? (
-                              <div>
-                                <div>{dt.toLocaleDateString()}</div>
-                                <div style={{ opacity:0.6 }}>{dt.toLocaleTimeString()}</div>
-                              </div>
-                            ) : '—'}
+                            {dt ? <div><div>{dt.toLocaleDateString()}</div><div style={{ opacity:0.6 }}>{dt.toLocaleTimeString()}</div></div> : '—'}
                           </td>
-                          <td style={{ padding:'0.7rem 1rem' }}>
-                            <span style={{ fontSize:'0.82rem', fontWeight:'500' }}>{log.username}</span>
-                          </td>
+                          <td style={{ padding:'0.7rem 1rem' }}><span style={{ fontSize:'0.82rem', fontWeight:'500' }}>{log.username}</span></td>
                           <td style={{ padding:'0.7rem 1rem' }}>
                             <span style={{ display:'inline-flex', alignItems:'center', gap:'0.35rem', fontSize:'0.8rem',
                               padding:'0.18rem 0.6rem', borderRadius:'12px',
-                              background: log.action==='login' ? 'rgba(46,213,115,0.1)' :
-                                          log.action.startsWith('user.') ? 'rgba(253,150,68,0.1)' :
-                                          log.action.startsWith('mic') ? 'rgba(255,71,87,0.1)' : 'rgba(255,255,255,0.05)',
-                              border: log.action==='login' ? '1px solid rgba(46,213,115,0.25)' :
-                                      log.action.startsWith('user.') ? '1px solid rgba(253,150,68,0.25)' :
-                                      log.action.startsWith('mic') ? '1px solid rgba(255,71,87,0.25)' : '1px solid var(--panel-border)',
-                              color: log.action==='login' ? '#2ed573' :
-                                     log.action.startsWith('user.') ? '#fd9644' :
-                                     log.action.startsWith('mic') ? '#ff4757' : 'var(--text-primary)',
+                              background: log.action==='login' ? 'rgba(46,213,115,0.1)' : log.action?.startsWith('user.') ? 'rgba(253,150,68,0.1)' : log.action?.startsWith('mic') ? 'rgba(255,71,87,0.1)' : 'rgba(255,255,255,0.05)',
+                              border: log.action==='login' ? '1px solid rgba(46,213,115,0.25)' : log.action?.startsWith('user.') ? '1px solid rgba(253,150,68,0.25)' : log.action?.startsWith('mic') ? '1px solid rgba(255,71,87,0.25)' : '1px solid var(--panel-border)',
+                              color: log.action==='login' ? '#2ed573' : log.action?.startsWith('user.') ? '#fd9644' : log.action?.startsWith('mic') ? '#ff4757' : 'var(--text-primary)',
                             }}>
                               {emoji} {log.action}
                             </span>
@@ -447,7 +547,6 @@ export default function UsersPage() {
                 {form.password && form.password.length<6 && <div style={{ marginTop:'0.3rem', fontSize:'0.73rem', color:'#ff4757' }}>Too short</div>}
               </div>
             )}
-            {/* Role — only super can assign admin */}
             {isAdmin && (
               <div>
                 <label style={lbl}>Role</label>
@@ -502,60 +601,130 @@ export default function UsersPage() {
         </Modal>
       )}
 
-      {/* ════ Permissions Modal ════ */}
+      {/* ════ Permissions Modal — GRANULAR ════ */}
       {permModal && (
-        <Modal title={`Permissions — @${permModal.username}`} onClose={() => setPermModal(null)} wide>
+        <Modal title={`🔐 Permissions — @${permModal.username}`} onClose={() => setPermModal(null)} wide>
           <div style={{ display:'flex', flexDirection:'column', gap:'1.25rem' }}>
-            {/* Deck access */}
-            <div>
-              <label style={{ ...lbl, marginBottom:'0.75rem' }}>Deck Access</label>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.65rem' }}>
-                {['a','b','c','d'].map(d => {
-                  const on = perms.allowed_decks?.includes(d);
-                  return (
-                    <button key={d} onClick={() => setPerms(p => ({ ...p, allowed_decks: on ? p.allowed_decks.filter(x=>x!==d) : [...(p.allowed_decks||[]),d] }))}
-                      style={{ display:'flex', alignItems:'center', gap:'0.75rem', padding:'0.75rem 1rem', borderRadius:'10px', cursor:'pointer', fontFamily:'inherit', textAlign:'left',
-                        background: on?'rgba(0,212,255,0.1)':'rgba(255,255,255,0.03)',
-                        border: `1px solid ${on?'rgba(0,212,255,0.35)':'var(--panel-border)'}`,
-                        color: on?'var(--accent-blue)':'var(--text-secondary)' }}>
-                      <Sliders size={15}/>
-                      <div>
-                        <div style={{ fontWeight:'600', fontSize:'0.85rem' }}>{DECK_LABELS[d]}</div>
-                        <div style={{ fontSize:'0.72rem', opacity:0.7 }}>{on?'✓ Allowed':'✕ Blocked'}</div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+
+            {/* Sub-tabs */}
+            <div style={{ display:'flex', gap:'0', borderBottom:'1px solid var(--panel-border)' }}>
+              {[
+                { id:'decks',    label:'🎚️ Decks',    desc:'View & control per deck' },
+                { id:'actions',  label:'⚡ Actions',   desc:'Deck & playlist actions' },
+                { id:'features', label:'🧩 Features',  desc:'Page access' },
+              ].map(t => (
+                <button key={t.id} onClick={() => setPermTab(t.id)}
+                  style={{ padding:'0.55rem 1rem', background:'none', border:'none', borderBottom: permTab===t.id ? '2px solid var(--accent-blue)' : '2px solid transparent',
+                    color: permTab===t.id ? 'var(--accent-blue)' : 'var(--text-secondary)', cursor:'pointer', fontFamily:'inherit', fontSize:'0.82rem', fontWeight: permTab===t.id?'600':'400', marginBottom:'-1px' }}>
+                  {t.label}
+                </button>
+              ))}
             </div>
 
-            {/* Feature permissions */}
-            <div>
-              <label style={{ ...lbl, marginBottom:'0.75rem' }}>Feature Access</label>
-              <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
-                {PERM_DEFS.map(({ key, label, icon, desc }) => {
-                  const on = perms[key];
-                  return (
-                    <div key={key} onClick={() => setPerms(p=>({...p,[key]:!p[key]}))}
-                      style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0.7rem 1rem', borderRadius:'9px', cursor:'pointer',
-                        background: on?'rgba(46,213,115,0.06)':'rgba(255,255,255,0.02)',
-                        border:`1px solid ${on?'rgba(46,213,115,0.25)':'var(--panel-border)'}` }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:'0.7rem' }}>
-                        <span style={{ color: on?'#2ed573':'var(--text-secondary)' }}>{icon}</span>
-                        <div>
-                          <div style={{ fontSize:'0.85rem', fontWeight:'500', color: on?'white':'var(--text-secondary)' }}>{label}</div>
-                          <div style={{ fontSize:'0.72rem', color:'var(--text-secondary)' }}>{desc}</div>
+            {/* ── TAB: Deck view/control ── */}
+            {permTab === 'decks' && (
+              <div>
+                <p style={{ fontSize:'0.78rem', color:'var(--text-secondary)', margin:'0 0 0.85rem 0' }}>
+                  Choose what this user can do on each deck.
+                </p>
+                <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                  {DECK_IDS.map(d => {
+                    const cfg = perms.deck_control?.[d] || { view:false, control:false };
+                    return (
+                      <div key={d} style={{ padding:'0.75rem 1rem', borderRadius:'10px', background:'rgba(0,0,0,0.15)', border:'1px solid var(--panel-border)' }}>
+                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', fontWeight:'600', fontSize:'0.88rem' }}>
+                            <Sliders size={14} color={cfg.control ? 'var(--accent-blue)' : cfg.view ? '#ffd700' : 'rgba(255,255,255,0.3)'}/>
+                            {DECK_LABELS[d]}
+                          </div>
+                          <span style={{ fontSize:'0.7rem', color: cfg.control ? 'var(--accent-blue)' : cfg.view ? '#ffd700' : 'rgba(255,255,255,0.25)' }}>
+                            {cfg.control ? '🎛 Control' : cfg.view ? '👁 View only' : '🚫 No access'}
+                          </span>
+                        </div>
+                        <div style={{ display:'flex', gap:'0.5rem' }}>
+                          {/* View toggle */}
+                          <button onClick={() => setDeckPerm(d, 'view', !cfg.view)}
+                            style={{ flex:1, padding:'0.4rem 0.6rem', borderRadius:'7px', border:`1px solid ${cfg.view ? 'rgba(255,215,0,0.4)' : 'var(--panel-border)'}`,
+                              background: cfg.view ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.03)',
+                              color: cfg.view ? '#ffd700' : 'var(--text-secondary)',
+                              cursor:'pointer', fontSize:'0.78rem', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:'0.3rem' }}>
+                            {cfg.view ? <Eye size={12}/> : <EyeOff size={12}/>}
+                            View {cfg.view ? '✓' : '✕'}
+                          </button>
+                          {/* Control toggle */}
+                          <button onClick={() => setDeckPerm(d, 'control', !cfg.control)}
+                            style={{ flex:1, padding:'0.4rem 0.6rem', borderRadius:'7px', border:`1px solid ${cfg.control ? 'rgba(0,212,255,0.4)' : 'var(--panel-border)'}`,
+                              background: cfg.control ? 'rgba(0,212,255,0.08)' : 'rgba(255,255,255,0.03)',
+                              color: cfg.control ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                              cursor:'pointer', fontSize:'0.78rem', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:'0.3rem' }}>
+                            <Sliders size={12}/>
+                            Control {cfg.control ? '✓' : '✕'}
+                          </button>
                         </div>
                       </div>
-                      <div style={{ width:'36px', height:'20px', borderRadius:'10px', position:'relative',
-                        background: on?'#2ed573':'rgba(255,255,255,0.12)', transition:'background 0.2s' }}>
-                        <div style={{ position:'absolute', top:'3px', left: on?'19px':'3px', width:'14px', height:'14px', borderRadius:'50%', background:'white', transition:'left 0.2s' }}/>
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* ── TAB: Deck & Playlist Actions ── */}
+            {permTab === 'actions' && (
+              <div>
+                {/* Deck Actions */}
+                <label style={{ ...lbl, marginBottom:'0.6rem' }}>Deck Actions</label>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.4rem', marginBottom:'1.25rem' }}>
+                  {DECK_ACTION_DEFS.map(({ key, label, icon }) => {
+                    const on = perms.deck_actions?.includes(key);
+                    return (
+                      <button key={key} onClick={() => toggleDeckAction(key)}
+                        style={{ display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.5rem 0.75rem', borderRadius:'8px', cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+                          background: on ? 'rgba(0,212,255,0.08)' : 'rgba(255,255,255,0.02)',
+                          border: `1px solid ${on ? 'rgba(0,212,255,0.3)' : 'var(--panel-border)'}`,
+                          color: on ? 'var(--accent-blue)' : 'var(--text-secondary)', fontSize:'0.8rem' }}>
+                        <span>{icon}</span>
+                        <span>{label}</span>
+                        {on && <Check size={11} style={{ marginLeft:'auto' }}/>}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Playlist Permissions */}
+                <label style={{ ...lbl, marginBottom:'0.6rem' }}>Playlist Permissions</label>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:'0.4rem' }}>
+                  {PLAYLIST_PERM_DEFS.map(({ key, label }) => {
+                    const on = perms.playlist_perms?.includes(key);
+                    return (
+                      <button key={key} onClick={() => togglePlaylistPerm(key)}
+                        style={{ padding:'0.38rem 0.8rem', borderRadius:'20px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.78rem',
+                          background: on ? 'rgba(165,94,234,0.12)' : 'rgba(255,255,255,0.03)',
+                          border: `1px solid ${on ? 'rgba(165,94,234,0.4)' : 'var(--panel-border)'}`,
+                          color: on ? '#a55eea' : 'var(--text-secondary)',
+                          display:'flex', alignItems:'center', gap:'0.3rem' }}>
+                        {on && <Check size={10}/>}
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ── TAB: Feature Access ── */}
+            {permTab === 'features' && (
+              <div>
+                <p style={{ fontSize:'0.78rem', color:'var(--text-secondary)', margin:'0 0 0.85rem 0' }}>
+                  Control which pages this user can access.
+                </p>
+                <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
+                  {FEATURE_DEFS.map(({ key, label, icon, desc }) => (
+                    <ToggleRow key={key} icon={icon} label={label} desc={desc}
+                      on={perms[key]} onChange={() => setPerms(p=>({...p,[key]:!p[key]}))}/>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div style={{ display:'flex', gap:'0.75rem', justifyContent:'flex-end', borderTop:'1px solid var(--panel-border)', paddingTop:'1rem' }}>
               <button onClick={() => setPermModal(null)} style={mkBtn('blue')}>Cancel</button>

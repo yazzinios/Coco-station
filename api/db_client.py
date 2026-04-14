@@ -5,6 +5,20 @@ from typing import List, Dict, Optional
 
 DB_MODE = os.getenv("DB_MODE", "local").lower()
 
+# ── Default permission sets ───────────────────────────────────────────────────
+DEFAULT_DECK_CONTROL = {
+    "a": {"view": True, "control": True},
+    "b": {"view": True, "control": True},
+    "c": {"view": True, "control": True},
+    "d": {"view": True, "control": True},
+}
+DEFAULT_DECK_ACTIONS = [
+    "deck.play", "deck.pause", "deck.stop",
+    "deck.next", "deck.previous",
+    "deck.volume", "deck.load_track", "deck.load_playlist",
+]
+DEFAULT_PLAYLIST_PERMS = ["playlist.view", "playlist.load"]
+
 
 class DBClient:
     def __init__(self):
@@ -129,12 +143,22 @@ class DBClient:
                 try: r["deck_ids"] = json.loads(r["deck_ids"])
                 except: r["deck_ids"] = [r.get("deck_id", "a")]
         elif "deck_id" in r and r.get("deck_id"):
-            r["deck_ids"] = [r["deck_id"]]  # back-compat: wrap old single value
+            r["deck_ids"] = [r["deck_id"]]
         else:
             r["deck_ids"] = []
         if isinstance(r.get("created_at"), datetime):
             r["created_at"] = r["created_at"].isoformat()
         return r
+
+    def _parse_jsonb(self, value, default):
+        if value is None:
+            return default
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return default
+        return value
 
     # ── Announcements — READ ───────────────────────────────────
     def get_announcements(self) -> List[Dict]:
@@ -164,7 +188,7 @@ class DBClient:
             "id":          ann["id"],
             "name":        ann["name"],
             "text":        ann.get("text"),
-            "lang":        ann.get("lang", "en"),   # stored for TTS edit/re-generate
+            "lang":        ann.get("lang", "en"),
             "type":        ann["type"].lower(),
             "file_path":   ann.get("filename"),
             "targets":     json.dumps(ann.get("targets", ["ALL"])),
@@ -236,8 +260,6 @@ class DBClient:
 
     # ── Announcements — UPDATE ─────────────────────────────────
     def update_announcement(self, ann_id: str, updates: Dict):
-        """Update mutable fields: name, targets, scheduled_at, status."""
-        allowed = {"name", "targets", "schedule_at", "status"}
         data = {}
         if "name" in updates and updates["name"] is not None:
             data["name"] = updates["name"]
@@ -579,7 +601,6 @@ class DBClient:
                 self._put_conn(conn)
 
     def save_recurring_schedule(self, s: Dict):
-        # stop_time removed — announcement/mic runs until it ends naturally
         data = {
             "id":              s["id"],
             "name":            s["name"],
@@ -692,8 +713,6 @@ class DBClient:
                 self._put_conn(conn)
 
     def save_recurring_mixer_schedule(self, s: Dict):
-        # stop_time removed — music plays until track/playlist ends naturally
-        # deck_ids replaces deck_id — stored as JSON array for multi-deck support
         raw_deck_ids = s.get("deck_ids") or ([s["deck_id"]] if s.get("deck_id") else [])
         data = {
             "id":           s["id"],
@@ -808,23 +827,35 @@ class DBClient:
                                COALESCE(u.is_super_admin, FALSE) as is_super_admin,
                                u.enabled, u.created_at::text,
                                p.allowed_decks, p.can_announce, p.can_schedule,
-                               p.can_library, p.can_requests, p.can_settings
+                               p.can_library, p.can_requests, p.can_settings,
+                               p.deck_control, p.deck_actions, p.playlist_perms
                         FROM users u
                         LEFT JOIN user_permissions p ON p.user_id = u.id
                         ORDER BY u.created_at
                     """)
                     cols = [d[0] for d in cur.description]
                     rows = []
-                    import json as _json
                     for row in cur.fetchall():
                         d = dict(zip(cols, row))
-                        # Nest permissions
-                        perm_keys = ['allowed_decks','can_announce','can_schedule','can_library','can_requests','can_settings']
+                        perm_keys = [
+                            'allowed_decks','can_announce','can_schedule',
+                            'can_library','can_requests','can_settings',
+                            'deck_control','deck_actions','playlist_perms',
+                        ]
                         perm = {k: d.pop(k, None) for k in perm_keys}
-                        if isinstance(perm.get('allowed_decks'), str):
-                            perm['allowed_decks'] = _json.loads(perm['allowed_decks'])
+                        # Parse JSONB string fields
+                        for jk in ('allowed_decks','deck_control','deck_actions','playlist_perms'):
+                            if isinstance(perm.get(jk), str):
+                                try: perm[jk] = json.loads(perm[jk])
+                                except Exception: pass
                         if perm['allowed_decks'] is None:
                             perm['allowed_decks'] = ['a','b','c','d']
+                        if perm['deck_control'] is None:
+                            perm['deck_control'] = DEFAULT_DECK_CONTROL
+                        if perm['deck_actions'] is None:
+                            perm['deck_actions'] = DEFAULT_DECK_ACTIONS
+                        if perm['playlist_perms'] is None:
+                            perm['playlist_perms'] = DEFAULT_PLAYLIST_PERMS
                         d['permissions'] = perm
                         rows.append(d)
                     return rows
@@ -876,7 +907,6 @@ class DBClient:
                 self._put_conn(conn)
 
     def update_user(self, user_id: str, fields: dict):
-        """Update any subset of: display_name, role, enabled, password_hash."""
         allowed = {"display_name", "role", "enabled", "password_hash"}
         data = {k: v for k, v in fields.items() if k in allowed}
         if not data: return
@@ -917,53 +947,82 @@ class DBClient:
     # ── User Permissions ─────────────────────────────────────
 
     def get_permissions(self, user_id: str) -> dict:
-        """Return permissions for a user. Returns defaults if none set."""
+        """Return full granular permissions for a user. Returns safe defaults if none set."""
         conn = None
-        default = {"allowed_decks": ["a","b","c","d"], "can_announce": True, "can_schedule": True,
-                   "can_library": True, "can_requests": True, "can_settings": False}
+        default = {
+            "allowed_decks":   ["a", "b", "c", "d"],
+            "deck_control":    DEFAULT_DECK_CONTROL,
+            "deck_actions":    DEFAULT_DECK_ACTIONS,
+            "playlist_perms":  DEFAULT_PLAYLIST_PERMS,
+            "can_announce":    True,
+            "can_schedule":    True,
+            "can_library":     True,
+            "can_requests":    True,
+            "can_settings":    False,
+        }
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
-                cur.execute("SELECT allowed_decks, can_announce, can_schedule, can_library, can_requests, can_settings FROM user_permissions WHERE user_id = %s", (user_id,))
+                cur.execute(
+                    """SELECT allowed_decks, deck_control, deck_actions, playlist_perms,
+                              can_announce, can_schedule, can_library, can_requests, can_settings
+                       FROM user_permissions WHERE user_id = %s""",
+                    (user_id,)
+                )
                 row = cur.fetchone()
-                if not row: return default
+                if not row:
+                    return default
                 cols = [d[0] for d in cur.description]
                 data = dict(zip(cols, row))
-                if isinstance(data.get("allowed_decks"), str):
-                    import json
-                    data["allowed_decks"] = json.loads(data["allowed_decks"])
+                # Parse JSONB fields
+                data["allowed_decks"]  = self._parse_jsonb(data.get("allowed_decks"),  ["a","b","c","d"])
+                data["deck_control"]   = self._parse_jsonb(data.get("deck_control"),   DEFAULT_DECK_CONTROL)
+                data["deck_actions"]   = self._parse_jsonb(data.get("deck_actions"),   DEFAULT_DECK_ACTIONS)
+                data["playlist_perms"] = self._parse_jsonb(data.get("playlist_perms"), DEFAULT_PLAYLIST_PERMS)
                 return data
         except Exception as e:
-            print(f"[DB] get_permissions failed: {e}"); return default
+            print(f"[DB] get_permissions failed: {e}")
+            return default
         finally:
             self._put_conn(conn)
 
     def save_permissions(self, user_id: str, perms: dict):
-        import json
+        """Upsert all permission fields for a user."""
         conn = None
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO user_permissions (user_id, allowed_decks, can_announce, can_schedule, can_library, can_requests, can_settings, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                cur.execute(
+                    """
+                    INSERT INTO user_permissions
+                        (user_id, allowed_decks, deck_control, deck_actions, playlist_perms,
+                         can_announce, can_schedule, can_library, can_requests, can_settings, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (user_id) DO UPDATE SET
-                        allowed_decks = EXCLUDED.allowed_decks,
-                        can_announce  = EXCLUDED.can_announce,
-                        can_schedule  = EXCLUDED.can_schedule,
-                        can_library   = EXCLUDED.can_library,
-                        can_requests  = EXCLUDED.can_requests,
-                        can_settings  = EXCLUDED.can_settings,
-                        updated_at    = NOW()
-                """, (
-                    user_id,
-                    json.dumps(perms.get("allowed_decks", ["a","b","c","d"])),
-                    perms.get("can_announce", True),
-                    perms.get("can_schedule", True),
-                    perms.get("can_library", True),
-                    perms.get("can_requests", True),
-                    perms.get("can_settings", False),
-                ))
+                        allowed_decks  = EXCLUDED.allowed_decks,
+                        deck_control   = EXCLUDED.deck_control,
+                        deck_actions   = EXCLUDED.deck_actions,
+                        playlist_perms = EXCLUDED.playlist_perms,
+                        can_announce   = EXCLUDED.can_announce,
+                        can_schedule   = EXCLUDED.can_schedule,
+                        can_library    = EXCLUDED.can_library,
+                        can_requests   = EXCLUDED.can_requests,
+                        can_settings   = EXCLUDED.can_settings,
+                        updated_at     = NOW()
+                    """,
+                    (
+                        user_id,
+                        json.dumps(perms.get("allowed_decks",  ["a","b","c","d"])),
+                        json.dumps(perms.get("deck_control",   DEFAULT_DECK_CONTROL)),
+                        json.dumps(perms.get("deck_actions",   DEFAULT_DECK_ACTIONS)),
+                        json.dumps(perms.get("playlist_perms", DEFAULT_PLAYLIST_PERMS)),
+                        perms.get("can_announce",  True),
+                        perms.get("can_schedule",  True),
+                        perms.get("can_library",   True),
+                        perms.get("can_requests",  True),
+                        perms.get("can_settings",  False),
+                    )
+                )
         except Exception as e:
             print(f"[DB] save_permissions failed: {e}"); raise
         finally:
@@ -972,7 +1031,6 @@ class DBClient:
     # ── Audit Logs ────────────────────────────────────────────
 
     def log_action(self, user_id: str, username: str, action: str, details: dict = None, ip: str = None):
-        import json
         conn = None
         try:
             conn = self._get_conn()

@@ -230,6 +230,17 @@ def run_migrations_local(db_url: str):
             CREATE INDEX idx_user_logs_created ON user_logs (created_at DESC);
             CREATE INDEX idx_user_logs_user    ON user_logs (user_id);
         END IF;
+
+        -- Add granular permission columns (008_extended_permissions) to existing deployments
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
+            ALTER TABLE user_permissions
+                ADD COLUMN IF NOT EXISTS deck_control JSONB
+                    DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+                ADD COLUMN IF NOT EXISTS deck_actions JSONB
+                    DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.load_track","deck.load_playlist"]',
+                ADD COLUMN IF NOT EXISTS playlist_perms JSONB
+                    DEFAULT '["playlist.view","playlist.load"]';
+        END IF;
     END $$;
     """
     print("[migrate] Patching schema inconsistencies...")

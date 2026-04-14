@@ -7,7 +7,7 @@ Default credentials: cocoadmin / Coco@coco (seeded by migrate.py)
 
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 
 import bcrypt
 from jose import jwt, JWTError
@@ -77,9 +77,85 @@ def verify_token_ws(token: Optional[str] = Query(None)) -> dict:
 
 
 def require_admin(user: dict = Depends(verify_token)) -> dict:
-    if user.get("role") != "admin":
+    if user.get("role") != "admin" and not user.get("is_super_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+def require_super_admin(user: dict = Depends(verify_token)) -> dict:
+    if not user.get("is_super_admin"):
+        raise HTTPException(status_code=403, detail="Super-admin access required")
+    return user
+
+
+def is_elevated(user: dict) -> bool:
+    """Returns True if user is admin or super_admin — bypasses per-permission checks."""
+    return user.get("role") == "admin" or bool(user.get("is_super_admin"))
+
+
+# ── Permission checker dependency factory ────────────────────
+
+def require_permission(perm: str):
+    """
+    FastAPI dependency factory. Usage:
+        @app.post("/api/decks/{id}/play")
+        async def play_deck(id: str, user = Depends(require_permission("deck.play"))):
+            ...
+    Admins and super-admins always pass. For operators, the permission must be
+    present in their granted deck_actions or playlist_perms list.
+    """
+    async def _check(user: dict = Depends(verify_token)) -> dict:
+        if is_elevated(user):
+            return user
+        # For operators: permission list is loaded from the DB on each call.
+        # This keeps the check stateless per-request.
+        try:
+            from db_client import db
+            import asyncio
+            loop = asyncio.get_event_loop()
+            perms = await loop.run_in_executor(None, db.get_permissions, user["sub"])
+            granted = (perms.get("deck_actions") or []) + (perms.get("playlist_perms") or [])
+            if perm not in granted:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Permission denied: '{perm}' not granted for this user"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Permission check failed: {e}")
+        return user
+    return _check
+
+
+# ── Deck access checker ───────────────────────────────────────
+
+def require_deck_access(level: str = "view"):
+    """
+    FastAPI dependency factory for deck-level view/control access.
+    level = "view" | "control"
+    The deck_id must be a path param named 'deck_id'.
+    """
+    async def _check(deck_id: str, user: dict = Depends(verify_token)) -> dict:
+        if is_elevated(user):
+            return user
+        try:
+            from db_client import db
+            import asyncio
+            loop = asyncio.get_event_loop()
+            perms = await loop.run_in_executor(None, db.get_permissions, user["sub"])
+            deck_control = perms.get("deck_control") or {}
+            deck_cfg = deck_control.get(deck_id.lower(), {})
+            if level == "control" and not deck_cfg.get("control", False):
+                raise HTTPException(status_code=403, detail=f"No control access for Deck {deck_id.upper()}")
+            if level == "view" and not deck_cfg.get("view", True):
+                raise HTTPException(status_code=403, detail=f"No view access for Deck {deck_id.upper()}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Deck access check failed: {e}")
+        return user
+    return _check
 
 
 # ── LDAP Authentication ───────────────────────────────────────
@@ -88,22 +164,9 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
     """
     Try to authenticate username/password against an LDAP/AD server.
     Returns a user-info dict on success, None on failure.
-
-    ldap_cfg keys:
-      server      — e.g. "ldap://192.168.1.10" or "ldaps://dc.company.com"
-      port        — int, default 389 (636 for LDAPS)
-      base_dn     — e.g. "dc=company,dc=com"
-      bind_dn     — service account DN, e.g. "cn=svc,dc=company,dc=com"
-      bind_pw     — service account password
-      user_filter — LDAP filter, e.g. "(sAMAccountName={username})"
-      attr_email  — attribute name for email  (default: mail)
-      attr_name   — attribute name for display name (default: cn)
-      role_admin_group — DN of group whose members get role=admin (optional)
-      use_ssl     — bool
-      tls_verify  — bool (set False for self-signed certs)
     """
     try:
-        from ldap3 import Server, Connection, ALL, NTLM, SIMPLE, Tls
+        from ldap3 import Server, Connection, ALL, Tls
         import ssl
 
         server_url = ldap_cfg.get("server", "")
@@ -124,11 +187,10 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
 
         srv = Server(server_url, port=port, get_info=ALL, tls=tls, connect_timeout=5)
 
-        # Step 1 — bind with service account to search
         if bind_dn and bind_pw:
             conn = Connection(srv, user=bind_dn, password=bind_pw, auto_bind=True)
         else:
-            conn = Connection(srv, auto_bind=True)  # anonymous bind
+            conn = Connection(srv, auto_bind=True)
 
         conn.search(
             search_base=base_dn,
@@ -145,11 +207,9 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
         user_dn  = entry.entry_dn
         conn.unbind()
 
-        # Step 2 — bind as the user to verify password
         user_conn = Connection(srv, user=user_dn, password=password, auto_bind=True)
         user_conn.unbind()
 
-        # Step 3 — determine role
         role = "operator"
         if admin_group:
             member_of = [str(g) for g in entry.memberOf] if hasattr(entry, "memberOf") else []
@@ -161,7 +221,7 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
 
         print(f"[ldap] Authenticated '{username}' from LDAP (role={role})")
         return {
-            "id":           f"ldap-{username}",   # synthetic ID for LDAP users
+            "id":           f"ldap-{username}",
             "username":     username,
             "display_name": display_name,
             "email":        email,
@@ -175,10 +235,6 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
 
 
 def test_ldap_connection(ldap_cfg: dict) -> dict:
-    """
-    Test LDAP server connectivity and service-account bind.
-    Returns {"ok": True/False, "detail": str}
-    """
     try:
         from ldap3 import Server, Connection, ALL, Tls
         import ssl
@@ -198,7 +254,6 @@ def test_ldap_connection(ldap_cfg: dict) -> dict:
         srv  = Server(server_url, port=port, get_info=ALL, tls=tls, connect_timeout=5)
         conn = Connection(srv, user=bind_dn, password=bind_pw, auto_bind=True)
 
-        # Count users visible from base_dn
         conn.search(base_dn, "(objectClass=person)", attributes=["cn"])
         count = len(conn.entries)
         conn.unbind()

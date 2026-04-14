@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusic, SkipBack, SkipForward } from 'lucide-react';
+import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusic, SkipBack, SkipForward, Lock } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 const DECK_COLORS = {
@@ -154,18 +154,57 @@ function DeckMonitor({ id, color }) {
   );
 }
 
+// ── Permission-gated button ─────────────────────────────────────────────────
+function PermBtn({ allowed, onClick, disabled, title, style, children, lockedTitle }) {
+  const isDisabled = !allowed || disabled;
+  return (
+    <button
+      onClick={allowed ? onClick : undefined}
+      disabled={isDisabled}
+      title={allowed ? title : (lockedTitle || `🔒 ${title} — permission denied`)}
+      style={{
+        ...style,
+        opacity: isDisabled ? 0.35 : 1,
+        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        position: 'relative',
+      }}
+    >
+      {children}
+      {!allowed && (
+        <span style={{
+          position: 'absolute', top: '-4px', right: '-4px',
+          width: '14px', height: '14px', borderRadius: '50%',
+          background: 'rgba(255,71,87,0.85)', display: 'flex',
+          alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Lock size={8} color="white" />
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ── Main DeckPanel ──────────────────────────────────────────────────────────────
 export default function DeckPanel({ id }) {
-  const { decks, playlists, toast, api } = useApp();
+  const { decks, playlists, toast, api, canViewDeck, canControlDeck, hasPermission } = useApp();
+
+  // ── Permission checks for this deck ──────────────────────
+  const canView    = canViewDeck ? canViewDeck(id) : true;
+  const canControl = canControlDeck ? canControlDeck(id) : true;
+  const canPlay    = canControl && (hasPermission ? hasPermission('deck.play')    : true);
+  const canPause   = canControl && (hasPermission ? hasPermission('deck.pause')   : true);
+  const canStop    = canControl && (hasPermission ? hasPermission('deck.stop')    : true);
+  const canNext    = canControl && (hasPermission ? hasPermission('deck.next')    : true);
+  const canPrev    = canControl && (hasPermission ? hasPermission('deck.previous'): true);
+  const canVolume  = canControl && (hasPermission ? hasPermission('deck.volume')  : true);
+
   const deck  = decks[id] || { id, name: `Deck ${id.toUpperCase()}`, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false, playlist_id: null, playlist_index: null, playlist_loop: false };
   const activePlaylist = deck.playlist_id ? playlists.find(p => p.id === deck.playlist_id) : null;
   const color = DECK_COLORS[id] || DECK_COLORS.a;
 
-  // volumeLocal tracks the slider visually; the API call only fires on pointer release.
   const [volumeLocal, setVolumeLocal] = useState(deck.volume);
   const [copied,      setCopied]      = useState(false);
-
-  const [optimistic, setOptimistic] = useState(null);
+  const [optimistic, setOptimistic]   = useState(null);
 
   const resolvedOptimistic = useMemo(() => (
     optimistic
@@ -176,18 +215,37 @@ export default function DeckPanel({ id }) {
   const effectiveOptimistic = resolvedOptimistic ? null : optimistic;
   const displayWithOptimistic = effectiveOptimistic ? { ...deck, ...effectiveOptimistic } : deck;
 
+  // If user cannot view this deck at all — render a placeholder
+  if (!canView) {
+    return (
+      <div className="glass-panel" style={{
+        height: '420px', minHeight: '360px', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: '0.75rem', opacity: 0.4,
+      }}>
+        <Lock size={28} color="rgba(255,255,255,0.3)" />
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
+          Deck {id.toUpperCase()}<br />
+          <span style={{ fontSize: '0.72rem', opacity: 0.7 }}>No access</span>
+        </div>
+      </div>
+    );
+  }
+
   // ── Play / Pause / Resume ────────────────────────────────────────────────────
   const handlePlay = async () => {
     if (!deck.track) { toast.error('Load a track first'); return; }
     if (deck.is_playing) {
+      if (!canPause) { toast.warning('🔒 Pause permission denied'); return; }
       setOptimistic({ is_playing: false, is_paused: true });
       try { await api.pause(id); }
       catch (err) { setOptimistic(null); toast.error(err.message); }
     } else if (deck.is_paused) {
+      if (!canPlay) { toast.warning('🔒 Play permission denied'); return; }
       setOptimistic({ is_playing: true, is_paused: false });
       try { await api.pause(id); }
       catch (err) { setOptimistic(null); toast.error(err.message); }
     } else {
+      if (!canPlay) { toast.warning('🔒 Play permission denied'); return; }
       setOptimistic({ is_playing: true, is_paused: false });
       try { await api.play(id); }
       catch (err) { setOptimistic(null); toast.error(err.message); }
@@ -210,19 +268,18 @@ export default function DeckPanel({ id }) {
     }
   };
 
-  // Volume: update local state immediately (responsive slider),
-  // but only send the HTTP request when the user releases the pointer.
   const handleVolumeChange = (e) => {
+    if (!canVolume) return;
     setVolumeLocal(Number(e.target.value));
   };
 
   const handleVolumeCommit = useCallback(async (e) => {
+    if (!canVolume) return;
     const v = Number(e.target.value);
     setVolumeLocal(v);
-    try { await api.setVolume(id, v); } catch { /* ignore transient volume update failures */ }
-  }, [id, api]);
+    try { await api.setVolume(id, v); } catch { }
+  }, [id, api, canVolume]);
 
-  // Stream URLs
   const getRtspUrl = () => `rtsp://${window.location.hostname}:8554/deck-${id}`;
   const getHlsUrl  = () => `${window.location.origin}/deck-${id}/index.m3u8`;
 
@@ -253,19 +310,26 @@ export default function DeckPanel({ id }) {
   const hasQueue         = Boolean(deck.playlist_id);
 
   const handlePrevious = async () => {
-    try {
-      await api.previousTrack(id);
-    } catch (err) {
-      toast.error(err.message);
-    }
+    try { await api.previousTrack(id); }
+    catch (err) { toast.error(err.message); }
   };
   const handleNext = async () => {
-    try {
-      await api.nextTrack(id);
-    } catch (err) {
-      toast.error(err.message);
-    }
+    try { await api.nextTrack(id); }
+    catch (err) { toast.error(err.message); }
   };
+
+  // View-only badge (user can see but not control)
+  const viewOnlyBanner = !canControl ? (
+    <div style={{
+      position: 'absolute', top: '0.5rem', right: '0.5rem', zIndex: 10,
+      display: 'flex', alignItems: 'center', gap: '0.3rem',
+      padding: '0.2rem 0.55rem', borderRadius: '20px', fontSize: '0.65rem',
+      background: 'rgba(255,71,87,0.12)', border: '1px solid rgba(255,71,87,0.3)',
+      color: '#ff6b6b',
+    }}>
+      <Lock size={10} /> View only
+    </div>
+  ) : null;
 
   return (
     <div className="glass-panel deck-panel-mobile" style={{
@@ -274,6 +338,8 @@ export default function DeckPanel({ id }) {
       borderColor: displayWithOptimistic.is_playing ? color.accent + '40' : 'var(--panel-border)',
       transition: 'border-color 0.3s',
     }}>
+      {viewOnlyBanner}
+
       {displayWithOptimistic.is_playing && (
         <div style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
@@ -350,45 +416,66 @@ export default function DeckPanel({ id }) {
         </div>
       </div>
 
-      {/* Controls: Play | Stop | Loop */}
+      {/* Controls */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-        <button onClick={handlePrevious} disabled={!hasQueue} title="Previous track" style={{
-          width: '44px', height: '44px', borderRadius: '50%', border: 'none',
-          background: hasQueue ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
-          color: hasQueue ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.2)',
-          cursor: hasQueue ? 'pointer' : 'not-allowed',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'all 0.2s',
-        }}>
-          <SkipBack size={16} />
-        </button>
 
-        <button onClick={handlePlay} disabled={!deck.track} title={displayWithOptimistic.is_playing ? 'Pause' : displayWithOptimistic.is_paused ? 'Resume' : 'Play'} style={{
-          width: '44px', height: '44px', borderRadius: '50%', border: 'none',
-          background: deck.track ? (displayWithOptimistic.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
-          color: deck.track ? (displayWithOptimistic.is_playing ? color.accent : '#000') : 'rgba(255,255,255,0.2)',
-          cursor: deck.track ? 'pointer' : 'not-allowed',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: displayWithOptimistic.is_playing ? `0 0 12px ${color.glow}` : 'none',
-          transition: 'all 0.2s',
-        }}>
+        {/* Previous */}
+        <PermBtn
+          allowed={canPrev}
+          onClick={handlePrevious}
+          disabled={!hasQueue}
+          title="Previous track"
+          style={{
+            width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+            background: hasQueue && canPrev ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+            color: hasQueue && canPrev ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.2s',
+          }}
+        >
+          <SkipBack size={16} />
+        </PermBtn>
+
+        {/* Play / Pause */}
+        <PermBtn
+          allowed={displayWithOptimistic.is_playing ? canPause : canPlay}
+          onClick={handlePlay}
+          disabled={!deck.track}
+          title={displayWithOptimistic.is_playing ? 'Pause' : displayWithOptimistic.is_paused ? 'Resume' : 'Play'}
+          style={{
+            width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+            background: deck.track ? (displayWithOptimistic.is_playing ? 'rgba(0,0,0,0.2)' : color.accent) : 'rgba(255,255,255,0.05)',
+            color: deck.track ? (displayWithOptimistic.is_playing ? color.accent : '#000') : 'rgba(255,255,255,0.2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: displayWithOptimistic.is_playing ? `0 0 12px ${color.glow}` : 'none',
+            transition: 'all 0.2s',
+          }}
+        >
           {displayWithOptimistic.is_playing
             ? <Pause size={18} fill="currentColor" />
             : <Play  size={18} fill="currentColor" style={{ marginLeft: '2px' }} />}
-        </button>
+        </PermBtn>
 
-        <button onClick={handleStop} disabled={!isActive} title="Stop" style={{
-          width: '44px', height: '44px', borderRadius: '50%', border: 'none',
-          background: isActive ? 'rgba(255,71,87,0.15)' : 'rgba(255,255,255,0.05)',
-          color: isActive ? '#ff4757' : 'rgba(255,255,255,0.2)',
-          cursor: isActive ? 'pointer' : 'not-allowed',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'all 0.2s',
-        }}>
+        {/* Stop */}
+        <PermBtn
+          allowed={canStop}
+          onClick={handleStop}
+          disabled={!isActive}
+          title="Stop"
+          style={{
+            width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+            background: isActive && canStop ? 'rgba(255,71,87,0.15)' : 'rgba(255,255,255,0.05)',
+            color: isActive && canStop ? '#ff4757' : 'rgba(255,255,255,0.2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.2s',
+          }}
+        >
           <Square size={16} fill="currentColor" />
-        </button>
+        </PermBtn>
 
-        <button
+        {/* Loop — uses same permission as play */}
+        <PermBtn
+          allowed={canPlay}
           onClick={handleLoop}
           disabled={!deck.track}
           title={deck.is_loop ? 'Loop ON — click to disable' : 'Loop OFF — click to enable'}
@@ -398,47 +485,64 @@ export default function DeckPanel({ id }) {
               ? `rgba(${color.accent.replace(/[^\d,]/g, '')},0.15)`
               : 'rgba(255,255,255,0.05)',
             color: deck.is_loop ? color.accent : (deck.track ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)'),
-            cursor: deck.track ? 'pointer' : 'not-allowed',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             boxShadow: deck.is_loop ? `0 0 8px ${color.glow}` : 'none',
             transition: 'all 0.2s',
           }}
         >
           <Repeat size={16} />
-        </button>
+        </PermBtn>
 
-        <button onClick={handleNext} disabled={!hasQueue} title="Next track" style={{
-          width: '44px', height: '44px', borderRadius: '50%', border: 'none',
-          background: hasQueue ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
-          color: hasQueue ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.2)',
-          cursor: hasQueue ? 'pointer' : 'not-allowed',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'all 0.2s',
-        }}>
+        {/* Next */}
+        <PermBtn
+          allowed={canNext}
+          onClick={handleNext}
+          disabled={!hasQueue}
+          title="Next track"
+          style={{
+            width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+            background: hasQueue && canNext ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+            color: hasQueue && canNext ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.2s',
+          }}
+        >
           <SkipForward size={16} />
-        </button>
+        </PermBtn>
       </div>
 
-      {/* Volume — visual update on every drag, HTTP request only on release */}
+      {/* Volume */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
-        <Volume2 size={14} color="var(--text-secondary)" />
-        <input
-          type="range" min="0" max="100" value={volumeLocal}
-          onChange={handleVolumeChange}
-          onPointerUp={handleVolumeCommit}
-          onMouseUp={handleVolumeCommit}
-          style={{
-            flex: 1, height: '3px', appearance: 'none',
-            background: `linear-gradient(to right, ${color.accent} ${volumeLocal}%, rgba(255,255,255,0.15) ${volumeLocal}%)`,
-            borderRadius: '2px', cursor: 'pointer', outline: 'none',
-          }}
-        />
-        <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', width: '28px', textAlign: 'right' }}>
+        <Volume2 size={14} color={canVolume ? 'var(--text-secondary)' : 'rgba(255,255,255,0.2)'} />
+        <div style={{ flex: 1, position: 'relative' }}>
+          <input
+            type="range" min="0" max="100" value={volumeLocal}
+            onChange={handleVolumeChange}
+            onPointerUp={handleVolumeCommit}
+            onMouseUp={handleVolumeCommit}
+            disabled={!canVolume}
+            style={{
+              width: '100%', height: '3px', appearance: 'none',
+              background: `linear-gradient(to right, ${canVolume ? color.accent : 'rgba(255,255,255,0.2)'} ${volumeLocal}%, rgba(255,255,255,0.15) ${volumeLocal}%)`,
+              borderRadius: '2px', cursor: canVolume ? 'pointer' : 'not-allowed', outline: 'none',
+            }}
+          />
+          {!canVolume && (
+            <div style={{
+              position: 'absolute', right: 0, top: '-18px',
+              fontSize: '0.62rem', color: '#ff6b6b',
+              display: 'flex', alignItems: 'center', gap: '0.2rem',
+            }}>
+              <Lock size={9} /> locked
+            </div>
+          )}
+        </div>
+        <span style={{ fontSize: '0.7rem', color: canVolume ? 'var(--text-secondary)' : 'rgba(255,255,255,0.2)', width: '28px', textAlign: 'right' }}>
           {volumeLocal}%
         </span>
       </div>
 
-      {/* Monitor — browser audio, WHEP/WebRTC with HLS fallback */}
+      {/* Monitor */}
       <DeckMonitor id={id} color={color} />
 
       {/* Stream URLs */}
