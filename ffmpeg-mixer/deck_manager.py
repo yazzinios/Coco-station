@@ -70,11 +70,12 @@ class Deck:
         self._mic_last_active = 0.0
         self._mic_holdoff     = 0.8   # seconds to stay ducked after mic goes silent
 
-        self.track_q = queue.Queue(maxsize=100)
-        self.ann_q   = queue.Queue(maxsize=100)
+        self.track_q = queue.Queue(maxsize=500)  # ~1.16s buffer — absorbs FFmpeg startup spikes
+        self.ann_q   = queue.Queue(maxsize=200)
         self.mic_q   = queue.Queue(maxsize=100)
 
         self.stream_proc = None
+        self._last_track_chunk = b'\x00' * CHUNK_SIZE  # carry-over: avoids silence holes on starvation
         self._start_master_stream()
 
         self.mixer_thread = threading.Thread(target=self._mix_loop, daemon=True)
@@ -102,12 +103,15 @@ class Deck:
                 time.sleep(sleep_for)
             next_tick += CHUNK_DURATION
 
-            # Track audio
+            # Track audio — use carry-over instead of silence on starvation
             track_chunk = silence
             try:
                 track_chunk = self.track_q.get(timeout=CHUNK_DURATION * 0.5)
+                self._last_track_chunk = track_chunk  # keep last good chunk
             except queue.Empty:
-                pass
+                if self.is_playing:
+                    track_chunk = self._last_track_chunk  # repeat last chunk instead of silence
+                # else: deck stopped, silence is correct
 
             # Announcement audio
             ann_chunk = silence
@@ -149,11 +153,10 @@ class Deck:
             except Exception:
                 pass
 
-            # Write to RTMP encoder
+            # Write to RTMP encoder (no per-chunk flush — OS buffer handles it, saves syscalls)
             try:
                 if self.stream_proc and self.stream_proc.stdin:
                     self.stream_proc.stdin.write(mixed)
-                    self.stream_proc.stdin.flush()
             except (BrokenPipeError, OSError):
                 print(f"[Deck {self.name}] Broken pipe — restarting RTMP stream")
                 self._start_master_stream()
@@ -245,6 +248,7 @@ class Deck:
             self.is_playing    = False
             self.is_loop       = False
             self.current_track = None
+            self._last_track_chunk = b'\x00' * CHUNK_SIZE  # reset carry-over on stop
             # Drain track queue
             while not self.track_q.empty():
                 try: self.track_q.get_nowait()
