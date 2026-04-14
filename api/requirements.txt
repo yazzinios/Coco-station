@@ -13,3 +13,7 @@ httpx>=0.25.0
 python-jose[cryptography]>=3.3.0
 bcrypt>=4.1.2
 ldap3>=2.9.1
+# Enhanced Authentication & Security
+pyotp>=2.9.0  # TOTP/2FA support
+redis>=5.0.0  # Session and cache management (optional, for production)
+slowapi>=0.1.9  # Rate limiting
