@@ -457,8 +457,13 @@ async def upload_jingle(
     except Exception as e:
         print(f"[DB] Failed to save jingle setting: {e}")
 
+    # Explicitly verify the file exists on disk before broadcasting
+    if dest.exists():
+        print(f"[jingle] Uploaded {jingle_type} jingle: {safe_name} ({len(content)} bytes)")
+    else:
+        print(f"[jingle] ERROR: {jingle_type} jingle file not found on disk after write: {safe_name}")
+
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
-    print(f"[jingle] Uploaded {jingle_type} jingle: {safe_name}")
     return {"status": "ok", "jingle_type": jingle_type, "filename": safe_name}
 
 @app.delete("/api/settings/jingles/{jingle_type}")
@@ -509,6 +514,7 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         duration = await get_audio_duration(path)
+        print(f"[jingle] {jingle_type} duration: {duration}s. Sleeping...")
         await asyncio.sleep(min(duration + 0.15, 30.0))
     except Exception as e:
         print(f"[jingle] {jingle_type} play error: {e}")
@@ -720,9 +726,9 @@ async def fade_and_enable_mic(deck_ids: list):
     print(f"[trigger] mic locked — decks {deck_ids}")
     # STATE 2: intro jingle before mic goes live
     await _play_chime_and_wait(deck_ids)
-    await _play_global_jingle("intro", deck_ids)
-    # STATE 3: duck
+    # STATE 3: duck FIRST so jingle is heard clearly over lowered music
     await _duck_acquire(source_type="mic")
+    await _play_global_jingle("intro", deck_ids)
 
 
 async def fade_restore_after_mic(deck_ids: list):

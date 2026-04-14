@@ -99,13 +99,16 @@ export default function SettingsPage() {
   // Load chime + jingle status on mount
   useEffect(() => {
     api.getChimeStatus().then(s => setChimeExists(s.exists)).catch(() => {});
+  }, [api]);
+
+  useEffect(() => {
     api.getJingleStatus().then(s => {
       setJingleIntroExists(s.intro?.exists ?? false);
       setJingleIntroFilename(s.intro?.filename ?? null);
       setJingleOutroExists(s.outro?.exists ?? false);
       setJingleOutroFilename(s.outro?.filename ?? null);
     }).catch(() => {});
-  }, []); // eslint-disable-line
+  }, [api, settings.jingle_intro, settings.jingle_outro]);
 
   // ── Chime ──
   const handleChimeUpload = async (file) => {

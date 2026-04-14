@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     curl \
     tzdata \
+    ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip/setuptools/wheel first so all modern wheels resolve correctly
