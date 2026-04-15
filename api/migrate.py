@@ -2,8 +2,8 @@ import os
 import glob
 import psycopg2
 
-# Inline SQL — guaranteed to run regardless of build context or file paths.
-# All statements are IF NOT EXISTS / ON CONFLICT safe — can be re-run anytime.
+# Inline SQL -- guaranteed to run regardless of build context or file paths.
+# All statements are IF NOT EXISTS / ON CONFLICT safe -- can be re-run anytime.
 BASE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS _migrations (
     id SERIAL PRIMARY KEY,
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(100) UNIQUE NOT NULL,
     display_name VARCHAR(255),
     password_hash TEXT,
-    role VARCHAR(20) NOT NULL DEFAULT 'operator',
+    role VARCHAR(50) NOT NULL DEFAULT 'operator',
     is_super_admin BOOLEAN NOT NULL DEFAULT FALSE,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -86,13 +86,37 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS user_permissions (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    allowed_decks JSONB NOT NULL DEFAULT '["a","b","c","d"]',
-    can_announce  BOOLEAN NOT NULL DEFAULT TRUE,
-    can_schedule  BOOLEAN NOT NULL DEFAULT TRUE,
-    can_library   BOOLEAN NOT NULL DEFAULT TRUE,
-    can_requests  BOOLEAN NOT NULL DEFAULT TRUE,
-    can_settings  BOOLEAN NOT NULL DEFAULT FALSE,
-    updated_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+    deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+    deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
+    playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
+    can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
+    can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
+    can_library    BOOLEAN NOT NULL DEFAULT TRUE,
+    can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
+    can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- roles: system + custom roles with default permission templates
+CREATE TABLE IF NOT EXISTS roles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(50) UNIQUE NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    color VARCHAR(20) DEFAULT '#6B7280',
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    default_allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+    default_deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+    default_deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
+    default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
+    default_can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
+    default_can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
+    default_can_library    BOOLEAN NOT NULL DEFAULT TRUE,
+    default_can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
+    default_can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS user_logs (
@@ -116,28 +140,79 @@ ON CONFLICT (id) DO NOTHING;
 """
 
 
+def _seed_roles(cur):
+    """Insert the four built-in system roles if they don't already exist."""
+    FULL_DECKS         = '["a","b","c","d"]'
+    FULL_CTRL          = '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}'
+    VIEW_ONLY_CTRL     = '{"a":{"view":true,"control":false},"b":{"view":true,"control":false},"c":{"view":true,"control":false},"d":{"view":true,"control":false}}'
+    ALL_ACTIONS        = '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]'
+    ALL_PL_PERMS       = '["playlist.view","playlist.load","playlist.create","playlist.edit","playlist.delete"]'
+    OPERATOR_PL_PERMS  = '["playlist.view","playlist.load","playlist.create","playlist.edit"]'
+
+    roles = [
+        # (name, display_name, description, color, is_system,
+        #  allowed_decks, deck_control, deck_actions, playlist_perms,
+        #  can_announce, can_schedule, can_library, can_requests, can_settings)
+        (
+            'super_admin', 'Super Admin',
+            'Full unrestricted access to everything.', '#DC2626', True,
+            FULL_DECKS, FULL_CTRL, ALL_ACTIONS, ALL_PL_PERMS,
+            True, True, True, True, True
+        ),
+        (
+            'admin', 'Admin',
+            'Manage users and content. Cannot change system settings.', '#D97706', True,
+            FULL_DECKS, FULL_CTRL, ALL_ACTIONS, ALL_PL_PERMS,
+            True, True, True, True, False
+        ),
+        (
+            'operator', 'Operator',
+            'Full deck control. Cannot manage users or settings.', '#2563EB', True,
+            FULL_DECKS, FULL_CTRL, ALL_ACTIONS, OPERATOR_PL_PERMS,
+            True, True, True, True, False
+        ),
+        (
+            'viewer', 'Viewer',
+            'Read-only. Can see decks but cannot control anything.', '#6B7280', True,
+            FULL_DECKS, VIEW_ONLY_CTRL, '[]', '["playlist.view"]',
+            False, False, False, False, False
+        ),
+    ]
+    for r in roles:
+        cur.execute("""
+            INSERT INTO roles
+                (name, display_name, description, color, is_system,
+                 default_allowed_decks, default_deck_control,
+                 default_deck_actions, default_playlist_perms,
+                 default_can_announce, default_can_schedule,
+                 default_can_library, default_can_requests, default_can_settings)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (name) DO NOTHING
+        """, r)
+    print("[migrate] System roles seeded.")
+
+
 def _seed_admin(cur):
     """Insert default admin user (cocoadmin / Coco@coco) if not present."""
     cur.execute("SELECT id FROM users WHERE username = 'cocoadmin'")
     if cur.fetchone():
-        print("[migrate] Admin user already exists — skipping seed.")
+        print("[migrate] Admin user already exists -- skipping seed.")
         return
     try:
         import bcrypt
         pw_hash = bcrypt.hashpw(b"Coco@coco", bcrypt.gensalt()).decode()
     except ImportError:
-        # bcrypt not yet installed (first build) — store a placeholder
         pw_hash = "__NEEDS_BCRYPT__"
-        print("[migrate] WARNING: bcrypt not available — admin password not set. Rebuild container.")
+        print("[migrate] WARNING: bcrypt not available -- admin password not set. Rebuild container.")
     cur.execute(
         """
         INSERT INTO users (username, display_name, password_hash, role, is_super_admin, enabled)
         VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (username) DO UPDATE SET is_super_admin = TRUE
         """,
-        ("cocoadmin", "Coco Admin", pw_hash, "admin", True, True),
+        ("cocoadmin", "Coco Admin", pw_hash, "super_admin", True, True),
     )
-    print("[migrate] Default admin user 'cocoadmin' created.")
+    print("[migrate] Default super-admin user 'cocoadmin' created.")
 
 
 def run_migrations_local(db_url: str):
@@ -150,12 +225,15 @@ def run_migrations_local(db_url: str):
     cur.execute(BASE_SCHEMA_SQL)
     print("[migrate] Base schema applied.")
 
-    # ── Seed default admin ─────────────────────────────────────
+    # Seed system roles first (users.role references roles.name conceptually)
+    _seed_roles(cur)
+
+    # Seed default admin user
     _seed_admin(cur)
 
-    # ── Schema Repair ──────────────────────────────────────────
+    # Schema Repair -- safe ALTER TABLE patches for existing deployments
     REPAIR_SQL = """
-    DO $$ 
+    DO $$
     BEGIN
         -- Fix recurring_mixer_schedules
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN
@@ -175,7 +253,7 @@ def run_migrations_local(db_url: str):
 
         -- Fix recurring_schedules
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_schedules') THEN
-             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'stop_time') THEN
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'stop_time') THEN
                 ALTER TABLE recurring_schedules DROP COLUMN stop_time;
             END IF;
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'excluded_days') THEN
@@ -200,20 +278,36 @@ def run_migrations_local(db_url: str):
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_super_admin') THEN
                 ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN NOT NULL DEFAULT FALSE;
             END IF;
+            -- Widen role column from VARCHAR(20) to VARCHAR(50) for custom roles
+            ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50);
         END IF;
 
-        -- Create user_permissions if missing
+        -- Create user_permissions if missing (legacy deployments)
         IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
             CREATE TABLE user_permissions (
                 user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-                allowed_decks JSONB NOT NULL DEFAULT '["a","b","c","d"]',
-                can_announce  BOOLEAN NOT NULL DEFAULT TRUE,
-                can_schedule  BOOLEAN NOT NULL DEFAULT TRUE,
-                can_library   BOOLEAN NOT NULL DEFAULT TRUE,
-                can_requests  BOOLEAN NOT NULL DEFAULT TRUE,
-                can_settings  BOOLEAN NOT NULL DEFAULT FALSE,
-                updated_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+                deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+                deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.load_track","deck.load_playlist"]',
+                playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
+                can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
+                can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
+                can_library    BOOLEAN NOT NULL DEFAULT TRUE,
+                can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
+                can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
+        END IF;
+
+        -- Add granular permission columns to existing user_permissions tables
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
+            ALTER TABLE user_permissions
+                ADD COLUMN IF NOT EXISTS deck_control JSONB
+                    DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+                ADD COLUMN IF NOT EXISTS deck_actions JSONB
+                    DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
+                ADD COLUMN IF NOT EXISTS playlist_perms JSONB
+                    DEFAULT '["playlist.view","playlist.load"]';
         END IF;
 
         -- Create user_logs if missing
@@ -231,20 +325,35 @@ def run_migrations_local(db_url: str):
             CREATE INDEX idx_user_logs_user    ON user_logs (user_id);
         END IF;
 
-        -- Add granular permission columns (008_extended_permissions) to existing deployments
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
-            ALTER TABLE user_permissions
-                ADD COLUMN IF NOT EXISTS deck_control JSONB
-                    DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
-                ADD COLUMN IF NOT EXISTS deck_actions JSONB
-                    DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.load_track","deck.load_playlist"]',
-                ADD COLUMN IF NOT EXISTS playlist_perms JSONB
-                    DEFAULT '["playlist.view","playlist.load"]';
+        -- Create roles table if missing (legacy deployments)
+        IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'roles') THEN
+            CREATE TABLE roles (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(50) UNIQUE NOT NULL,
+                display_name VARCHAR(100) NOT NULL,
+                description TEXT DEFAULT '',
+                color VARCHAR(20) DEFAULT '#6B7280',
+                is_system BOOLEAN NOT NULL DEFAULT FALSE,
+                default_allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+                default_deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+                default_deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
+                default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
+                default_can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
+                default_can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
+                default_can_library    BOOLEAN NOT NULL DEFAULT TRUE,
+                default_can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
+                default_can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
         END IF;
     END $$;
     """
     print("[migrate] Patching schema inconsistencies...")
     cur.execute(REPAIR_SQL)
+
+    # Re-seed roles after repair (idempotent)
+    _seed_roles(cur)
 
     cur.execute("SELECT name FROM _migrations")
     applied = set(row[0] for row in cur.fetchall())
@@ -294,7 +403,8 @@ def run_migrations_cloud(supabase_url: str, supabase_key: str):
         try:
             r = httpx.post(
                 f"{supabase_url}/rest/v1/rpc/exec_sql",
-                headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}", "Content-Type": "application/json"},
+                headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}",
+                         "Content-Type": "application/json"},
                 json={"sql": sql}, timeout=15,
             )
             if r.status_code < 300: return True
@@ -361,7 +471,7 @@ def run_migrations():
             except Exception as e:
                 print(f"[migrate] Cloud migration failed: {e}")
         else:
-            print("[migrate] Cloud mode but SUPABASE_URL/SUPABASE_SERVICE_KEY not set — skipping.")
+            print("[migrate] Cloud mode but SUPABASE_URL/SUPABASE_SERVICE_KEY not set -- skipping.")
 
 
 if __name__ == "__main__":

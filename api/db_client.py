@@ -1028,6 +1028,183 @@ class DBClient:
         finally:
             self._put_conn(conn)
 
+    # ── Roles ────────────────────────────────────────────────
+
+    def list_roles(self) -> list:
+        """Return all roles ordered: system roles first, then custom."""
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id::text, name, display_name, description, color,
+                           is_system,
+                           default_allowed_decks, default_deck_control,
+                           default_deck_actions, default_playlist_perms,
+                           default_can_announce, default_can_schedule,
+                           default_can_library, default_can_requests,
+                           default_can_settings,
+                           created_at::text
+                    FROM roles
+                    ORDER BY is_system DESC, created_at ASC
+                """)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for jk in ('default_allowed_decks', 'default_deck_control',
+                               'default_deck_actions', 'default_playlist_perms'):
+                        if isinstance(d.get(jk), str):
+                            try: d[jk] = json.loads(d[jk])
+                            except Exception: pass
+                    rows.append(d)
+                return rows
+        except Exception as e:
+            print(f"[DB] list_roles failed: {e}")
+            return []
+        finally:
+            self._put_conn(conn)
+
+    def get_role_by_id(self, role_id: str) -> dict:
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id::text, name, display_name, description, color,
+                           is_system,
+                           default_allowed_decks, default_deck_control,
+                           default_deck_actions, default_playlist_perms,
+                           default_can_announce, default_can_schedule,
+                           default_can_library, default_can_requests,
+                           default_can_settings,
+                           created_at::text
+                    FROM roles WHERE id = %s
+                """, (role_id,))
+                row = cur.fetchone()
+                if not row: return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                for jk in ('default_allowed_decks', 'default_deck_control',
+                           'default_deck_actions', 'default_playlist_perms'):
+                    if isinstance(d.get(jk), str):
+                        try: d[jk] = json.loads(d[jk])
+                        except Exception: pass
+                return d
+        except Exception as e:
+            print(f"[DB] get_role_by_id failed: {e}")
+            return None
+        finally:
+            self._put_conn(conn)
+
+    def get_role_by_name(self, name: str) -> dict:
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id::text, name, display_name, description, color,
+                           is_system,
+                           default_allowed_decks, default_deck_control,
+                           default_deck_actions, default_playlist_perms,
+                           default_can_announce, default_can_schedule,
+                           default_can_library, default_can_requests,
+                           default_can_settings
+                    FROM roles WHERE name = %s
+                """, (name,))
+                row = cur.fetchone()
+                if not row: return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                for jk in ('default_allowed_decks', 'default_deck_control',
+                           'default_deck_actions', 'default_playlist_perms'):
+                    if isinstance(d.get(jk), str):
+                        try: d[jk] = json.loads(d[jk])
+                        except Exception: pass
+                return d
+        except Exception as e:
+            print(f"[DB] get_role_by_name failed: {e}")
+            return None
+        finally:
+            self._put_conn(conn)
+
+    def create_role(self, role: dict) -> dict:
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO roles
+                        (id, name, display_name, description, color, is_system,
+                         default_allowed_decks, default_deck_control,
+                         default_deck_actions, default_playlist_perms,
+                         default_can_announce, default_can_schedule,
+                         default_can_library, default_can_requests,
+                         default_can_settings)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (name) DO NOTHING
+                    RETURNING id::text, name, display_name, description, color,
+                              is_system, created_at::text
+                """, (
+                    role['id'], role['name'], role['display_name'],
+                    role.get('description', ''), role.get('color', '#6B7280'),
+                    role.get('is_system', False),
+                    json.dumps(role.get('default_allowed_decks', ['a','b','c','d'])),
+                    json.dumps(role.get('default_deck_control', {})),
+                    json.dumps(role.get('default_deck_actions', [])),
+                    json.dumps(role.get('default_playlist_perms', [])),
+                    role.get('default_can_announce',  True),
+                    role.get('default_can_schedule',  True),
+                    role.get('default_can_library',   True),
+                    role.get('default_can_requests',  True),
+                    role.get('default_can_settings',  False),
+                ))
+                row = cur.fetchone()
+                if not row:
+                    return role
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+        except Exception as e:
+            print(f"[DB] create_role failed: {e}"); raise
+        finally:
+            self._put_conn(conn)
+
+    def update_role(self, role_id: str, fields: dict):
+        # Serialize JSONB fields
+        serializable = {
+            'default_allowed_decks', 'default_deck_control',
+            'default_deck_actions', 'default_playlist_perms',
+        }
+        data = {}
+        for k, v in fields.items():
+            data[k] = json.dumps(v) if k in serializable else v
+        if not data:
+            return
+        conn = None
+        try:
+            conn = self._get_conn()
+            set_clause = ", ".join(f"{k} = %s" for k in data)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE roles SET {set_clause}, updated_at = NOW() WHERE id = %s",
+                    list(data.values()) + [role_id]
+                )
+        except Exception as e:
+            print(f"[DB] update_role failed: {e}"); raise
+        finally:
+            self._put_conn(conn)
+
+    def delete_role(self, role_id: str):
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM roles WHERE id = %s AND is_system = FALSE", (role_id,))
+        except Exception as e:
+            print(f"[DB] delete_role failed: {e}"); raise
+        finally:
+            self._put_conn(conn)
+
     # ── Audit Logs ────────────────────────────────────────────
 
     def log_action(self, user_id: str, username: str, action: str, details: dict = None, ip: str = None):
