@@ -24,8 +24,8 @@ def get_user_by_username(db_instance, username: str) -> Optional[dict]:
                 SELECT
                     id::text, username, display_name,
                     password_hash, role, is_super_admin,
-                    is_active,
-                    COALESCE(enabled, is_active, TRUE) AS enabled,
+                    COALESCE(enabled, TRUE) AS enabled,
+                    COALESCE(enabled, TRUE) AS is_active,
                     source, email, last_login::text, created_at::text
                 FROM users
                 WHERE username = %s
@@ -78,7 +78,7 @@ def get_user_by_id(db_instance, user_id: str) -> Optional[dict]:
                 SELECT
                     id::text, username, display_name,
                     role, is_super_admin,
-                    COALESCE(enabled, is_active, TRUE) AS enabled
+                    COALESCE(enabled, TRUE) AS enabled
                 FROM users
                 WHERE id = %s
                 LIMIT 1

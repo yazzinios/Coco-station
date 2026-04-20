@@ -151,11 +151,7 @@ export default function SettingsPage() {
     setLdapTlsVerify(settings?.ldap_tls_verify ?? true);
   }, [settings]);
 
-  // Load chime + jingle status on mount
-  useEffect(() => {
-    api.getChimeStatus().then(s => setChimeExists(s.exists)).catch(() => {});
-  }, [api]);
-
+  // Load jingle status on mount
   useEffect(() => {
     api.getJingleStatus().then(s => {
       setJingleIntroExists(s.intro?.exists ?? false);

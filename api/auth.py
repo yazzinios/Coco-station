@@ -189,6 +189,9 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
         import ssl
 
         server_url = ldap_cfg.get("server", "")
+        if not server_url or not server_url.strip():
+            print(f"[ldap] No LDAP server configured, skipping")
+            return None
         port       = int(ldap_cfg.get("port", 389))
         base_dn    = ldap_cfg.get("base_dn", "")
         bind_dn    = ldap_cfg.get("bind_dn", "")
@@ -231,12 +234,22 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
 
         role = "operator"
         if admin_group:
-            member_of = [str(g) for g in entry.memberOf] if hasattr(entry, "memberOf") else []
+            try:
+                raw_member_of = entry["memberOf"].values if hasattr(entry["memberOf"], "values") else []
+                member_of = [str(g) for g in raw_member_of]
+            except Exception:
+                member_of = []
             if admin_group.lower() in [g.lower() for g in member_of]:
                 role = "admin"
 
-        display_name = str(entry[attr_name]) if hasattr(entry, attr_name) else username
-        email        = str(entry[attr_email]) if hasattr(entry, attr_email) else ""
+        try:
+            display_name = str(entry[attr_name]) if attr_name in entry else username
+        except Exception:
+            display_name = username
+        try:
+            email = str(entry[attr_email]) if attr_email in entry else ""
+        except Exception:
+            email = ""
 
         print(f"[ldap] Authenticated '{username}' from LDAP (role={role})")
         return {
