@@ -6,18 +6,15 @@ from typing import List, Dict, Optional
 DB_MODE = os.getenv("DB_MODE", "local").lower()
 
 # ── Default permission sets ───────────────────────────────────────────────────
+# ── Default permission sets (baseline for restricted users) ──────────────────
 DEFAULT_DECK_CONTROL = {
-    "a": {"view": True, "control": True},
-    "b": {"view": True, "control": True},
-    "c": {"view": True, "control": True},
-    "d": {"view": True, "control": True},
+    "a": {"view": True, "control": False},
+    "b": {"view": True, "control": False},
+    "c": {"view": True, "control": False},
+    "d": {"view": True, "control": False},
 }
-DEFAULT_DECK_ACTIONS = [
-    "deck.play", "deck.pause", "deck.stop",
-    "deck.next", "deck.previous",
-    "deck.volume", "deck.load_track", "deck.load_playlist",
-]
-DEFAULT_PLAYLIST_PERMS = ["playlist.view", "playlist.load"]
+DEFAULT_DECK_ACTIONS = []
+DEFAULT_PLAYLIST_PERMS = ["playlist.view"]
 
 
 class DBClient:
@@ -952,10 +949,10 @@ class DBClient:
             "deck_control":    DEFAULT_DECK_CONTROL,
             "deck_actions":    DEFAULT_DECK_ACTIONS,
             "playlist_perms":  DEFAULT_PLAYLIST_PERMS,
-            "can_announce":    True,
-            "can_schedule":    True,
-            "can_library":     True,
-            "can_requests":    True,
+            "can_announce":    False,
+            "can_schedule":    False,
+            "can_library":     False,
+            "can_requests":    False,
             "can_settings":    False,
         }
         try:

@@ -46,7 +46,7 @@ from schemas import (
 )
 from tts import generate_tts
 from db_client import db
-from auth import verify_token, hash_password
+from auth import verify_token, hash_password, require_permission, require_deck_access, require_admin
 from rbac import router as rbac_router
 from auth_routes import auth_router, set_auth_settings_ref
 
@@ -363,10 +363,10 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         duration = await get_audio_duration(path)
-        print(f"[jingle] {jingle_type} duration: {duration}s. Sleeping...")
-        await asyncio.sleep(min(duration + 0.15, 30.0))
+        print(f"[jingle] {jingle_type} playing ({filename}, {duration}s)")
+        await asyncio.sleep(min(duration + 0.1, 30.0))
     except Exception as e:
-        print(f"[jingle] {jingle_type} play error: {e}")
+        print(f"[jingle] {jingle_type} play error on {deck_ids}: {e}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -403,15 +403,17 @@ async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int
     delta   = (to_pct - from_pct) / steps
     delay   = step_ms / 1000.0
     current = float(from_pct)
-    async with httpx.AsyncClient(timeout=3) as c:
+    async with httpx.AsyncClient(timeout=2) as c:
         for _ in range(steps):
             current += delta
             vol = max(0, min(100, round(current)))
-            tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}") for did in deck_ids]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Non-blocking volume updates for intermediate steps to reduce total fade latency
+            for did in deck_ids:
+                asyncio.create_task(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}"))
             await asyncio.sleep(delay)
-        final_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}") for did in deck_ids]
-        await asyncio.gather(*final_tasks, return_exceptions=True)
+        # Final step ensures precision
+        tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}") for did in deck_ids]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 async def _restore_volumes(deck_ids: list, duck_pct: int, target_volumes: Optional[Dict[str, int]] = None):
     async with httpx.AsyncClient(timeout=3) as c:
@@ -502,13 +504,13 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
     async with _TRIGGER_LOCK_REF[0]:
         print(f"[trigger] announcement locked — {Path(filepath).name}")
         try:
-            # STATE 2: DUCK first — music lowers before anything plays
-            await _duck_acquire(level=level)
+            # STATE 2 & 3: Duck music and play intro jingle IN PARALLEL
+            # This makes the transition feel immediate and professional
+            duck_task   = asyncio.create_task(_duck_acquire(level=level))
+            jingle_task = asyncio.create_task(_play_global_jingle("intro", deck_ids))
+            await asyncio.gather(duck_task, jingle_task)
 
-            # STATE 3: intro jingle plays while music is already ducked
-            await _play_global_jingle("intro", deck_ids)
-
-            # STATE 4: PLAY
+            # STATE 4: PLAY (Content)
             events = []
             for did in deck_ids:
                 event = asyncio.Event()
@@ -548,9 +550,10 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
 async def fade_and_enable_mic(deck_ids: list):
     await _TRIGGER_LOCK_REF[0].acquire()
     print(f"[trigger] mic locked — decks {deck_ids}")
-    # STATE 2: duck first, intro jingle plays while music is already lowered
-    await _duck_acquire(source_type="mic")
-    await _play_global_jingle("intro", deck_ids)
+    # STATE 2 & 3: Duck and play intro jingle in parallel
+    duck_task   = asyncio.create_task(_duck_acquire(source_type="mic"))
+    jingle_task = asyncio.create_task(_play_global_jingle("intro", deck_ids))
+    await asyncio.gather(duck_task, jingle_task)
 
 
 async def fade_restore_after_mic(deck_ids: list):
@@ -670,7 +673,7 @@ def list_library():
     return sorted(items, key=lambda x: x.filename)
 
 @app.post("/api/library/upload")
-async def upload_track(file: UploadFile = File(...), _user=Depends(verify_token)):
+async def upload_track(file: UploadFile = File(...), _user=Depends(require_permission("can_library"))):
     if not any(file.filename.lower().endswith(e) for e in ALLOWED_AUDIO):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
     safe_name = Path(file.filename).name
@@ -682,7 +685,7 @@ async def upload_track(file: UploadFile = File(...), _user=Depends(verify_token)
     return {"status": "ok", "filename": safe_name, "size": dest.stat().st_size}
 
 @app.delete("/api/library/{filename}")
-async def delete_track(filename: str, _user=Depends(verify_token)):
+async def delete_track(filename: str, _user=Depends(require_permission("can_library"))):
     path = MEDIA_DIR / filename
     if not path.exists(): raise HTTPException(status_code=404, detail="File not found")
     path.unlink()
@@ -704,7 +707,7 @@ async def serve_file(filename: str):
 def get_decks(): return list(DECKS.values())
 
 @app.put("/api/decks/{deck_id}/name")
-async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(verify_token)):
+async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["name"] = req.name
     try:
@@ -715,7 +718,7 @@ async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(verify
     return {"status": "ok", "name": req.name}
 
 @app.post("/api/decks/{deck_id}/load")
-async def load_track(deck_id: str, req: PlayRequest, request: Request, _user=Depends(verify_token)):
+async def load_track(deck_id: str, req: PlayRequest, request: Request, _user=Depends(require_permission("deck.load_track")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not (MEDIA_DIR / req.track_id).exists(): raise HTTPException(status_code=404, detail="Track not found")
     DECKS[deck_id]["track"] = req.track_id
@@ -725,7 +728,7 @@ async def load_track(deck_id: str, req: PlayRequest, request: Request, _user=Dep
     return {"status": "ok", "deck": deck_id, "track": req.track_id}
 
 @app.post("/api/decks/{deck_id}/unload")
-async def unload_track(deck_id: str, _user=Depends(verify_token)):
+async def unload_track(deck_id: str, _user=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if DECKS[deck_id]["is_playing"] or DECKS[deck_id]["is_paused"]:
         try:
@@ -737,7 +740,7 @@ async def unload_track(deck_id: str, _user=Depends(verify_token)):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/play")
-async def play_deck(deck_id: str, request: Request, _user=Depends(verify_token)):
+async def play_deck(deck_id: str, request: Request, _user=Depends(require_permission("deck.play")), _access=Depends(require_deck_access("control"))):
     global TRACKS_PLAYED
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["track"]: raise HTTPException(status_code=400, detail="No track loaded")
@@ -754,7 +757,7 @@ async def play_deck(deck_id: str, request: Request, _user=Depends(verify_token))
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/pause")
-async def pause_deck(deck_id: str, _user=Depends(verify_token)):
+async def pause_deck(deck_id: str, _user=Depends(require_permission("deck.pause")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["is_playing"] and DECKS[deck_id]["is_paused"]:
         DECKS[deck_id]["is_playing"] = True; DECKS[deck_id]["is_paused"] = False
@@ -770,7 +773,7 @@ async def pause_deck(deck_id: str, _user=Depends(verify_token)):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/stop")
-async def stop_deck(deck_id: str, _user=Depends(verify_token)):
+async def stop_deck(deck_id: str, _user=Depends(require_permission("deck.stop")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
     try:
@@ -780,7 +783,7 @@ async def stop_deck(deck_id: str, _user=Depends(verify_token)):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/loop")
-async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(verify_token)):
+async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["is_loop"] = req.loop
     if DECKS[deck_id]["is_playing"] and DECKS[deck_id]["track"]:
@@ -793,7 +796,7 @@ async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(verify_token)):
     return {"status": "ok", "deck": deck_id, "loop": req.loop}
 
 @app.post("/api/decks/{deck_id}/volume")
-async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(verify_token)):
+async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(require_permission("deck.volume")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     vol = max(0, min(100, req.volume))
     if _DUCK_REFCOUNT_REF[0] > 0:
@@ -809,7 +812,7 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(verify
 
 # ── Mic ─────────────────────────────────────────────────────
 @app.post("/api/mic/on")
-async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
+async def mic_on(req: MicControlRequest, _user=Depends(require_permission("can_announce"))):
     if _TRIGGER_LOCK_REF[0].locked():
         raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
     deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
@@ -819,7 +822,7 @@ async def mic_on(req: MicControlRequest, _user=Depends(verify_token)):
     return {"status": "ok"}
 
 @app.post("/api/mic/off")
-async def mic_off(_user=Depends(verify_token)):
+async def mic_off(_user=Depends(require_permission("can_announce"))):
     prev_targets = list(MIC_STATE.get("targets", []))
     MIC_STATE["active"] = False; MIC_STATE["targets"] = []
     try:
@@ -844,7 +847,7 @@ async def internal_announcement_ended(deck_id: str):
 def list_announcements(): return ANNOUNCEMENTS
 
 @app.post("/api/announcements/tts")
-async def create_tts_announcement(req: TTSRequest, _user=Depends(verify_token)):
+async def create_tts_announcement(req: TTSRequest, _user=Depends(require_permission("can_announce"))):
     try:
         filepath = await generate_tts(req.text, lang=getattr(req, 'lang', 'en'))
         filename = Path(filepath).name
@@ -867,7 +870,7 @@ async def create_tts_announcement(req: TTSRequest, _user=Depends(verify_token)):
 @app.post("/api/announcements/upload")
 async def upload_announcement(file: UploadFile = File(...), name: str = "Announcement",
                                targets: str = "ALL", scheduled_at: Optional[str] = None,
-                               _user=Depends(verify_token)):
+                               _user=Depends(require_permission("can_announce"))):
     if not any(file.filename.lower().endswith(e) for e in {".mp3",".wav",".ogg"}):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
     safe_name = Path(file.filename).name
@@ -888,7 +891,7 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
     return {"status": "ok", "announcement": ann}
 
 @app.post("/api/announcements/{ann_id}/play")
-async def play_announcement(ann_id: str, _user=Depends(verify_token)):
+async def play_announcement(ann_id: str, _user=Depends(require_permission("can_announce"))):
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
     if _TRIGGER_LOCK_REF[0].locked():
@@ -905,7 +908,7 @@ async def play_announcement(ann_id: str, _user=Depends(verify_token)):
     return {"status": "ok"}
 
 @app.put("/api/announcements/{ann_id}")
-async def update_announcement(ann_id: str, req: AnnouncementUpdateRequest, _user=Depends(verify_token)):
+async def update_announcement(ann_id: str, req: AnnouncementUpdateRequest, _user=Depends(require_permission("can_announce"))):
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
     updates = {}
@@ -924,7 +927,7 @@ async def update_announcement(ann_id: str, req: AnnouncementUpdateRequest, _user
     return {"status": "ok", "announcement": ann}
 
 @app.delete("/api/announcements/{ann_id}")
-async def delete_announcement(ann_id: str, _user=Depends(verify_token)):
+async def delete_announcement(ann_id: str, _user=Depends(require_permission("can_announce"))):
     global ANNOUNCEMENTS
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
@@ -996,7 +999,7 @@ async def delete_playlist(playlist_id: str, _user=Depends(verify_token)):
     return {"status": "ok"}
 
 @app.post("/api/decks/{deck_id}/playlist")
-async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, request: Request, _user=Depends(verify_token)):
+async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, request: Request, _user=Depends(require_permission("deck.load_playlist")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     playlist = PLAYLISTS.get(req.playlist_id)
     if not playlist: raise HTTPException(status_code=404, detail="Playlist not found")
@@ -1058,7 +1061,7 @@ async def _play_playlist_index(deck_id: str, index: int):
     return {"status": "ok", "deck": deck_id, "track": track, "playlist_index": index}
 
 @app.post("/api/decks/{deck_id}/next")
-async def deck_next_track(deck_id: str, _user=Depends(verify_token)):
+async def deck_next_track(deck_id: str, _user=Depends(require_permission("deck.next")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     ps = DECK_PLAYLISTS.get(deck_id)
     if not ps: raise HTTPException(status_code=400, detail="Next is available only for playlists")
@@ -1068,7 +1071,7 @@ async def deck_next_track(deck_id: str, _user=Depends(verify_token)):
     return await _play_playlist_index(deck_id, nxt)
 
 @app.post("/api/decks/{deck_id}/previous")
-async def deck_previous_track(deck_id: str, _user=Depends(verify_token)):
+async def deck_previous_track(deck_id: str, _user=Depends(require_permission("deck.previous")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     ps = DECK_PLAYLISTS.get(deck_id)
     if not ps: raise HTTPException(status_code=400, detail="Previous is available only for playlists")
@@ -1081,7 +1084,7 @@ async def deck_previous_track(deck_id: str, _user=Depends(verify_token)):
 def get_settings(): return SETTINGS
 
 @app.post("/api/settings")
-async def update_settings(req: SettingUpdateRequest, _user=Depends(verify_token)):
+async def update_settings(req: SettingUpdateRequest, _user=Depends(require_admin)):
     SETTINGS.update(req.value)
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_settings, req.value)
@@ -1095,7 +1098,7 @@ async def update_settings(req: SettingUpdateRequest, _user=Depends(verify_token)
 def scheduler_status(): return get_scheduler_status()
 
 @app.post("/api/recurring-mixer-schedules/{schedule_id}/reset")
-async def reset_mixer_schedule(schedule_id: str, _user=Depends(verify_token)):
+async def reset_mixer_schedule(schedule_id: str, _user=Depends(require_permission("can_schedule"))):
     rs = next((x for x in RECURRING_MIXER_SCHEDULES if x["id"] == schedule_id), None)
     if not rs: raise HTTPException(status_code=404, detail="Schedule not found")
     rs["last_run_date"] = None
@@ -1105,7 +1108,7 @@ async def reset_mixer_schedule(schedule_id: str, _user=Depends(verify_token)):
     return {"status": "ok"}
 
 @app.post("/api/recurring-schedules/{schedule_id}/reset")
-async def reset_recurring_schedule(schedule_id: str, _user=Depends(verify_token)):
+async def reset_recurring_schedule(schedule_id: str, _user=Depends(require_permission("can_schedule"))):
     rs = next((x for x in RECURRING_SCHEDULES if x["id"] == schedule_id), None)
     if not rs: raise HTTPException(status_code=404, detail="Schedule not found")
     rs["last_run_date"] = None
@@ -1125,7 +1128,7 @@ async def reset_trigger_lock(_user=Depends(verify_token)):
     return {"status": "ok", "message": "Lock was not held"}
 
 @app.post("/api/settings/db-test")
-async def test_db_connection(req: SettingUpdateRequest, _user=Depends(verify_token)):
+async def test_db_connection(req: SettingUpdateRequest, _user=Depends(require_admin)):
     mode = req.value.get("db_mode", SETTINGS.get("db_mode", "local"))
     if mode == "local":
         try:
@@ -1160,7 +1163,7 @@ async def test_db_connection(req: SettingUpdateRequest, _user=Depends(verify_tok
 def list_music_schedules(): return MUSIC_SCHEDULES
 
 @app.post("/api/music-schedules")
-async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(verify_token)):
+async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(require_permission("can_schedule"))):
     if req.deck_id not in DECKS: raise HTTPException(status_code=400, detail="Invalid deck_id")
     sid = str(uuid.uuid4())
     schedule = {"id": sid, "name": req.name, "deck_id": req.deck_id, "type": req.type,
@@ -1174,7 +1177,7 @@ async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(v
     return schedule
 
 @app.delete("/api/music-schedules/{schedule_id}")
-async def delete_music_schedule(schedule_id: str, _user=Depends(verify_token)):
+async def delete_music_schedule(schedule_id: str, _user=Depends(require_permission("can_schedule"))):
     global MUSIC_SCHEDULES
     MUSIC_SCHEDULES = [x for x in MUSIC_SCHEDULES if x["id"] != schedule_id]
     try:
@@ -1184,7 +1187,7 @@ async def delete_music_schedule(schedule_id: str, _user=Depends(verify_token)):
     return {"status": "ok"}
 
 @app.post("/api/music-schedules/{schedule_id}/trigger")
-async def trigger_music_schedule_now(schedule_id: str, _user=Depends(verify_token)):
+async def trigger_music_schedule_now(schedule_id: str, _user=Depends(require_permission("can_schedule"))):
     s = next((x for x in MUSIC_SCHEDULES if x["id"] == schedule_id), None)
     if not s: raise HTTPException(status_code=404, detail="Schedule not found")
     s["status"] = "Played"
@@ -1346,7 +1349,7 @@ async def submit_music_request(req: MusicRequestSubmit):
 async def list_music_requests(_user=Depends(verify_token)): return MUSIC_REQUESTS
 
 @app.post("/api/requests/{request_id}/accept")
-async def accept_music_request(request_id: str, _user=Depends(verify_token)):
+async def accept_music_request(request_id: str, _user=Depends(require_permission("can_requests"))):
     req = next((r for r in MUSIC_REQUESTS if r["id"] == request_id), None)
     if not req: raise HTTPException(status_code=404, detail="Request not found")
     req["status"] = "accepted"
@@ -1364,7 +1367,7 @@ async def accept_music_request(request_id: str, _user=Depends(verify_token)):
     return {"status": "ok", "loaded_to": deck_id}
 
 @app.delete("/api/requests/{request_id}")
-async def dismiss_music_request(request_id: str, _user=Depends(verify_token)):
+async def dismiss_music_request(request_id: str, _user=Depends(require_permission("can_requests"))):
     global MUSIC_REQUESTS
     req = next((r for r in MUSIC_REQUESTS if r["id"] == request_id), None)
     if req: req["status"] = "dismissed"
@@ -1373,7 +1376,7 @@ async def dismiss_music_request(request_id: str, _user=Depends(verify_token)):
     return {"status": "ok"}
 
 @app.delete("/api/requests")
-async def clear_all_requests(_user=Depends(verify_token)):
+async def clear_all_requests(_user=Depends(require_permission("can_requests"))):
     global MUSIC_REQUESTS
     MUSIC_REQUESTS = []
     await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})

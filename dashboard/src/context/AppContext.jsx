@@ -113,26 +113,23 @@ function getStoredPermissions() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_DECK_CONTROL = {
-  a: { view: true, control: true },
-  b: { view: true, control: true },
-  c: { view: true, control: true },
-  d: { view: true, control: true },
+  a: { view: true, control: false },
+  b: { view: true, control: false },
+  c: { view: true, control: false },
+  d: { view: true, control: false },
 };
-const DEFAULT_DECK_ACTIONS = [
-  'deck.play','deck.pause','deck.stop','deck.next','deck.previous',
-  'deck.volume','deck.load_track','deck.load_playlist',
-];
-const DEFAULT_PLAYLIST_PERMS = ['playlist.view','playlist.load'];
+const DEFAULT_DECK_ACTIONS = [];
+const DEFAULT_PLAYLIST_PERMS = ['playlist.view'];
 
 const DEFAULT_PERMISSIONS = {
   allowed_decks:  ['a','b','c','d'],
   deck_control:   DEFAULT_DECK_CONTROL,
   deck_actions:   DEFAULT_DECK_ACTIONS,
   playlist_perms: DEFAULT_PLAYLIST_PERMS,
-  can_announce:   true,
-  can_schedule:   true,
-  can_library:    true,
-  can_requests:   true,
+  can_announce:   false,
+  can_schedule:   false,
+  can_library:    false,
+  can_requests:   false,
   can_settings:   false,
 };
 
