@@ -274,18 +274,37 @@ class Deck:
             try: self.ann_q.get_nowait()
             except: pass
 
+        # Use -v error to capture only real errors, and redirect to stderr
         cmd = [
-            "ffmpeg", "-y", "-i", filepath,
+            "ffmpeg", "-y", "-v", "error", "-i", filepath,
             "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1",
         ]
-        self.ann_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        # We capture stderr to log ffmpeg errors if the file can't be read
+        self.ann_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         proc_name = "ann" if notify else "jingle"
+
+        def _ann_stderr_logger(proc, name, fpath):
+            try:
+                stderr_data = proc.stderr.read()
+                if stderr_data:
+                    print(f"[Deck {name}] FFMPEG ERROR playing {fpath}: {stderr_data.decode().strip()}")
+            except Exception:
+                pass
+
         threading.Thread(
             target=self._reader_thread,
             args=(self.ann_proc, self.ann_q, proc_name),
             daemon=True,
         ).start()
-        print(f"[Deck {self.name}] Announcement: {filepath} (notify={notify})")
+
+        # Start a thread to wait for process and log errors if any
+        threading.Thread(
+            target=_ann_stderr_logger,
+            args=(self.ann_proc, self.name, filepath),
+            daemon=True
+        ).start()
+
+        print(f"[Deck {self.name}] Announcement/Jingle started: {filepath} (notify={notify})")
 
 
 # ── Initialise decks ─────────────────────────────────────────

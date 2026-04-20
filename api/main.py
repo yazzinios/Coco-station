@@ -227,7 +227,17 @@ async def lifespan(app: FastAPI):
     init_scheduler(state)
     start_scheduler(RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES)
 
-    # Bind auth_router to the live SETTINGS dict *after* DB settings are loaded
+    # --- JINGLE AUTO-DISCOVERY ---
+    # Scan disk for jingles if DB settings are missing (makes them persistent like library)
+    for jt in ["intro", "outro"]:
+        if not SETTINGS.get(f"jingle_{jt}"):
+            for ext in [".mp3", ".wav", ".ogg"]:
+                candidate = f"global_jingle_{jt}{ext}"
+                if (CHIMES_DIR / candidate).exists():
+                    SETTINGS[f"jingle_{jt}"] = candidate
+                    print(f"[startup] Auto-discovered {jt} jingle: {candidate}")
+                    break
+
     set_auth_settings_ref(SETTINGS)
 
     yield
@@ -347,8 +357,14 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
         return
     path = CHIMES_DIR / filename
     if not path.exists():
-        print(f"[jingle] {jingle_type} file not found: {filename}")
+        # Only log once to avoid spamming the console
+        if not hasattr(_play_global_jingle, "_missing_logged"):
+            _play_global_jingle._missing_logged = set()
+        if filename not in _play_global_jingle._missing_logged:
+            print(f"[jingle] {jingle_type} file not found on disk: {path}")
+            _play_global_jingle._missing_logged.add(filename)
         return
+
 
     filepath = str(Path("/chimes") / filename)
     try:
@@ -360,7 +376,13 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
                 )
                 for did in deck_ids
             ]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            resps = await asyncio.gather(*tasks, return_exceptions=True)
+            for did, r in zip(deck_ids, resps):
+                if isinstance(r, Exception):
+                    print(f"[jingle] Connection error to mixer for deck {did}: {r}")
+                elif r.status_code != 200:
+                    print(f"[jingle] Mixer error {r.status_code} for deck {did}: {r.text}")
+
 
         duration = await get_audio_duration(path)
         print(f"[jingle] {jingle_type} playing ({filename}, {duration}s)")
