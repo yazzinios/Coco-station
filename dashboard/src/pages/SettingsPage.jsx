@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Save, Upload, Trash2, Bell, Music2, Globe, Clock } from 'lucide-react';
+import { Save, Upload, Trash2, Music2, Globe, Clock } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 // ── JingleCard must live OUTSIDE SettingsPage so React never remounts it
@@ -106,11 +106,7 @@ export default function SettingsPage() {
   const [ldapStatus,        setLdapStatus]        = useState(null);
   const [ldapExpanded,      setLdapExpanded]      = useState(false);
 
-  // Chime
-  const [chimeEnabled,   setChimeEnabled]   = useState(false);
-  const [chimeExists,    setChimeExists]    = useState(false);
-  const [chimeUploading, setChimeUploading] = useState(false);
-  const chimeInputRef = useRef(null);
+
 
   // Jingles
   const [jingleIntroExists,    setJingleIntroExists]    = useState(false);
@@ -130,7 +126,7 @@ export default function SettingsPage() {
   }, [decks]);
 
   useEffect(() => {
-    setChimeEnabled(settings?.on_air_chime_enabled ?? false);
+
     if (settings?.ducking_percent    != null) setDucking(settings.ducking_percent);
     if (settings?.mic_ducking_percent != null) setMicDucking(settings.mic_ducking_percent);
     if (settings?.db_mode)                    setDbMode(settings.db_mode);
@@ -161,24 +157,7 @@ export default function SettingsPage() {
     }).catch(() => {});
   }, [api, settings.jingle_intro, settings.jingle_outro]);
 
-  // ── Chime ──
-  const handleChimeUpload = async (file) => {
-    if (!file) return;
-    if (!file.name.toLowerCase().match(/\.(mp3|wav|ogg)$/)) { toast.error('Only MP3, WAV, OGG allowed'); return; }
-    setChimeUploading(true);
-    try {
-      await api.uploadChime(file);
-      setChimeExists(true);
-      toast.success('Chime uploaded!');
-    } catch (err) { toast.error(`Upload failed: ${err.message}`); }
-    finally { setChimeUploading(false); if (chimeInputRef.current) chimeInputRef.current.value = ''; }
-  };
 
-  const handleDeleteChime = async () => {
-    if (!window.confirm('Delete the on-air chime?')) return;
-    try { await api.deleteChime(); setChimeExists(false); toast.info('Chime deleted'); }
-    catch (err) { toast.error(err.message); }
-  };
 
   // ── Jingles ──
   const handleJingleUpload = async (type, file) => {
@@ -248,7 +227,7 @@ export default function SettingsPage() {
         ducking_percent:     ducking,
         mic_ducking_percent: micDucking,
         db_mode:             dbMode,
-        on_air_chime_enabled: chimeEnabled,
+
         timezone:            timezone,
         session_hours:       sessionHours,
       });
@@ -600,56 +579,7 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* On Air Chime */}
-        <div className="glass-panel" style={panel}>
-          <h3 style={{ marginBottom: '0.35rem', color: 'var(--accent-blue)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Bell size={16} /> On Air Chime <span style={{ fontSize: '0.7rem', fontWeight: '400', color: 'var(--text-secondary)', marginLeft: '0.3rem' }}>(legacy — single file, plays both sides)</span>
-          </h3>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
-            Classic single-file chime — plays before AND after every trigger. Use <strong>Global Jingles</strong> above for separate intro/outro.
-          </p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.25rem' }}>
-            <div onClick={() => setChimeEnabled(v => !v)} style={{
-              width: '42px', height: '24px', borderRadius: '12px', position: 'relative', cursor: 'pointer',
-              background: chimeEnabled ? 'var(--accent-blue)' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s',
-            }}>
-              <div style={{
-                position: 'absolute', top: '3px', left: chimeEnabled ? '21px' : '3px',
-                width: '18px', height: '18px', borderRadius: '50%', background: 'white', transition: 'left 0.2s',
-              }} />
-            </div>
-            <span style={{ fontSize: '0.9rem', color: chimeEnabled ? 'var(--accent-blue)' : 'var(--text-secondary)' }}>
-              {chimeEnabled ? 'Chime enabled' : 'Chime disabled'}
-            </span>
-            {!chimeExists && chimeEnabled && (
-              <span style={{ fontSize: '0.78rem', color: '#fd9644', background: 'rgba(253,150,68,0.1)', padding: '0.2rem 0.6rem', borderRadius: '10px', border: '1px solid rgba(253,150,68,0.3)' }}>
-                ⚠ No chime uploaded
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-            <button onClick={() => chimeInputRef.current?.click()} disabled={chimeUploading}
-              style={{ padding: '0.55rem 1rem', borderRadius: '8px', border: '1px solid rgba(0,212,255,0.35)',
-                background: 'rgba(0,212,255,0.1)', color: 'var(--accent-blue)', cursor: chimeUploading ? 'default' : 'pointer',
-                fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.45rem', opacity: chimeUploading ? 0.6 : 1, fontFamily: 'inherit' }}>
-              <Upload size={14} />
-              {chimeUploading ? 'Uploading…' : chimeExists ? 'Replace Chime' : 'Upload Chime MP3'}
-            </button>
-            <input ref={chimeInputRef} type="file" accept=".mp3,.wav,.ogg" style={{ display: 'none' }}
-              onChange={e => handleChimeUpload(e.target.files[0] || null)} />
-            {chimeExists && (
-              <>
-                <span style={{ fontSize: '0.82rem', color: '#2ed573' }}>✓ Chime file ready</span>
-                <button onClick={handleDeleteChime}
-                  style={{ padding: '0.5rem 0.8rem', borderRadius: '8px', border: '1px solid rgba(255,71,87,0.3)',
-                    background: 'rgba(255,71,87,0.08)', color: '#ff4757', cursor: 'pointer', fontSize: '0.82rem',
-                    display: 'flex', alignItems: 'center', gap: '0.35rem', fontFamily: 'inherit' }}>
-                  <Trash2 size={13} /> Delete
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+
 
         {/* Appearance */}
         <div className="glass-panel" style={panel}>

@@ -161,7 +161,7 @@ export function AppProvider({ children }) {
   const [mic,                       setMic]                       = useState({ active: false, targets: [] });
   const [musicRequests,             setMusicRequests]             = useState([]);
   const [wsConnected,               setWsConnected]               = useState(false);
-  const [settings,                  setSettings]                  = useState({ ducking_percent: 5, mic_ducking_percent: 20, on_air_chime_enabled: false });
+  const [settings,                  setSettings]                  = useState({ ducking_percent: 5, mic_ducking_percent: 20 });
   const [schedulerStatus,           setSchedulerStatus]           = useState(null);
   const [toasts,                    setToasts]                    = useState([]);
   const wsRef   = useRef(null);
@@ -574,22 +574,7 @@ export function AppProvider({ children }) {
       if (!r.ok) throw new Error(await parseError(r));
     },
     buildWsUrl,
-    // ── Chime ──
-    uploadChime: async (file) => {
-      const fd = new FormData(); fd.append('file', file);
-      const r = await authFetch('/api/settings/chime/upload', { method: 'POST', body: fd });
-      if (!r.ok) throw new Error(await parseError(r));
-      return r.json();
-    },
-    deleteChime: async () => {
-      const r = await authFetch('/api/settings/chime', { method: 'DELETE' });
-      if (!r.ok) throw new Error(await parseError(r));
-    },
-    getChimeStatus: async () => {
-      const r = await fetch('/api/settings/chime/status');
-      if (!r.ok) return { exists: false, enabled: false };
-      return r.json();
-    },
+
     // ── Jingles ──
     getJingleStatus: async () => {
       const r = await fetch('/api/settings/jingles/status');
