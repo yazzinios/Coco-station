@@ -833,10 +833,9 @@ class DBClient:
                         LEFT JOIN user_permissions p ON p.user_id = u.id
                         ORDER BY u.created_at
                     """)
-                    cols = [d[0] for d in cur.description]
                     rows = []
                     for row in cur.fetchall():
-                        d = dict(zip(cols, row))
+                        d = dict(row)
                         perm_keys = [
                             'allowed_decks','can_announce','can_schedule',
                             'can_library','can_requests','can_settings',
@@ -872,8 +871,7 @@ class DBClient:
                 cur.execute("SELECT id::text, username, display_name, password_hash, role, enabled FROM users WHERE username = %s", (username,))
                 row = cur.fetchone()
                 if not row: return None
-                cols = [d[0] for d in cur.description]
-                return dict(zip(cols, row))
+                return dict(row)
         except Exception as e:
             print(f"[DB] get_user_by_username failed: {e}"); return None
         finally:
@@ -899,8 +897,8 @@ class DBClient:
                         "VALUES (%s, %s, %s, %s, %s, true) RETURNING id::text, username, display_name, role, enabled",
                         (user_id, username, display_name, password_hash, role),
                     )
-                    cols = [d[0] for d in cur.description]
-                    return dict(zip(cols, cur.fetchone()))
+                    row = cur.fetchone()
+                    return dict(row) if row else None
             except Exception as e:
                 print(f"[DB] create_user (local) failed: {e}"); raise
             finally:
@@ -972,8 +970,7 @@ class DBClient:
                 row = cur.fetchone()
                 if not row:
                     return default
-                cols = [d[0] for d in cur.description]
-                data = dict(zip(cols, row))
+                data = dict(row)
                 # Parse JSONB fields
                 data["allowed_decks"]  = self._parse_jsonb(data.get("allowed_decks"),  ["a","b","c","d"])
                 data["deck_control"]   = self._parse_jsonb(data.get("deck_control"),   DEFAULT_DECK_CONTROL)
@@ -1048,10 +1045,9 @@ class DBClient:
                     FROM roles
                     ORDER BY is_system DESC, created_at ASC
                 """)
-                cols = [d[0] for d in cur.description]
                 rows = []
                 for row in cur.fetchall():
-                    d = dict(zip(cols, row))
+                    d = dict(row)
                     for jk in ('default_allowed_decks', 'default_deck_control',
                                'default_deck_actions', 'default_playlist_perms'):
                         if isinstance(d.get(jk), str):
@@ -1083,8 +1079,7 @@ class DBClient:
                 """, (role_id,))
                 row = cur.fetchone()
                 if not row: return None
-                cols = [d[0] for d in cur.description]
-                d = dict(zip(cols, row))
+                d = dict(row)
                 for jk in ('default_allowed_decks', 'default_deck_control',
                            'default_deck_actions', 'default_playlist_perms'):
                     if isinstance(d.get(jk), str):
@@ -1114,8 +1109,7 @@ class DBClient:
                 """, (name,))
                 row = cur.fetchone()
                 if not row: return None
-                cols = [d[0] for d in cur.description]
-                d = dict(zip(cols, row))
+                d = dict(row)
                 for jk in ('default_allowed_decks', 'default_deck_control',
                            'default_deck_actions', 'default_playlist_perms'):
                     if isinstance(d.get(jk), str):
@@ -1162,8 +1156,7 @@ class DBClient:
                 row = cur.fetchone()
                 if not row:
                     return role
-                cols = [d[0] for d in cur.description]
-                return dict(zip(cols, row))
+                return dict(row)
         except Exception as e:
             print(f"[DB] create_role failed: {e}"); raise
         finally:
@@ -1236,8 +1229,7 @@ class DBClient:
                         "SELECT id::text, user_id, username, action, details, ip_address, created_at::text FROM user_logs ORDER BY created_at DESC LIMIT %s OFFSET %s",
                         (limit, offset)
                     )
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
+                return [dict(row) for row in cur.fetchall()]
         except Exception as e:
             print(f"[DB] get_logs failed: {e}"); return []
         finally:

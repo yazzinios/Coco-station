@@ -193,26 +193,28 @@ def _seed_roles(cur):
 
 
 def _seed_admin(cur):
-    """Insert default admin user (cocoadmin / Coco@coco) if not present."""
-    cur.execute("SELECT id FROM users WHERE username = 'cocoadmin'")
-    if cur.fetchone():
-        print("[migrate] Admin user already exists -- skipping seed.")
-        return
+    """Insert or update default admin user (cocoadmin / Coco@coco)."""
     try:
         import bcrypt
         pw_hash = bcrypt.hashpw(b"Coco@coco", bcrypt.gensalt()).decode()
     except ImportError:
         pw_hash = "__NEEDS_BCRYPT__"
         print("[migrate] WARNING: bcrypt not available -- admin password not set. Rebuild container.")
+
     cur.execute(
         """
         INSERT INTO users (username, display_name, password_hash, role, is_super_admin, enabled)
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (username) DO UPDATE SET is_super_admin = TRUE
+        ON CONFLICT (username) DO UPDATE SET
+            is_super_admin = TRUE,
+            password_hash = CASE
+                WHEN users.password_hash = '__NEEDS_BCRYPT__' THEN EXCLUDED.password_hash
+                ELSE users.password_hash
+            END
         """,
         ("cocoadmin", "Coco Admin", pw_hash, "super_admin", True, True),
     )
-    print("[migrate] Default super-admin user 'cocoadmin' created.")
+    print("[migrate] Super-admin user 'cocoadmin' ensured.")
 
 
 def run_migrations_local(db_url: str):
@@ -277,6 +279,9 @@ def run_migrations_local(db_url: str):
             END IF;
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_super_admin') THEN
                 ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN NOT NULL DEFAULT FALSE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'enabled') THEN
+                ALTER TABLE users ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT TRUE;
             END IF;
             -- Widen role column from VARCHAR(20) to VARCHAR(50) for custom roles
             ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50);

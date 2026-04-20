@@ -34,8 +34,7 @@ def get_user_by_username(db_instance, username: str) -> Optional[dict]:
             row = cur.fetchone()
             if row is None:
                 return None
-            cols = [d[0] for d in cur.description]
-            return dict(zip(cols, row))
+            return dict(row)
     except Exception as e:
         print(f"[db_auth] get_user_by_username({username!r}) failed: {e}")
         return None
@@ -86,8 +85,7 @@ def get_user_by_id(db_instance, user_id: str) -> Optional[dict]:
             row = cur.fetchone()
             if row is None:
                 return None
-            cols = [d[0] for d in cur.description]
-            return dict(zip(cols, row))
+            return dict(row)
     except Exception as e:
         print(f"[db_auth] get_user_by_id({user_id!r}) failed: {e}")
         return None
