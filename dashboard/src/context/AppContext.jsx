@@ -97,7 +97,14 @@ function ToastContainer({ toasts, onRemove }) {
 
 function getStoredToken() { return localStorage.getItem('coco_token') || null; }
 function getStoredUser()  {
-  try { return JSON.parse(localStorage.getItem('coco_user') || 'null'); }
+  try {
+    const user = JSON.parse(localStorage.getItem('coco_user') || 'null');
+    return user;
+  }
+  catch { return null; }
+}
+function getStoredPermissions() {
+  try { return JSON.parse(localStorage.getItem('coco_permissions') || 'null'); }
   catch { return null; }
 }
 
@@ -137,7 +144,7 @@ const DEFAULT_DECK = (id, name) => ({
 
 export function AppProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(getStoredUser);
-  const [userPermissions, setUserPermissions] = useState(null);   // ← NEW
+  const [userPermissions, setUserPermissions] = useState(getStoredPermissions);   // Load from localStorage first
 
   const [decks, setDecks] = useState({
     a: DEFAULT_DECK('a', 'Castle'),
@@ -163,11 +170,16 @@ export function AppProvider({ children }) {
   // ── Auth actions ────────────────────────────────────────────
   const login = useCallback((user) => {
     setCurrentUser(user);
+    // Immediately apply permissions from the login response
+    if (user?.permissions) {
+      setUserPermissions(user.permissions);
+    }
   }, []);
 
   const logout = useCallback(() => {
     localStorage.removeItem('coco_token');
     localStorage.removeItem('coco_user');
+    localStorage.removeItem('coco_permissions');
     setCurrentUser(null);
     setUserPermissions(null);
     if (wsRef.current) wsRef.current.close();
@@ -777,6 +789,58 @@ export function AppProvider({ children }) {
       let url = `/api/logs?limit=${limit}&offset=${offset}`;
       if (userId) url += `&user_id=${userId}`;
       const r = await authFetch(url);
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    // ── Roles ──
+    getRoles: async () => {
+      const r = await authFetch('/api/roles');
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    createRole: async (payload) => {
+      const r = await authFetch('/api/roles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    updateRole: async (roleId, payload) => {
+      const r = await authFetch(`/api/roles/${roleId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    deleteRole: async (roleId) => {
+      const r = await authFetch(`/api/roles/${roleId}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(await parseError(r));
+    },
+    getPermissionCatalogue: async () => {
+      const r = await authFetch('/api/permissions/catalogue');
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    createUserExtended: async (payload) => {
+      const r = await authFetch('/api/users/extended', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    applyRoleTemplate: async (userId, roleName = null) => {
+      const r = await authFetch(`/api/users/${userId}/apply-role-template`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role_name: roleName }),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
+    getEffectivePermissions: async (userId) => {
+      const r = await authFetch(`/api/users/${userId}/effective-permissions`);
       if (!r.ok) throw new Error(await parseError(r));
       return r.json();
     },

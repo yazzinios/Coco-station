@@ -2,6 +2,8 @@ import React, { useState, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import Sidebar from './components/Sidebar';
+import ProtectedRoute from './components/ProtectedRoute';
+import SessionGuard from './components/SessionGuard';
 import MixerPage from './pages/MixerPage';
 import LibraryPage from './pages/LibraryPage';
 import AnnouncementsPage from './pages/AnnouncementsPage';
@@ -21,6 +23,7 @@ function AppHeader() {
         CocoStation
       </h1>
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        {/* Live indicator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{
             width: '8px', height: '8px', borderRadius: '50%',
@@ -32,11 +35,37 @@ function AppHeader() {
             {wsConnected ? 'Live' : 'Connecting…'}
           </span>
         </div>
+
+        {/* User badge + role pill + sign out */}
         {currentUser && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            {/* Role pill */}
+            <span style={{
+              fontSize: '0.7rem',
+              padding: '0.2rem 0.55rem',
+              borderRadius: '999px',
+              fontWeight: '600',
+              textTransform: 'uppercase',
+              letterSpacing: '0.4px',
+              background: currentUser.is_super_admin ? 'rgba(255,215,0,0.12)' :
+                          currentUser.role === 'admin' ? 'rgba(253,150,68,0.12)' :
+                          'rgba(0,212,255,0.10)',
+              color: currentUser.is_super_admin ? '#ffd700' :
+                     currentUser.role === 'admin' ? '#fd9644' :
+                     'var(--accent-blue)',
+              border: `1px solid ${
+                currentUser.is_super_admin ? 'rgba(255,215,0,0.3)' :
+                currentUser.role === 'admin' ? 'rgba(253,150,68,0.3)' :
+                'rgba(0,212,255,0.25)'
+              }`,
+            }}>
+              {currentUser.is_super_admin ? '⭐ Super Admin' : currentUser.role || 'operator'}
+            </span>
+
             <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
               {currentUser.display_name || currentUser.username}
             </span>
+
             <button
               onClick={logout}
               title="Sign out"
@@ -46,8 +75,16 @@ function AppHeader() {
                 cursor: 'pointer', fontSize: '0.75rem', fontFamily: 'inherit',
                 transition: 'all 0.2s',
               }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,71,87,0.1)'; e.currentTarget.style.color = '#ff4757'; e.currentTarget.style.borderColor = 'rgba(255,71,87,0.3)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--panel-border)'; }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = 'rgba(255,71,87,0.1)';
+                e.currentTarget.style.color = '#ff4757';
+                e.currentTarget.style.borderColor = 'rgba(255,71,87,0.3)';
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                e.currentTarget.style.color = 'var(--text-secondary)';
+                e.currentTarget.style.borderColor = 'var(--panel-border)';
+              }}
             >
               Sign out
             </button>
@@ -74,27 +111,44 @@ function AppLayout() {
       <main className="main-content">
         <AppHeader />
         <Routes>
-          <Route path="/"              element={<MixerPage />} />
-          <Route path="/library"       element={<LibraryPage />} />
-          <Route path="/announcements" element={<AnnouncementsPage />} />
-          <Route path="/schedules"     element={<SchedulesPage />} />
-          <Route path="/stats"         element={<StatisticsPage />} />
-          <Route path="/settings"      element={<SettingsPage />} />
-          <Route path="/users"         element={<UsersPage />} />
-          <Route path="*"              element={<Navigate to="/" replace />} />
+          {/* Mixer — always accessible when logged in */}
+          <Route path="/" element={<MixerPage />} />
+
+          {/* Feature-gated pages — URL-level protection */}
+          <Route path="/library" element={
+            <ProtectedRoute feature="can_library"><LibraryPage /></ProtectedRoute>
+          } />
+          <Route path="/announcements" element={
+            <ProtectedRoute feature="can_announce"><AnnouncementsPage /></ProtectedRoute>
+          } />
+          <Route path="/schedules" element={
+            <ProtectedRoute feature="can_schedule"><SchedulesPage /></ProtectedRoute>
+          } />
+          <Route path="/stats" element={
+            <ProtectedRoute feature="can_requests"><StatisticsPage /></ProtectedRoute>
+          } />
+          <Route path="/settings" element={
+            <ProtectedRoute feature="can_settings"><SettingsPage /></ProtectedRoute>
+          } />
+
+          {/* Admin-only pages */}
+          <Route path="/users" element={
+            <ProtectedRoute elevated><UsersPage /></ProtectedRoute>
+          } />
+
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+
+      {/* Session expiry warning — visible on all protected pages */}
+      <SessionGuard />
     </div>
   );
 }
 
-// Guard — redirects to /login if not authenticated
 function ProtectedLayout() {
   const { currentUser, login } = useApp();
-
-  if (!currentUser) {
-    return <LoginPage onLogin={login} />;
-  }
+  if (!currentUser) return <LoginPage onLogin={login} />;
   return <AppLayout />;
 }
 
@@ -103,7 +157,7 @@ function App() {
     <BrowserRouter>
       <AppProvider>
         <Routes>
-          {/* /request is always public — no auth required */}
+          {/* /request is always public */}
           <Route path="/request" element={<RequestPage />} />
           {/* Everything else requires login */}
           <Route path="/*" element={<ProtectedLayout />} />

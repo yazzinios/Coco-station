@@ -173,7 +173,7 @@ let _queueIdCounter = 0;
 const newId = () => ++_queueIdCounter;
 
 export default function LibraryPage() {
-  const { library, playlists, decks, toast, api } = useApp();
+  const { library, playlists, decks, toast, api, canControlDeck, hasFeature } = useApp();
 
   // Tabs
   const [tab, setTab] = useState('library');
@@ -379,7 +379,7 @@ export default function LibraryPage() {
             </button>
           </div>
 
-          {tab === 'library' && (
+          {tab === 'library' && hasFeature('can_library') && (
             <button onClick={() => fileInputRef.current?.click()} disabled={uploadRunning} style={{
               background: uploadRunning ? 'rgba(0,212,255,0.25)' : 'var(--accent-blue)',
               color: '#000', border: 'none', borderRadius: '8px', padding: '0.5rem 1rem',
@@ -389,7 +389,7 @@ export default function LibraryPage() {
               <Upload size={15} /> Upload Files
             </button>
           )}
-          {tab === 'playlists' && !editingPlaylist && (
+          {tab === 'playlists' && !editingPlaylist && hasFeature('can_library') && (
             <button onClick={() => setEditingPlaylist('new')} style={{
               background: 'rgba(46,213,115,0.15)', color: '#2ed573',
               border: '1px solid rgba(46,213,115,0.35)', borderRadius: '8px',
@@ -574,20 +574,23 @@ export default function LibraryPage() {
                       </div>
                       <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center', flexShrink: 0 }}>
                         {['a', 'b', 'c', 'd'].map(deckId => {
+                          const allowed = canControlDeck(deckId);
                           const isLoaded  = decks[deckId]?.track === track.filename;
                           const isPlaying = decks[deckId]?.is_playing && isLoaded;
                           const color     = DECK_COLORS[deckId];
                           return (
                             <button key={deckId}
-                              title={isLoaded ? `Unload from Deck ${deckId.toUpperCase()}` : `Load to Deck ${deckId.toUpperCase()}`}
+                              disabled={!allowed}
+                              title={!allowed ? "Lock — permission denied" : isLoaded ? `Unload from Deck ${deckId.toUpperCase()}` : `Load to Deck ${deckId.toUpperCase()}`}
                               onClick={() => handleDeckToggle(track, deckId)} style={{
                                 width: '30px', height: '30px', borderRadius: '6px',
                                 border: isLoaded ? `1px solid ${color}` : '1px solid rgba(255,255,255,0.12)',
                                 background: isLoaded ? `${color}30` : 'rgba(255,255,255,0.05)',
                                 color: isLoaded ? color : 'var(--text-secondary)',
-                                fontSize: '0.68rem', fontWeight: '700', cursor: 'pointer',
+                                fontSize: '0.68rem', fontWeight: '700', cursor: allowed ? 'pointer' : 'not-allowed',
                                 transition: 'all 0.15s', boxShadow: isPlaying ? `0 0 8px ${color}60` : 'none',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                opacity: allowed ? 1 : 0.25,
                               }}>
                               {isLoaded ? '✕' : deckId.toUpperCase()}
                             </button>
@@ -603,15 +606,17 @@ export default function LibraryPage() {
                         }}>
                           {previewTrack === track.filename ? <StopCircle size={14} /> : <PlayCircle size={14} />}
                         </button>
-                        <button title="Delete from library" onClick={() => handleDelete(track.filename)} style={{
-                          width: '30px', height: '30px', borderRadius: '6px',
-                          border: '1px solid rgba(255,71,87,0.2)', background: 'rgba(255,71,87,0.08)',
-                          color: 'rgba(255,71,87,0.6)', cursor: 'pointer',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          transition: 'all 0.15s', marginLeft: '0.2rem',
-                        }}>
-                          <Trash2 size={12} />
-                        </button>
+                        {hasFeature('can_library') && (
+                          <button title="Delete from library" onClick={() => handleDelete(track.filename)} style={{
+                            width: '30px', height: '30px', borderRadius: '6px',
+                            border: '1px solid rgba(255,71,87,0.2)', background: 'rgba(255,71,87,0.08)',
+                            color: 'rgba(255,71,87,0.6)', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            transition: 'all 0.15s', marginLeft: '0.2rem',
+                          }}>
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -676,10 +681,14 @@ export default function LibraryPage() {
                       </div>
                       <Repeat size={12} style={{ color: playlistLoop[pl.id] ? 'var(--accent-blue)' : 'var(--text-secondary)' }} />
                     </label>
-                    <button onClick={() => setEditingPlaylist(pl)} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-secondary)', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', padding: '0.25rem 0.6rem', fontFamily: 'inherit' }}>Edit</button>
-                    <button onClick={() => handleDeletePlaylist(pl.id, pl.name)} style={{ background: 'rgba(255,71,87,0.08)', border: '1px solid rgba(255,71,87,0.2)', color: 'rgba(255,71,87,0.7)', borderRadius: '6px', cursor: 'pointer', padding: '0.25rem 0.4rem', display: 'flex', alignItems: 'center' }}>
-                      <Trash2 size={12} />
-                    </button>
+                    {hasFeature('can_library') && (
+                      <button onClick={() => setEditingPlaylist(pl)} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-secondary)', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', padding: '0.25rem 0.6rem', fontFamily: 'inherit' }}>Edit</button>
+                    )}
+                    {hasFeature('can_library') && (
+                      <button onClick={() => handleDeletePlaylist(pl.id, pl.name)} style={{ background: 'rgba(255,71,87,0.08)', border: '1px solid rgba(255,71,87,0.2)', color: 'rgba(255,71,87,0.7)', borderRadius: '6px', cursor: 'pointer', padding: '0.25rem 0.4rem', display: 'flex', alignItems: 'center' }}>
+                        <Trash2 size={12} />
+                      </button>
+                    )}
                   </div>
 
                   {pl.tracks.length > 0 && (
@@ -693,22 +702,26 @@ export default function LibraryPage() {
                     </div>
                   )}
 
-                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                    <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.3)', marginRight: '0.15rem' }}>Send to:</span>
-                    {['a', 'b', 'c', 'd'].map(deckId => (
-                      <button key={deckId} onClick={() => handleLoadPlaylist(pl.id, deckId)}
-                        title={`Load & play on Deck ${deckId.toUpperCase()}`}
-                        style={{
-                          padding: '0.35rem 0.7rem', borderRadius: '6px', border: `1px solid ${DECK_COLORS[deckId]}40`,
-                          background: `${DECK_COLORS[deckId]}18`, color: DECK_COLORS[deckId],
-                          cursor: 'pointer', fontSize: '0.75rem', fontWeight: '700',
-                          display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit',
-                          transition: 'all 0.15s',
-                        }}>
-                        <Play size={10} fill="currentColor" /> {deckId.toUpperCase()}
-                      </button>
-                    ))}
-                  </div>
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.3)', marginRight: '0.15rem' }}>Send to:</span>
+                      {['a', 'b', 'c', 'd'].map(deckId => {
+                        const allowed = canControlDeck(deckId);
+                        return (
+                          <button key={deckId} onClick={() => handleLoadPlaylist(pl.id, deckId)}
+                            disabled={!allowed}
+                            title={!allowed ? "Lock — permission denied" : `Load & play on Deck ${deckId.toUpperCase()}`}
+                            style={{
+                              padding: '0.35rem 0.7rem', borderRadius: '6px', border: `1px solid ${DECK_COLORS[deckId]}${allowed ? '40' : '20'}`,
+                              background: `${DECK_COLORS[deckId]}${allowed ? '18' : '05'}`, color: DECK_COLORS[deckId],
+                              cursor: allowed ? 'pointer' : 'not-allowed', fontSize: '0.75rem', fontWeight: '700',
+                              display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit',
+                              transition: 'all 0.15s', opacity: allowed ? 1 : 0.35,
+                            }}>
+                            <Play size={10} fill="currentColor" /> {deckId.toUpperCase()}
+                          </button>
+                        );
+                      })}
+                    </div>
                 </div>
               ))}
             </div>

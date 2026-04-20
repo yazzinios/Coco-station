@@ -46,7 +46,9 @@ from schemas import (
 )
 from tts import generate_tts
 from db_client import db
-from auth import verify_token, verify_password, create_token, verify_ldap_credentials, test_ldap_connection
+from auth import verify_token, hash_password
+from rbac import router as rbac_router
+from auth_routes import auth_router, set_auth_settings_ref
 
 # ── Audit log helper ──────────────────────────────────────────
 def _audit(request: Request, user: dict, action: str, details: dict = None):
@@ -69,8 +71,6 @@ CHIMES_DIR        = Path("data/chimes")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 ANNOUNCEMENTS_DIR.mkdir(parents=True, exist_ok=True)
 CHIMES_DIR.mkdir(parents=True, exist_ok=True)
-CHIME_FILENAME = "on_air_chime.mp3"
-
 START_TIME    = time.time()
 TRACKS_PLAYED = 0
 
@@ -84,9 +84,7 @@ ANNOUNCEMENTS: List[dict] = []
 SETTINGS: dict = {
     "ducking_percent": 5,
     "mic_ducking_percent": 5,
-    "on_air_beep": "default",
     "db_mode": "local",
-    "on_air_chime_enabled": False,
     "jingle_intro": None,    # filename in /data/chimes/ — plays before every feed
     "jingle_outro": None,    # filename in /data/chimes/ — plays after every feed
     "timezone": "Africa/Casablanca",
@@ -229,186 +227,38 @@ async def lifespan(app: FastAPI):
     init_scheduler(state)
     start_scheduler(RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES)
 
+    # Bind auth_router to the live SETTINGS dict *after* DB settings are loaded
+    set_auth_settings_ref(SETTINGS)
+
     yield
     stop_scheduler()
 
 app = FastAPI(lifespan=lifespan, title="CocoStation API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+ALLOWED_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000"
+).split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Auth router (login, refresh, me, logout, ldap/test, ldap/save) ──────────
+app.include_router(auth_router)
+
+# ── RBAC router (roles, extended user creation, permission catalogue) ────────
+app.include_router(rbac_router)
 
 
 # ═══════════════════════════════════════════════════════════
-#  AUTH ENDPOINTS
+#  NOTE: set_auth_settings_ref(SETTINGS) is called inside
+#  lifespan() after DB settings are loaded — see above.
 # ═══════════════════════════════════════════════════════════
-
-class LoginRequest(_PydanticBase):
-    username: str
-    password: str
-
-@app.post("/api/auth/login")
-async def login(req: LoginRequest, request: Request):
-    """Public endpoint — returns JWT on valid credentials.
-    Flow: if LDAP enabled → try LDAP first → fallback to local DB.
-    """
-    expiry_hours = int(SETTINGS.get("session_hours", 8))
-
-    # ── Try LDAP first if enabled ────────────────────────────
-    if SETTINGS.get("ldap_enabled"):
-        ldap_cfg = {
-            "server":           SETTINGS.get("ldap_server", ""),
-            "port":             SETTINGS.get("ldap_port", 389),
-            "base_dn":          SETTINGS.get("ldap_base_dn", ""),
-            "bind_dn":          SETTINGS.get("ldap_bind_dn", ""),
-            "bind_pw":          SETTINGS.get("ldap_bind_pw", ""),
-            "user_filter":      SETTINGS.get("ldap_user_filter", "(sAMAccountName={username})"),
-            "attr_name":        SETTINGS.get("ldap_attr_name", "cn"),
-            "attr_email":       SETTINGS.get("ldap_attr_email", "mail"),
-            "role_admin_group": SETTINGS.get("ldap_role_admin_group", ""),
-            "use_ssl":          SETTINGS.get("ldap_use_ssl", False),
-            "tls_verify":       SETTINGS.get("ldap_tls_verify", True),
-        }
-        loop = asyncio.get_event_loop()
-        ldap_user = await loop.run_in_executor(
-            None, verify_ldap_credentials, req.username, req.password, ldap_cfg
-        )
-        if ldap_user:
-            token = create_token(ldap_user, expiry_hours=expiry_hours)
-            # Audit
-            try:
-                ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "").split(",")[0].strip()
-                db.log_action(ldap_user["id"], ldap_user["username"], "login", {"method": "ldap"}, ip)
-            except Exception: pass
-            return {
-                "access_token":    token,
-                "token_type":      "bearer",
-                "expires_in_hours": expiry_hours,
-                "user": {
-                    "id":           ldap_user["id"],
-                    "username":     ldap_user["username"],
-                    "display_name": ldap_user.get("display_name") or ldap_user["username"],
-                    "role":         ldap_user.get("role", "operator"),
-                    "source":       "ldap",
-                },
-            }
-        # If LDAP is enabled but user not found, still try local (allows cocoadmin to log in)
-        print(f"[auth] LDAP failed for '{req.username}' — falling back to local DB")
-
-    # ── Local DB login ───────────────────────────────────────
-    try:
-        user_row = await asyncio.get_event_loop().run_in_executor(
-            None, _db_get_user_by_username, req.username
-        )
-    except Exception as e:
-        print(f"[auth] DB error during login: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
-
-    if not user_row:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    if not user_row.get("enabled", True):
-        raise HTTPException(status_code=403, detail="Account disabled")
-    if not verify_password(req.password, user_row.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-
-    token = create_token(user_row, expiry_hours=expiry_hours)
-    # Audit login
-    try:
-        ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "").split(",")[0].strip()
-        db.log_action(str(user_row["id"]), user_row["username"], "login", {"method": "local"}, ip)
-    except Exception: pass
-    return {
-        "access_token":    token,
-        "token_type":      "bearer",
-        "expires_in_hours": expiry_hours,
-        "user": {
-            "id":           str(user_row["id"]),
-            "username":     user_row["username"],
-            "display_name": user_row.get("display_name") or user_row["username"],
-            "role":         user_row.get("role", "operator"),
-        },
-    }
-
-@app.get("/api/auth/me")
-async def get_me(user: dict = Depends(verify_token)):
-    """Returns the currently authenticated user's info."""
-    return {
-        "id":       user.get("sub"),
-        "username": user.get("username"),
-        "role":     user.get("role", "operator"),
-    }
-
-# ── LDAP test + save ─────────────────────────────────────────────
-
-class LdapTestRequest(_PydanticBase):
-    server: str
-    port: int = 389
-    base_dn: str = ""
-    bind_dn: str = ""
-    bind_pw: str = ""
-    user_filter: str = "(sAMAccountName={username})"
-    attr_name: str = "cn"
-    attr_email: str = "mail"
-    role_admin_group: str = ""
-    use_ssl: bool = False
-    tls_verify: bool = True
-
-@app.post("/api/settings/ldap/test")
-async def ldap_test(req: LdapTestRequest, _user: dict = Depends(verify_token)):
-    """Test LDAP connectivity without saving (admin only)."""
-    if _user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, test_ldap_connection, req.dict())
-    if result["ok"]:
-        return {"status": "ok", "detail": result["detail"]}
-    raise HTTPException(status_code=503, detail=result["detail"])
-
-@app.post("/api/settings/ldap/save")
-async def ldap_save(req: LdapTestRequest, enabled: bool = True, _user: dict = Depends(verify_token)):
-    """Save LDAP settings and enable/disable (admin only)."""
-    if _user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    patch = {
-        "ldap_enabled":          enabled,
-        "ldap_server":           req.server,
-        "ldap_port":             req.port,
-        "ldap_base_dn":          req.base_dn,
-        "ldap_bind_dn":          req.bind_dn,
-        "ldap_bind_pw":          req.bind_pw,
-        "ldap_user_filter":      req.user_filter,
-        "ldap_attr_name":        req.attr_name,
-        "ldap_attr_email":       req.attr_email,
-        "ldap_role_admin_group": req.role_admin_group,
-        "ldap_use_ssl":          req.use_ssl,
-        "ldap_tls_verify":       req.tls_verify,
-    }
-    SETTINGS.update(patch)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, db.save_settings, patch)
-    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
-    return {"status": "ok"}
-
-def _db_get_user_by_username(username: str) -> Optional[dict]:
-    """Synchronous helper — runs in a thread executor."""
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        user     = os.getenv("POSTGRES_USER",     "coco")
-        password = os.getenv("POSTGRES_PASSWORD", "coco_secret")
-        host     = os.getenv("POSTGRES_HOST",     "db")
-        dbname   = os.getenv("POSTGRES_DB",       "cocostation")
-        conn = psycopg2.connect(
-            host=host, port=5432, user=user, password=password,
-            dbname=dbname, cursor_factory=RealDictCursor,
-            connect_timeout=3,
-        )
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE username = %s LIMIT 1", (username,))
-            row = cur.fetchone()
-        conn.close()
-        return dict(row) if row else None
-    except Exception as e:
-        print(f"[auth] _db_get_user_by_username failed: {e}")
-        return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -457,7 +307,6 @@ async def upload_jingle(
     except Exception as e:
         print(f"[DB] Failed to save jingle setting: {e}")
 
-    # Explicitly verify the file exists on disk before broadcasting
     if dest.exists():
         print(f"[jingle] Uploaded {jingle_type} jingle: {safe_name} ({len(content)} bytes)")
     else:
@@ -587,27 +436,6 @@ async def _restore_volumes(deck_ids: list, duck_pct: int, target_volumes: Option
             final_tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{target}"))
         await asyncio.gather(*final_tasks, return_exceptions=True)
 
-async def _play_chime_and_wait(deck_ids: list):
-    """Legacy on-air chime (single file, plays on both pre and post)."""
-    if not SETTINGS.get("on_air_chime_enabled", False):
-        return
-    chime_path = CHIMES_DIR / CHIME_FILENAME
-    if not chime_path.exists():
-        return
-    filepath_in_container = str(Path("/chimes") / CHIME_FILENAME)
-    try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            tasks = [
-                c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement",
-                       json={"filepath": filepath_in_container, "notify": False})
-                for did in deck_ids
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
-        duration = await get_audio_duration(chime_path)
-        await asyncio.sleep(min(duration + 0.15, 12.0))
-    except Exception as e:
-        print(f"[chime] error: {e}")
-
 
 # ═══════════════════════════════════════════════════════════
 #  DUCKING ENGINE
@@ -663,7 +491,7 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
 
 # ═══════════════════════════════════════════════════════════
 #  TRIGGER STATE MACHINE
-#  STATE 2: intro jingle → STATE 3: duck → STATE 4: content
+#  STATE 2: duck → STATE 3: intro jingle → STATE 4: content
 #  STATE 5: outro jingle → STATE 6: restore
 # ═══════════════════════════════════════════════════════════
 
@@ -674,15 +502,11 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
     async with _TRIGGER_LOCK_REF[0]:
         print(f"[trigger] announcement locked — {Path(filepath).name}")
         try:
-            # STATE 2: PRE — legacy chime, then global intro jingle
-            try:
-                await asyncio.wait_for(_play_chime_and_wait(deck_ids), timeout=10.0)
-            except asyncio.TimeoutError:
-                print("[trigger] Chime timeout, proceeding.")
-            await _play_global_jingle("intro", deck_ids)
-
-            # STATE 3: DUCK
+            # STATE 2: DUCK first — music lowers before anything plays
             await _duck_acquire(level=level)
+
+            # STATE 3: intro jingle plays while music is already ducked
+            await _play_global_jingle("intro", deck_ids)
 
             # STATE 4: PLAY
             events = []
@@ -712,11 +536,11 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
 
             await asyncio.sleep(0.3)
 
-            # STATE 5: POST — global outro jingle
+            # STATE 5: outro jingle plays while music is still ducked
             await _play_global_jingle("outro", deck_ids)
 
         finally:
-            # STATE 6: RESTORE
+            # STATE 6: RESTORE — music comes back after both jingles finish
             await _duck_release()
             print(f"[trigger] announcement unlocked")
 
@@ -724,19 +548,16 @@ async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int =
 async def fade_and_enable_mic(deck_ids: list):
     await _TRIGGER_LOCK_REF[0].acquire()
     print(f"[trigger] mic locked — decks {deck_ids}")
-    # STATE 2: intro jingle before mic goes live
-    await _play_chime_and_wait(deck_ids)
-    # STATE 3: duck FIRST so jingle is heard clearly over lowered music
+    # STATE 2: duck first, intro jingle plays while music is already lowered
     await _duck_acquire(source_type="mic")
     await _play_global_jingle("intro", deck_ids)
 
 
 async def fade_restore_after_mic(deck_ids: list):
     try:
-        # STATE 5: outro jingle after mic ends
+        # STATE 5: outro jingle plays while music is still ducked
         await _play_global_jingle("outro", deck_ids)
-        await _play_chime_and_wait(deck_ids)
-        # STATE 6: restore
+        # STATE 6: restore music after outro finishes
         await _duck_release()
     finally:
         try:
@@ -894,12 +715,13 @@ async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(verify
     return {"status": "ok", "name": req.name}
 
 @app.post("/api/decks/{deck_id}/load")
-async def load_track(deck_id: str, req: PlayRequest, _user=Depends(verify_token)):
+async def load_track(deck_id: str, req: PlayRequest, request: Request, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not (MEDIA_DIR / req.track_id).exists(): raise HTTPException(status_code=404, detail="Track not found")
     DECKS[deck_id]["track"] = req.track_id
     DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    _audit(request, _user, "deck.load_track", {"deck": deck_id, "track": req.track_id})
     return {"status": "ok", "deck": deck_id, "track": req.track_id}
 
 @app.post("/api/decks/{deck_id}/unload")
@@ -915,7 +737,7 @@ async def unload_track(deck_id: str, _user=Depends(verify_token)):
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/play")
-async def play_deck(deck_id: str, _user=Depends(verify_token)):
+async def play_deck(deck_id: str, request: Request, _user=Depends(verify_token)):
     global TRACKS_PLAYED
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["track"]: raise HTTPException(status_code=400, detail="No track loaded")
@@ -928,6 +750,7 @@ async def play_deck(deck_id: str, _user=Depends(verify_token)):
             await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": loop})
     except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    _audit(request, _user, "deck.play", {"deck": deck_id, "track": DECKS[deck_id].get("track")})
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/pause")
@@ -1173,7 +996,7 @@ async def delete_playlist(playlist_id: str, _user=Depends(verify_token)):
     return {"status": "ok"}
 
 @app.post("/api/decks/{deck_id}/playlist")
-async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, _user=Depends(verify_token)):
+async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, request: Request, _user=Depends(verify_token)):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     playlist = PLAYLISTS.get(req.playlist_id)
     if not playlist: raise HTTPException(status_code=404, detail="Playlist not found")
@@ -1191,6 +1014,7 @@ async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, _user=De
             await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": str(Path("/library") / tracks[0]), "loop": False})
     except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    _audit(request, _user, "deck.load_playlist", {"deck": deck_id, "playlist": playlist["name"], "tracks": len(tracks)})
     return {"status": "ok", "deck": deck_id, "playlist": playlist["name"], "track": tracks[0]}
 
 @app.post("/api/decks/{deck_id}/track_ended")
@@ -1253,27 +1077,6 @@ async def deck_previous_track(deck_id: str, _user=Depends(verify_token)):
     if prev < 0: prev = len(tracks) - 1 if ps.get("loop", False) else 0
     return await _play_playlist_index(deck_id, prev)
 
-# ── Chime ────────────────────────────────────────────────────
-@app.post("/api/settings/chime/upload")
-async def upload_chime(file: UploadFile = File(...), _user=Depends(verify_token)):
-    if not any(file.filename.lower().endswith(e) for e in {".mp3", ".wav", ".ogg"}):
-        raise HTTPException(status_code=400, detail="Only audio files allowed")
-    dest = CHIMES_DIR / CHIME_FILENAME
-    content = await file.read()
-    await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
-    return {"status": "ok", "filename": CHIME_FILENAME}
-
-@app.get("/api/settings/chime/status")
-def chime_status():
-    return {"exists": (CHIMES_DIR / CHIME_FILENAME).exists(), "enabled": SETTINGS.get("on_air_chime_enabled", False)}
-
-@app.delete("/api/settings/chime")
-async def delete_chime(_user=Depends(verify_token)):
-    chime_path = CHIMES_DIR / CHIME_FILENAME
-    if chime_path.exists(): chime_path.unlink()
-    return {"status": "ok"}
-
-# ── Settings ────────────────────────────────────────────────
 @app.get("/api/settings")
 def get_settings(): return SETTINGS
 
@@ -1602,28 +1405,42 @@ async def list_users(_user: dict = Depends(verify_token)):
 async def create_user(req: UserCreateRequest, request: Request, _user: dict = Depends(verify_token)):
     if not (_user.get("role") == "admin" or _user.get("is_super_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
-    if req.role not in ("admin", "operator"):
-        raise HTTPException(status_code=400, detail="role must be 'admin' or 'operator'")
-    # Only super_admin can create other admins
-    if req.role == "admin" and not _user.get("is_super_admin"):
+
+    loop = asyncio.get_event_loop()
+    all_roles = await loop.run_in_executor(None, db.list_roles)
+    valid_names = {r["name"] for r in all_roles}
+    role = req.role.strip().lower()
+    if role not in valid_names:
+        raise HTTPException(status_code=400, detail=f"Unknown role '{role}'. Valid: {sorted(valid_names)}")
+
+    if role in ("admin", "super_admin") and not _user.get("is_super_admin"):
         raise HTTPException(status_code=403, detail="Only super-admin can create admin accounts")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    from auth import hash_password
     pw_hash = hash_password(req.password)
     user_id = str(uuid.uuid4())
-    loop = asyncio.get_event_loop()
     try:
         user = await loop.run_in_executor(None, db.create_user, user_id,
                                            req.username.strip(),
                                            req.display_name or req.username.strip(),
-                                           pw_hash, req.role)
+                                           pw_hash, role,
+                                           role == "super_admin")
     except Exception as e:
         msg = str(e)
         if "unique" in msg.lower() or "duplicate" in msg.lower():
             raise HTTPException(status_code=409, detail="Username already exists")
         raise HTTPException(status_code=500, detail=f"DB error: {msg}")
-    _audit(request, _user, "user.create", {"target": req.username, "role": req.role})
+
+    try:
+        role_obj = next((r for r in all_roles if r["name"] == role), None)
+        if role_obj:
+            from rbac import _role_to_perms
+            perms = _role_to_perms(role_obj)
+            await loop.run_in_executor(None, db.save_permissions, user_id, perms)
+    except Exception as e:
+        print(f"[create_user] Failed to auto-apply role permissions: {e}")
+
+    _audit(request, _user, "user.create", {"target": req.username, "role": role})
     return {k: v for k, v in user.items() if k != "password_hash"}
 
 @app.put("/api/users/{user_id}")
@@ -1635,11 +1452,16 @@ async def update_user(user_id: str, req: UserUpdateRequest, request: Request, _u
         raise HTTPException(status_code=403, detail="Admin access required")
     if not is_super and not is_admin and (req.role is not None or req.enabled is not None):
         raise HTTPException(status_code=403, detail="Only admins can change role or enabled status")
-    # Only super_admin can promote to admin
-    if req.role == "admin" and not is_super:
-        raise HTTPException(status_code=403, detail="Only super-admin can assign admin role")
-    if req.role is not None and req.role not in ("admin", "operator"):
-        raise HTTPException(status_code=400, detail="role must be 'admin' or 'operator'")
+
+    loop = asyncio.get_event_loop()
+    if req.role is not None:
+        all_roles = await loop.run_in_executor(None, db.list_roles)
+        valid_names = {r["name"] for r in all_roles}
+        if req.role not in valid_names:
+            raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'. Valid: {sorted(valid_names)}")
+        if req.role in ("admin", "super_admin") and not is_super:
+            raise HTTPException(status_code=403, detail="Only super-admin can assign admin/super_admin role")
+
     fields = {}
     if req.display_name is not None: fields["display_name"] = req.display_name
     if req.role        is not None:  fields["role"]         = req.role
@@ -1647,11 +1469,9 @@ async def update_user(user_id: str, req: UserUpdateRequest, request: Request, _u
     if req.password    is not None:
         if len(req.password) < 6:
             raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-        from auth import hash_password
         fields["password_hash"] = hash_password(req.password)
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
-    loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(None, db.update_user, user_id, fields)
     except Exception as e:
@@ -1679,11 +1499,9 @@ async def delete_user(user_id: str, request: Request, _user: dict = Depends(veri
 
 class PermissionsRequest(_PydanticBase):
     allowed_decks:  List[str]            = ["a","b","c","d"]
-    # ── Granular fields (008_extended_permissions) ───────────
-    deck_control:   Optional[dict]       = None   # {"a":{"view":bool,"control":bool}, ...}
-    deck_actions:   Optional[List[str]]  = None   # ["deck.play", ...]
-    playlist_perms: Optional[List[str]]  = None   # ["playlist.view", ...]
-    # ── Feature flags ────────────────────────────────────────
+    deck_control:   Optional[dict]       = None
+    deck_actions:   Optional[List[str]]  = None
+    playlist_perms: Optional[List[str]]  = None
     can_announce:  bool = True
     can_schedule:  bool = True
     can_library:   bool = True
@@ -1701,7 +1519,6 @@ async def save_user_permissions(user_id: str, req: PermissionsRequest, request: 
         raise HTTPException(status_code=403, detail="Admin access required")
     from db_client import DEFAULT_DECK_CONTROL, DEFAULT_DECK_ACTIONS, DEFAULT_PLAYLIST_PERMS
     perms = req.dict()
-    # Fill granular defaults if the old-style client omitted them
     if perms["deck_control"]   is None: perms["deck_control"]   = DEFAULT_DECK_CONTROL
     if perms["deck_actions"]   is None: perms["deck_actions"]   = DEFAULT_DECK_ACTIONS
     if perms["playlist_perms"] is None: perms["playlist_perms"] = DEFAULT_PLAYLIST_PERMS
@@ -1721,6 +1538,6 @@ async def get_audit_logs(
 ):
     """Admins see all logs; operators only see their own."""
     if _user.get("role") != "admin" and not _user.get("is_super_admin"):
-        user_id = _user.get("sub")   # force own logs only
+        user_id = _user.get("sub")
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, db.get_logs, limit, user_id, offset)

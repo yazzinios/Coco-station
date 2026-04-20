@@ -2,6 +2,61 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Save, Upload, Trash2, Bell, Music2, Globe, Clock } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
+// ── JingleCard must live OUTSIDE SettingsPage so React never remounts it
+// when inner state (e.g. jingleUploading) changes. Defining it inside would
+// give it a new identity on every render, killing the hidden file-input.
+function JingleCard({ type, label, description, exists, filename, uploading, inputRef, onUpload, onDelete }) {
+  return (
+    <div style={{ padding: '1rem', borderRadius: '10px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)' }}>
+      <div style={{ marginBottom: '0.6rem' }}>
+        <div style={{ fontWeight: '600', fontSize: '0.88rem', marginBottom: '0.2rem', color: exists ? '#a55eea' : 'var(--text-primary)' }}>
+          {label}
+        </div>
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{description}</div>
+        {exists && filename && (
+          <div style={{ marginTop: '0.3rem', fontSize: '0.72rem', color: '#a55eea', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+            <Music2 size={10} /> {filename.replace(/\.[^.]+$/, '').replace('global_jingle_', '')}
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={uploading}
+          style={{
+            padding: '0.4rem 0.85rem', borderRadius: '7px', border: '1px solid rgba(165,94,234,0.4)',
+            background: 'rgba(165,94,234,0.1)', color: '#a55eea',
+            cursor: uploading ? 'default' : 'pointer', fontSize: '0.82rem',
+            display: 'flex', alignItems: 'center', gap: '0.4rem', opacity: uploading ? 0.6 : 1,
+            fontFamily: 'inherit',
+          }}
+        >
+          <Upload size={13} />
+          {uploading ? 'Uploading…' : exists ? 'Replace' : 'Upload MP3'}
+        </button>
+        <input
+          ref={inputRef} type="file" accept=".mp3,.wav,.ogg" style={{ display: 'none' }}
+          onChange={e => onUpload(type, e.target.files[0] || null)}
+        />
+        {exists ? (
+          <>
+            <span style={{ fontSize: '0.78rem', color: '#2ed573' }}>✓ Ready</span>
+            <button
+              onClick={() => onDelete(type)}
+              style={{ padding: '0.35rem 0.65rem', borderRadius: '7px', border: '1px solid rgba(255,71,87,0.3)',
+                background: 'rgba(255,71,87,0.08)', color: '#ff4757', cursor: 'pointer', fontSize: '0.78rem',
+                display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
+              <Trash2 size={12} /> Delete
+            </button>
+          </>
+        ) : (
+          <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.25)' }}>No file uploaded</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const TIMEZONES = [
   'Africa/Casablanca', 'Africa/Abidjan', 'Africa/Lagos', 'Africa/Nairobi',
   'Africa/Cairo', 'Africa/Johannesburg',
@@ -241,55 +296,6 @@ export default function SettingsPage() {
   const lbl = { display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.5rem' };
   const inp = { width: '100%', padding: '0.6rem 0.9rem', borderRadius: '8px', background: 'rgba(0,0,0,0.3)', color: 'white', border: '1px solid var(--panel-border)', fontFamily: 'inherit', fontSize: '0.9rem', outline: 'none', boxSizing: 'border-box' };
 
-  const JingleCard = ({ type, label, description, exists, filename, uploading, inputRef }) => (
-    <div style={{ padding: '1rem', borderRadius: '10px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)' }}>
-      <div style={{ marginBottom: '0.6rem' }}>
-        <div style={{ fontWeight: '600', fontSize: '0.88rem', marginBottom: '0.2rem', color: exists ? '#a55eea' : 'var(--text-primary)' }}>
-          {label}
-        </div>
-        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{description}</div>
-        {exists && filename && (
-          <div style={{ marginTop: '0.3rem', fontSize: '0.72rem', color: '#a55eea', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-            <Music2 size={10} /> {filename.replace(/\.[^.]+$/, '').replace('global_jingle_', '')}
-          </div>
-        )}
-      </div>
-      <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
-        <button
-          onClick={() => inputRef.current?.click()}
-          disabled={uploading}
-          style={{
-            padding: '0.4rem 0.85rem', borderRadius: '7px', border: '1px solid rgba(165,94,234,0.4)',
-            background: 'rgba(165,94,234,0.1)', color: '#a55eea',
-            cursor: uploading ? 'default' : 'pointer', fontSize: '0.82rem',
-            display: 'flex', alignItems: 'center', gap: '0.4rem', opacity: uploading ? 0.6 : 1,
-            fontFamily: 'inherit',
-          }}
-        >
-          <Upload size={13} />
-          {uploading ? 'Uploading…' : exists ? 'Replace' : 'Upload MP3'}
-        </button>
-        <input
-          ref={inputRef} type="file" accept=".mp3,.wav,.ogg" style={{ display: 'none' }}
-          onChange={e => handleJingleUpload(type, e.target.files[0] || null)}
-        />
-        {exists ? (
-          <>
-            <span style={{ fontSize: '0.78rem', color: '#2ed573' }}>✓ Ready</span>
-            <button
-              onClick={() => handleDeleteJingle(type)}
-              style={{ padding: '0.35rem 0.65rem', borderRadius: '7px', border: '1px solid rgba(255,71,87,0.3)',
-                background: 'rgba(255,71,87,0.08)', color: '#ff4757', cursor: 'pointer', fontSize: '0.78rem',
-                display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
-              <Trash2 size={12} /> Delete
-            </button>
-          </>
-        ) : (
-          <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.25)' }}>No file uploaded</span>
-        )}
-      </div>
-    </div>
-  );
 
   return (
     <div>
@@ -581,12 +587,16 @@ export default function SettingsPage() {
               description="Plays before the mic opens / announcement starts."
               exists={jingleIntroExists} filename={jingleIntroFilename}
               uploading={jingleUploading.intro}
+              onUpload={handleJingleUpload}
+              onDelete={handleDeleteJingle}
             />
             <JingleCard
               type="outro" label="🎵 Outro Jingle" inputRef={jingleOutroRef}
               description="Plays after the mic closes / announcement ends."
               exists={jingleOutroExists} filename={jingleOutroFilename}
               uploading={jingleUploading.outro}
+              onUpload={handleJingleUpload}
+              onDelete={handleDeleteJingle}
             />
           </div>
           <div style={{ marginTop: '0.85rem', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)' }}>

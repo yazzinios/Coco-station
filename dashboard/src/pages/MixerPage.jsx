@@ -8,7 +8,7 @@ const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644' };
 
 /* ─────────────────────── Playlist Launcher ─────────────────────── */
 function PlaylistLauncher() {
-  const { playlists, toast, api } = useApp();
+  const { playlists, toast, api, canControlDeck } = useApp();
   const [loopState, setLoopState] = useState({});
 
   const handleLoad = async (playlistId, deckId) => {
@@ -57,18 +57,25 @@ function PlaylistLauncher() {
               <Repeat size={11} style={{ color: loopState[pl.id] ? 'var(--accent-blue)' : 'var(--text-secondary)', flexShrink: 0 }} />
             </div>
             <div style={{ display: 'flex', gap: '0.35rem' }}>
-              {['a', 'b', 'c', 'd'].map(dId => (
-                <button key={dId} onClick={() => handleLoad(pl.id, dId)}
-                  style={{
-                    flex: 1, padding: '0.3rem', borderRadius: '6px',
-                    border: `1px solid ${DECK_COLORS[dId]}40`, background: `${DECK_COLORS[dId]}15`,
-                    color: DECK_COLORS[dId], cursor: 'pointer', fontSize: '0.72rem', fontWeight: '700',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.2rem',
-                    fontFamily: 'inherit', transition: 'all 0.15s',
-                  }}>
-                  <Play size={9} fill="currentColor" /> {dId.toUpperCase()}
-                </button>
-              ))}
+              {['a', 'b', 'c', 'd'].map(dId => {
+                const allowed = canControlDeck(dId);
+                return (
+                  <button key={dId} onClick={() => handleLoad(pl.id, dId)}
+                    disabled={!allowed}
+                    style={{
+                      flex: 1, padding: '0.3rem', borderRadius: '6px',
+                      border: `1px solid ${DECK_COLORS[dId]}${allowed ? '40' : '20'}`,
+                      background: `${DECK_COLORS[dId]}${allowed ? '15' : '05'}`,
+                      color: DECK_COLORS[dId], cursor: allowed ? 'pointer' : 'not-allowed',
+                      fontSize: '0.72rem', fontWeight: '700',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.2rem',
+                      fontFamily: 'inherit', transition: 'all 0.15s',
+                      opacity: allowed ? 1 : 0.3,
+                    }}>
+                    <Play size={9} fill="currentColor" /> {dId.toUpperCase()}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -220,23 +227,25 @@ function MusicRequestsPanel() {
    MIXER PAGE
    ═══════════════════════════════════════════════════════════ */
 export default function MixerPage() {
+  const { canViewDeck, hasFeature } = useApp();
+
   return (
     <div>
       <h2 style={{ marginBottom: '1.5rem', fontSize: '1.5rem', fontWeight: '500' }}>Mixer Deck</h2>
 
       {/* 4 decks */}
       <div className="deck-grid">
-        <DeckPanel id="a" />
-        <DeckPanel id="b" />
-        <DeckPanel id="c" />
-        <DeckPanel id="d" />
+        {canViewDeck('a') && <DeckPanel id="a" />}
+        {canViewDeck('b') && <DeckPanel id="b" />}
+        {canViewDeck('c') && <DeckPanel id="c" />}
+        {canViewDeck('d') && <DeckPanel id="d" />}
       </div>
 
       {/* Bottom row: Playlist Launcher + On Air + Music Requests */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginTop: '1.5rem' }}>
         <PlaylistLauncher />
-        <OnAirButton />
-        <MusicRequestsPanel />
+        {hasFeature('can_announce') && <OnAirButton />}
+        {hasFeature('can_requests') && <MusicRequestsPanel />}
       </div>
     </div>
   );

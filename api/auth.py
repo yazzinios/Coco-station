@@ -88,6 +88,25 @@ def require_super_admin(user: dict = Depends(verify_token)) -> dict:
     return user
 
 
+def require_role(*roles):
+    """
+    FastAPI dependency factory — restricts to specific role names.
+    Super-admins always pass. Usage:
+        @app.post("/api/something")
+        async def handler(user = Depends(require_role("admin", "operator"))):
+    """
+    async def _check(user: dict = Depends(verify_token)) -> dict:
+        if user.get("is_super_admin"):
+            return user
+        if user.get("role") not in roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Requires one of: {', '.join(roles)}",
+            )
+        return user
+    return _check
+
+
 def is_elevated(user: dict) -> bool:
     """Returns True if user is admin or super_admin — bypasses per-permission checks."""
     return user.get("role") == "admin" or bool(user.get("is_super_admin"))
