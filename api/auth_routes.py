@@ -45,6 +45,26 @@ def set_auth_settings_ref(settings_dict: dict):
 
 auth_router = APIRouter(tags=["auth"])
 
+
+@auth_router.get("/api/auth/methods")
+def get_auth_methods():
+    """Public endpoint — tells the frontend which login methods are available."""
+    settings = _SETTINGS_REF
+    ldap_enabled = bool(settings.get("ldap_enabled", False))
+    ldap_server  = settings.get("ldap_server", "") or ""
+    # Extract a friendly domain name from the LDAP server URL
+    domain = ""
+    if ldap_enabled and ldap_server:
+        import re
+        m = re.search(r'(?:ldaps?://)?([^/:]+)', ldap_server)
+        if m:
+            domain = m.group(1)
+    return {
+        "local": True,
+        "ldap":  ldap_enabled and bool(ldap_server.strip()),
+        "domain": domain,
+    }
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -84,6 +104,7 @@ def _audit_logout(user: dict, ip: str):
 class LoginRequest(_PydanticBase):
     username: str
     password: str
+    login_method: str = "auto"   # "auto" | "local" | "ldap"
 
 class LdapConfigRequest(_PydanticBase):
     server:           str
@@ -115,9 +136,10 @@ async def login(req: LoginRequest, request: Request):
     settings   = _SETTINGS_REF
     expiry_hrs = int(settings.get("session_hours", 8))
     ip         = _get_client_ip(request)
+    method     = req.login_method  # "auto" | "local" | "ldap"
 
-    # ── 1. LDAP attempt ────────────────────────────────────────
-    if settings.get("ldap_enabled"):
+    # ── 1. LDAP attempt (skip if method=local) ─────────────────
+    if method != "local" and settings.get("ldap_enabled") and settings.get("ldap_server", "").strip():
         ldap_cfg = {
             "server":           settings.get("ldap_server", ""),
             "port":             settings.get("ldap_port", 389),
@@ -150,6 +172,10 @@ async def login(req: LoginRequest, request: Request):
             return _login_response(token, ldap_user, perms, expiry_hrs, source="ldap")
 
         print(f"[auth] LDAP auth failed for '{req.username}' — falling back to local DB")
+
+    # ── 2. Local DB login (skip if method=ldap) ─────────────────
+    if method == "ldap":
+        raise HTTPException(status_code=401, detail="LDAP authentication failed. Check your domain credentials.")
 
     # ── 2. Local DB login ───────────────────────────────────────
     loop     = asyncio.get_event_loop()
