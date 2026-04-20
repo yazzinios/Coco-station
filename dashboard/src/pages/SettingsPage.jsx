@@ -237,16 +237,27 @@ export default function SettingsPage() {
   };
 
   // ── LDAP handlers ──
-  const ldapPayload = () => ({
-    server: ldapServer, port: ldapPort, base_dn: ldapBaseDn,
-    bind_dn: ldapBindDn, bind_pw: ldapBindPw,
-    user_filter: ldapUserFilter, attr_name: ldapAttrName,
-    attr_email: ldapAttrEmail, role_admin_group: ldapAdminGroup,
-    use_ssl: ldapUseSsl, tls_verify: ldapTlsVerify,
-  });
+  const ldapPayload = () => {
+    const port = parseInt(ldapPort, 10);
+    return {
+      server:           ldapServer || '',
+      port:             isNaN(port) ? 389 : port,
+      base_dn:          ldapBaseDn || '',
+      bind_dn:          ldapBindDn || '',
+      bind_pw:          ldapBindPw || '',
+      user_filter:      ldapUserFilter || '(sAMAccountName={username})',
+      attr_name:        ldapAttrName || 'cn',
+      attr_email:       ldapAttrEmail || 'mail',
+      role_admin_group: ldapAdminGroup || '',
+      use_ssl:          !!ldapUseSsl,
+      tls_verify:       !!ldapTlsVerify,
+    };
+  };
 
   const handleLdapTest = async () => {
     if (!ldapServer) { toast.error('LDAP Server URL required'); return; }
+    const p = parseInt(ldapPort, 10);
+    if (isNaN(p) || p <= 0) { toast.error('Valid LDAP Port required'); return; }
     setLdapTesting(true); setLdapStatus(null);
     try {
       const r = await api.testLdap(ldapPayload());
