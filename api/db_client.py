@@ -1233,4 +1233,103 @@ class DBClient:
             self._put_conn(conn)
 
 
+    # ── Chimes Library ────────────────────────────────────────
+
+    def list_chimes(self) -> list:
+        """Return all rows from the chimes table, newest first."""
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("chimes").select("*").order("created_at", desc=True).execute()
+                return res.data or []
+            except Exception as e:
+                print(f"[DB] list_chimes (cloud) failed: {e}"); return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, name, filename, size, duration, type, created_at::text "
+                        "FROM chimes ORDER BY created_at DESC"
+                    )
+                    return [dict(r) for r in cur.fetchall()]
+            except Exception as e:
+                print(f"[DB] list_chimes (local) failed: {e}"); return []
+            finally:
+                self._put_conn(conn)
+
+    def save_chime(self, chime: dict):
+        """Upsert a chime row (id is the primary key)."""
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("chimes").upsert(chime, on_conflict="id").execute()
+            except Exception as e:
+                print(f"[DB] save_chime (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO chimes (id, name, filename, size, duration, type)
+                        VALUES (%(id)s, %(name)s, %(filename)s, %(size)s, %(duration)s, %(type)s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name     = EXCLUDED.name,
+                            filename = EXCLUDED.filename,
+                            size     = EXCLUDED.size,
+                            duration = EXCLUDED.duration,
+                            type     = EXCLUDED.type
+                        """,
+                        chime,
+                    )
+            except Exception as e:
+                print(f"[DB] save_chime (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def delete_chime(self, chime_id: str):
+        """Delete a chime row by id."""
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("chimes").delete().eq("id", chime_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_chime (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM chimes WHERE id = %s", (chime_id,))
+            except Exception as e:
+                print(f"[DB] delete_chime (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def get_chime_by_filename(self, filename: str) -> dict:
+        """Return a single chime row matched by filename, or None."""
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("chimes").select("*").eq("filename", filename).limit(1).execute()
+                return res.data[0] if res.data else None
+            except Exception as e:
+                print(f"[DB] get_chime_by_filename (cloud) failed: {e}"); return None
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, name, filename, size, duration, type, created_at::text "
+                        "FROM chimes WHERE filename = %s LIMIT 1",
+                        (filename,),
+                    )
+                    row = cur.fetchone()
+                    return dict(row) if row else None
+            except Exception as e:
+                print(f"[DB] get_chime_by_filename (local) failed: {e}"); return None
+            finally:
+                self._put_conn(conn)
+
+
 db = DBClient()

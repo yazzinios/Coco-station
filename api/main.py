@@ -227,15 +227,33 @@ async def lifespan(app: FastAPI):
     init_scheduler(state)
     start_scheduler(RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES)
 
-    # --- JINGLE AUTO-DISCOVERY ---
-    # Scan disk for jingles if DB settings are missing (makes them persistent like library)
+    # --- JINGLE VALIDATION & AUTO-DISCOVERY ---
+    # 1. If DB has a filename but the file is missing on disk → clear the stale setting
+    # 2. If DB has no filename → scan disk in case a file was manually added
     for jt in ["intro", "outro"]:
-        if not SETTINGS.get(f"jingle_{jt}"):
+        key = f"jingle_{jt}"
+        stored = SETTINGS.get(key)
+        if stored:
+            if not (CHIMES_DIR / stored).exists():
+                print(f"[startup] Jingle '{stored}' referenced in DB but missing on disk — clearing stale setting.")
+                SETTINGS[key] = None
+                try:
+                    await loop.run_in_executor(None, db.save_settings, {key: None})
+                except Exception as e:
+                    print(f"[startup] Failed to clear stale jingle setting: {e}")
+            else:
+                print(f"[startup] {jt} jingle OK: {stored}")
+        else:
+            # Auto-discover only when no setting is stored
             for ext in [".mp3", ".wav", ".ogg"]:
                 candidate = f"global_jingle_{jt}{ext}"
                 if (CHIMES_DIR / candidate).exists():
-                    SETTINGS[f"jingle_{jt}"] = candidate
+                    SETTINGS[key] = candidate
                     print(f"[startup] Auto-discovered {jt} jingle: {candidate}")
+                    try:
+                        await loop.run_in_executor(None, db.save_settings, {key: candidate})
+                    except Exception as e:
+                        print(f"[startup] Failed to persist auto-discovered jingle: {e}")
                     break
 
     set_auth_settings_ref(SETTINGS)
@@ -293,13 +311,23 @@ def jingle_status():
         },
     }
 
+@app.get("/api/chimes")
+async def list_chimes(_user=Depends(verify_token)):
+    """Return all chimes from the library (DB-backed)."""
+    try:
+        chimes = await asyncio.get_event_loop().run_in_executor(None, db.list_chimes)
+        return {"chimes": chimes}
+    except Exception as e:
+        print(f"[chimes] list failed: {e}")
+        return {"chimes": []}
+
 @app.post("/api/settings/jingles/{jingle_type}/upload")
 async def upload_jingle(
     jingle_type: str,
     file: UploadFile = File(...),
     _user=Depends(verify_token),
 ):
-    """Upload intro or outro jingle. Stored in /data/chimes/."""
+    """Upload intro or outro jingle. Saved to /data/chimes/ AND registered in the chimes library DB table."""
     if jingle_type not in ("intro", "outro"):
         raise HTTPException(status_code=400, detail="jingle_type must be 'intro' or 'outro'")
     if not any(file.filename.lower().endswith(e) for e in ALLOWED_JINGLE_EXTS):
@@ -310,12 +338,29 @@ async def upload_jingle(
     content = await file.read()
     await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
 
+    # 1. Update the active-jingle setting (used by the player at runtime)
     settings_key = f"jingle_{jingle_type}"
     SETTINGS[settings_key] = safe_name
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.save_settings, {settings_key: safe_name})
     except Exception as e:
         print(f"[DB] Failed to save jingle setting: {e}")
+
+    # 2. Upsert into chimes library table so the file is tracked like a library track
+    chime_id = f"jingle_{jingle_type}"  # stable ID — one row per intro/outro slot
+    chime_row = {
+        "id":       chime_id,
+        "name":     file.filename,
+        "filename": safe_name,
+        "size":     len(content),
+        "duration": None,
+        "type":     jingle_type,
+    }
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.save_chime, chime_row)
+        print(f"[chimes] Saved chime to DB: {chime_row}")
+    except Exception as e:
+        print(f"[DB] Failed to save chime row: {e}")
 
     if dest.exists():
         print(f"[jingle] Uploaded {jingle_type} jingle: {safe_name} ({len(content)} bytes)")
@@ -340,6 +385,12 @@ async def delete_jingle(jingle_type: str, _user=Depends(verify_token)):
         await asyncio.get_event_loop().run_in_executor(None, db.save_settings, {settings_key: None})
     except Exception as e:
         print(f"[DB] Failed to clear jingle setting: {e}")
+    # Remove from chimes library table too
+    chime_id = f"jingle_{jingle_type}"
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.delete_chime, chime_id)
+    except Exception as e:
+        print(f"[DB] Failed to delete chime row: {e}")
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
     return {"status": "ok", "jingle_type": jingle_type}
 
