@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Save, Upload, Trash2, Music2, Globe, Clock } from 'lucide-react';
+import { Save, Upload, Trash2, Music2, Globe, Clock, Building2 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 // ── JingleCard must live OUTSIDE SettingsPage so React never remounts it
-// when inner state (e.g. jingleUploading) changes. Defining it inside would
-// give it a new identity on every render, killing the hidden file-input.
 function JingleCard({ type, label, description, exists, filename, uploading, inputRef, onUpload, onDelete }) {
   return (
     <div style={{ padding: '1rem', borderRadius: '10px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)' }}>
@@ -98,15 +96,21 @@ export default function SettingsPage() {
   const [ldapUserFilter,    setLdapUserFilter]    = useState('(sAMAccountName={username})');
   const [ldapAttrName,      setLdapAttrName]      = useState('cn');
   const [ldapAttrEmail,     setLdapAttrEmail]     = useState('mail');
-  const [ldapAdminGroup,    setLdapAdminGroup]    = useState('');
   const [ldapUseSsl,        setLdapUseSsl]        = useState(false);
   const [ldapTlsVerify,     setLdapTlsVerify]     = useState(true);
   const [ldapTesting,       setLdapTesting]       = useState(false);
   const [ldapSaving,        setLdapSaving]        = useState(false);
   const [ldapStatus,        setLdapStatus]        = useState(null);
   const [ldapExpanded,      setLdapExpanded]      = useState(false);
+  const [ldapInfo,          setLdapInfo]          = useState(null);   // { user_count, groups }
+  const [ldapInfoLoading,   setLdapInfoLoading]   = useState(false);
 
-
+  // Company Customization
+  const [companyName,       setCompanyName]       = useState('');
+  const [companyLogoUrl,    setCompanyLogoUrl]    = useState(null);
+  const [companyLogoFile,   setCompanyLogoFile]   = useState(null);
+  const [companySaving,     setCompanySaving]     = useState(false);
+  const logoInputRef = useRef(null);
 
   // Jingles
   const [jingleIntroExists,    setJingleIntroExists]    = useState(false);
@@ -126,7 +130,6 @@ export default function SettingsPage() {
   }, [decks]);
 
   useEffect(() => {
-
     if (settings?.ducking_percent    != null) setDucking(settings.ducking_percent);
     if (settings?.mic_ducking_percent != null) setMicDucking(settings.mic_ducking_percent);
     if (settings?.db_mode)                    setDbMode(settings.db_mode);
@@ -142,10 +145,23 @@ export default function SettingsPage() {
     if (settings?.ldap_user_filter) setLdapUserFilter(settings.ldap_user_filter);
     if (settings?.ldap_attr_name)   setLdapAttrName(settings.ldap_attr_name);
     if (settings?.ldap_attr_email)  setLdapAttrEmail(settings.ldap_attr_email);
-    if (settings?.ldap_role_admin_group !== undefined) setLdapAdminGroup(settings.ldap_role_admin_group || '');
     setLdapUseSsl(settings?.ldap_use_ssl ?? false);
     setLdapTlsVerify(settings?.ldap_tls_verify ?? true);
+    // Company
+    if (settings?.company_name != null) setCompanyName(settings.company_name || '');
+    if (settings?.company_logo) {
+      setCompanyLogoUrl(`${api.baseUrl || ''}/api/settings/company/logo?t=${Date.now()}`);
+    } else {
+      setCompanyLogoUrl(null);
+    }
   }, [settings]);
+
+  // Auto-fetch LDAP info when enabled and section expanded
+  useEffect(() => {
+    if (ldapEnabled && ldapExpanded && !ldapInfo && !ldapInfoLoading) {
+      fetchLdapInfo();
+    }
+  }, [ldapEnabled, ldapExpanded]);
 
   // Load jingle status on mount
   useEffect(() => {
@@ -157,7 +173,54 @@ export default function SettingsPage() {
     }).catch(() => {});
   }, [api, settings.jingle_intro, settings.jingle_outro]);
 
+  // ── LDAP Info ──
+  const fetchLdapInfo = async () => {
+    setLdapInfoLoading(true);
+    try {
+      const res = await api.authFetch('/api/settings/ldap/info');
+      if (res.ok) {
+        const data = await res.json();
+        setLdapInfo(data);
+      }
+    } catch (_) {}
+    finally { setLdapInfoLoading(false); }
+  };
 
+  // ── Company Customization ──
+  const handleCompanyLogoSelect = (file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('Only image files allowed'); return; }
+    setCompanyLogoFile(file);
+    setCompanyLogoUrl(URL.createObjectURL(file));
+  };
+
+  const handleCompanySave = async () => {
+    setCompanySaving(true);
+    try {
+      // Upload logo if a new file was selected
+      if (companyLogoFile) {
+        const fd = new FormData();
+        fd.append('file', companyLogoFile);
+        const r = await api.authFetch('/api/settings/company/logo', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error('Logo upload failed');
+        setCompanyLogoFile(null);
+      }
+      // Save company name
+      await api.saveSettings({ company_name: companyName });
+      toast.success('Company settings saved!');
+    } catch (err) { toast.error(`Save failed: ${err.message}`); }
+    finally { setCompanySaving(false); }
+  };
+
+  const handleDeleteCompanyLogo = async () => {
+    if (!window.confirm('Delete company logo?')) return;
+    try {
+      await api.authFetch('/api/settings/company/logo', { method: 'DELETE' });
+      setCompanyLogoUrl(null);
+      setCompanyLogoFile(null);
+      toast.info('Logo deleted');
+    } catch (err) { toast.error(err.message); }
+  };
 
   // ── Jingles ──
   const handleJingleUpload = async (type, file) => {
@@ -227,7 +290,6 @@ export default function SettingsPage() {
         ducking_percent:     ducking,
         mic_ducking_percent: micDucking,
         db_mode:             dbMode,
-
         timezone:            timezone,
         session_hours:       sessionHours,
       });
@@ -248,7 +310,6 @@ export default function SettingsPage() {
       user_filter:      ldapUserFilter || '(sAMAccountName={username})',
       attr_name:        ldapAttrName || 'cn',
       attr_email:       ldapAttrEmail || 'mail',
-      role_admin_group: ldapAdminGroup || '',
       use_ssl:          !!ldapUseSsl,
       tls_verify:       !!ldapTlsVerify,
     };
@@ -273,6 +334,10 @@ export default function SettingsPage() {
     try {
       await api.saveLdap(ldapPayload(), enabled);
       setLdapEnabled(enabled);
+      if (enabled) {
+        setLdapInfo(null); // Reset so it re-fetches
+        fetchLdapInfo();
+      }
       toast.success(enabled ? 'LDAP enabled & saved!' : 'LDAP disabled.');
     } catch (e) { toast.error('Save failed: ' + e.message); }
     finally { setLdapSaving(false); }
@@ -282,11 +347,145 @@ export default function SettingsPage() {
   const lbl = { display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.5rem' };
   const inp = { width: '100%', padding: '0.6rem 0.9rem', borderRadius: '8px', background: 'rgba(0,0,0,0.3)', color: 'white', border: '1px solid var(--panel-border)', fontFamily: 'inherit', fontSize: '0.9rem', outline: 'none', boxSizing: 'border-box' };
 
-
   return (
     <div>
       <h2 style={{ marginBottom: '1.5rem', fontSize: '1.5rem', fontWeight: '500' }}>Station Settings</h2>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '780px' }}>
+
+        {/* ── Company Customization ── */}
+        <div className="glass-panel" style={panel}>
+          <h3 style={{ marginBottom: '0.3rem', color: 'var(--accent-blue)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Building2 size={16} /> Company Customization
+          </h3>
+          <p style={{ margin: '0 0 1.4rem 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            Your brand shown in the header, sidebar, browser tab, and login screen.
+          </p>
+
+          {/* Live Preview Banner */}
+          <div style={{
+            marginBottom: '1.5rem', padding: '0.85rem 1.1rem', borderRadius: '10px',
+            background: 'rgba(0,212,255,0.04)', border: '1px solid rgba(0,212,255,0.15)',
+            display: 'flex', alignItems: 'center', gap: '0.85rem',
+          }}>
+            <span style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Preview</span>
+            <div style={{ width: '1px', height: '28px', background: 'var(--panel-border)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flex: 1 }}>
+              {companyLogoUrl ? (
+                <img src={companyLogoUrl} alt="logo preview"
+                  style={{ height: '28px', width: '28px', objectFit: 'contain', borderRadius: '5px', background: 'rgba(255,255,255,0.05)', padding: '2px' }} />
+              ) : (
+                <div style={{ height: '28px', width: '28px', borderRadius: '5px', background: 'rgba(0,212,255,0.1)', border: '1px dashed rgba(0,212,255,0.3)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: 'var(--accent-blue)' }}>🏢</div>
+              )}
+              <span style={{ fontSize: '1rem', fontWeight: 600, color: 'white' }}>
+                {companyName || 'Your Station Name'}
+              </span>
+            </div>
+            <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.2)' }}>header</span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '2rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+
+            {/* ── Logo Upload Zone ── */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.85rem' }}>
+              <div
+                onClick={() => logoInputRef.current?.click()}
+                onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = 'rgba(0,212,255,0.7)'; e.currentTarget.style.background = 'rgba(0,212,255,0.06)'; }}
+                onDragLeave={e => { e.currentTarget.style.borderColor = companyLogoUrl ? 'rgba(0,212,255,0.4)' : 'var(--panel-border)'; e.currentTarget.style.background = 'rgba(0,0,0,0.25)'; }}
+                onDrop={e => {
+                  e.preventDefault();
+                  e.currentTarget.style.borderColor = companyLogoUrl ? 'rgba(0,212,255,0.4)' : 'var(--panel-border)';
+                  e.currentTarget.style.background = 'rgba(0,0,0,0.25)';
+                  const file = e.dataTransfer.files[0];
+                  if (file) handleCompanyLogoSelect(file);
+                }}
+                style={{
+                  width: '120px', height: '120px', borderRadius: '14px',
+                  border: `2px dashed ${companyLogoUrl ? 'rgba(0,212,255,0.45)' : 'rgba(255,255,255,0.15)'}`,
+                  background: 'rgba(0,0,0,0.25)', cursor: 'pointer',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  overflow: 'hidden', transition: 'border-color 0.2s, background 0.2s', position: 'relative',
+                }}
+              >
+                {companyLogoUrl ? (
+                  <img src={companyLogoUrl} alt="logo"
+                    style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '12px' }} />
+                ) : (
+                  <>
+                    <Upload size={22} style={{ color: 'rgba(255,255,255,0.2)', marginBottom: '0.4rem' }} />
+                    <span style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.25)', textAlign: 'center', padding: '0 0.5rem', lineHeight: 1.4 }}>Click or drag logo here</span>
+                  </>
+                )}
+                {companyLogoUrl && (
+                  <div style={{
+                    position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    opacity: 0, transition: 'opacity 0.2s',
+                  }}
+                    onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+                    onMouseLeave={e => e.currentTarget.style.opacity = '0'}
+                  >
+                    <span style={{ fontSize: '0.72rem', color: 'white', fontWeight: 600 }}>Change</span>
+                  </div>
+                )}
+              </div>
+              <input ref={logoInputRef} type="file" accept="image/*" style={{ display: 'none' }}
+                onChange={e => handleCompanyLogoSelect(e.target.files[0] || null)} />
+
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={() => logoInputRef.current?.click()}
+                  style={{ padding: '0.35rem 0.75rem', fontSize: '0.76rem', fontFamily: 'inherit', borderRadius: '7px', cursor: 'pointer',
+                    background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.25)', color: 'var(--accent-blue)',
+                    display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <Upload size={12} /> {companyLogoUrl ? 'Replace' : 'Upload'}
+                </button>
+                {companyLogoUrl && (
+                  <button onClick={handleDeleteCompanyLogo}
+                    style={{ padding: '0.35rem 0.65rem', fontSize: '0.76rem', fontFamily: 'inherit', borderRadius: '7px', cursor: 'pointer',
+                      background: 'rgba(255,71,87,0.08)', border: '1px solid rgba(255,71,87,0.25)', color: '#ff4757',
+                      display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+              <span style={{ fontSize: '0.66rem', color: 'rgba(255,255,255,0.2)', textAlign: 'center' }}>PNG · JPG · SVG · WEBP</span>
+            </div>
+
+            {/* ── Fields + Save ── */}
+            <div style={{ flex: 1, minWidth: '240px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+
+              <div>
+                <label style={lbl}>Station / Company Name</label>
+                <input type="text" value={companyName} onChange={e => setCompanyName(e.target.value)}
+                  placeholder="e.g. CocoStation FM"
+                  style={{ ...inp, fontSize: '1rem', fontWeight: 500 }} />
+                <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.8rem' }}>
+                  <span>📑 Browser tab</span><span>🖥 Header</span><span>🔐 Login screen</span>
+                </div>
+              </div>
+
+              {/* Logo tips */}
+              <div style={{ padding: '0.7rem 0.9rem', borderRadius: '8px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                <div style={{ marginBottom: '0.3rem', color: 'rgba(255,255,255,0.45)', fontWeight: 600 }}>💡 Logo tips</div>
+                Square format works best · Transparent PNG recommended · Min 128 × 128 px
+              </div>
+
+              <button onClick={handleCompanySave} disabled={companySaving}
+                style={{
+                  padding: '0.6rem 1.3rem', fontSize: '0.9rem', fontFamily: 'inherit', borderRadius: '9px', alignSelf: 'flex-start',
+                  background: companySaving ? 'rgba(46,213,115,0.08)' : 'rgba(46,213,115,0.15)',
+                  border: '1px solid rgba(46,213,115,0.4)', color: '#2ed573',
+                  cursor: companySaving ? 'default' : 'pointer',
+                  display: 'flex', alignItems: 'center', gap: '0.5rem',
+                  opacity: companySaving ? 0.6 : 1,
+                  boxShadow: companySaving ? 'none' : '0 0 14px rgba(46,213,115,0.12)',
+                  transition: 'all 0.2s',
+                }}>
+                {companySaving ? '⟳ Saving…' : <><Save size={14} /> Save Branding</>}
+              </button>
+            </div>
+          </div>
+        </div>
 
         {/* Database Mode */}
         <div className="glass-panel" style={panel}>
@@ -342,8 +541,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Timezone & Session */}
-
         {/* LDAP / Active Directory */}
         <div className="glass-panel" style={panel}>
           <div
@@ -365,11 +562,72 @@ export default function SettingsPage() {
             </p>
           )}
 
+          {/* LDAP Connected Stats (shown when enabled, even collapsed) */}
+          {ldapEnabled && !ldapExpanded && ldapInfo && (
+            <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <div style={{ padding: '0.5rem 0.85rem', borderRadius: '8px', background: 'rgba(165,94,234,0.08)', border: '1px solid rgba(165,94,234,0.2)', fontSize: '0.8rem' }}>
+                👥 <strong style={{ color: '#a55eea' }}>{ldapInfo.user_count ?? '—'}</strong> <span style={{ color: 'var(--text-secondary)' }}>LDAP users</span>
+              </div>
+              {ldapInfo.groups && ldapInfo.groups.length > 0 && (
+                <div style={{ padding: '0.5rem 0.85rem', borderRadius: '8px', background: 'rgba(165,94,234,0.08)', border: '1px solid rgba(165,94,234,0.2)', fontSize: '0.8rem' }}>
+                  🗂 <strong style={{ color: '#a55eea' }}>{ldapInfo.groups.length}</strong> <span style={{ color: 'var(--text-secondary)' }}>groups</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {ldapExpanded && (
             <div style={{ marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-secondary)', padding: '0.6rem 0.85rem', background: 'rgba(165,94,234,0.06)', borderRadius: '8px', border: '1px solid rgba(165,94,234,0.15)' }}>
                 📌 When enabled, users log in with their LDAP/AD credentials. Local accounts (like <strong>cocoadmin</strong>) always remain available as fallback.
               </p>
+
+              {/* LDAP Live Stats */}
+              {ldapEnabled && (
+                <div style={{ padding: '0.85rem 1rem', borderRadius: '8px', background: 'rgba(165,94,234,0.06)', border: '1px solid rgba(165,94,234,0.2)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+                    <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#a55eea' }}>📊 Directory Stats</span>
+                    <button onClick={fetchLdapInfo} disabled={ldapInfoLoading}
+                      style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', fontFamily: 'inherit', borderRadius: '6px', cursor: 'pointer',
+                        background: 'rgba(165,94,234,0.1)', border: '1px solid rgba(165,94,234,0.3)', color: '#a55eea', opacity: ldapInfoLoading ? 0.5 : 1 }}>
+                      {ldapInfoLoading ? '⟳ Loading…' : '↻ Refresh'}
+                    </button>
+                  </div>
+                  {ldapInfoLoading && !ldapInfo && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Fetching from LDAP…</div>
+                  )}
+                  {ldapInfo && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: '0.82rem' }}>
+                          👥 <strong style={{ color: 'white' }}>{ldapInfo.user_count ?? '—'}</strong>
+                          <span style={{ color: 'var(--text-secondary)', marginLeft: '0.3rem' }}>users found</span>
+                        </div>
+                        <div style={{ fontSize: '0.82rem' }}>
+                          🗂 <strong style={{ color: 'white' }}>{ldapInfo.groups?.length ?? '—'}</strong>
+                          <span style={{ color: 'var(--text-secondary)', marginLeft: '0.3rem' }}>groups</span>
+                        </div>
+                      </div>
+                      {ldapInfo.groups && ldapInfo.groups.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginTop: '0.25rem' }}>
+                          {ldapInfo.groups.slice(0, 12).map(g => (
+                            <span key={g} style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: '12px',
+                              background: 'rgba(165,94,234,0.12)', border: '1px solid rgba(165,94,234,0.25)', color: '#c89ef5' }}>
+                              {g}
+                            </span>
+                          ))}
+                          {ldapInfo.groups.length > 12 && (
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>+{ldapInfo.groups.length - 12} more</span>
+                          )}
+                        </div>
+                      )}
+                      {ldapInfo.error && (
+                        <div style={{ fontSize: '0.75rem', color: '#ff4757' }}>⚠ {ldapInfo.error}</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Server + Port */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.75rem' }}>
@@ -427,13 +685,6 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {/* Admin group */}
-              <div>
-                <label style={lbl}>Admin Group DN <span style={{ color: 'var(--text-secondary)', textTransform: 'none', fontWeight: 400 }}>(members get role=admin — leave blank to make all LDAP users operators)</span></label>
-                <input type="text" style={inp} value={ldapAdminGroup} onChange={e => setLdapAdminGroup(e.target.value)}
-                  placeholder="cn=CocoAdmins,ou=Groups,dc=company,dc=com" />
-              </div>
-
               {/* SSL + TLS */}
               <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.88rem' }}>
@@ -488,6 +739,8 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
+
+        {/* Time & Session */}
         <div className="glass-panel" style={panel}>
           <h3 style={{ marginBottom: '1.1rem', color: 'var(--accent-blue)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Globe size={16} /> Time & Session
@@ -585,12 +838,11 @@ export default function SettingsPage() {
               onDelete={handleDeleteJingle}
             />
           </div>
-          <div style={{ marginTop: '0.85rem', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)' }}>
-            Supports MP3, WAV, OGG. Keep jingles short (1–5 seconds). They play while music is still at normal volume.
+          <div style={{ marginTop: '0.85rem', padding: '0.6rem 0.85rem', borderRadius: '8px', background: 'rgba(165,94,234,0.05)', border: '1px solid rgba(165,94,234,0.15)', fontSize: '0.75rem', color: 'rgba(255,255,255,0.45)', display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+            <span>🔒</span>
+            <span>Jingle files are saved on a persistent volume and their names are stored in the database — they survive container rebuilds and restarts.</span>
           </div>
         </div>
-
-
 
         {/* Appearance */}
         <div className="glass-panel" style={panel}>

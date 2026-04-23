@@ -16,12 +16,31 @@ import UsersPage from './pages/UsersPage';
 import { useApp } from './context/useApp';
 
 function AppHeader() {
-  const { wsConnected, currentUser, logout } = useApp();
+  const { wsConnected, currentUser, logout, settings, api } = useApp();
+  const stationName = settings?.company_name || 'CocoStation';
+  const logoUrl     = settings?.company_logo
+    ? `${(api?.baseUrl || '')}/api/settings/company/logo?t=${Math.floor(Date.now()/60000)}`
+    : null;
+
+  // Sync browser tab title
+  React.useEffect(() => {
+    document.title = stationName;
+  }, [stationName]);
+
   return (
     <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <h1 style={{ fontSize: '1.4rem', fontWeight: '600' }} className="app-title">
-        CocoStation
-      </h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+        {logoUrl && (
+          <img
+            src={logoUrl}
+            alt="logo"
+            style={{ height: '32px', width: '32px', objectFit: 'contain', borderRadius: '6px' }}
+          />
+        )}
+        <h1 style={{ fontSize: '1.4rem', fontWeight: '600', margin: 0 }} className="app-title">
+          {stationName}
+        </h1>
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
         {/* Live indicator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>

@@ -4,7 +4,13 @@ import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut
 import { useApp } from '../context/useApp';
 
 export default function Sidebar({ onNavClick }) {
-  const { currentUser, logout, hasFeature, isElevated } = useApp();
+  const { currentUser, logout, hasFeature, isElevated, settings, api } = useApp();
+
+  // ── Live company branding from database (same source as AppHeader) ──
+  const companyName = settings?.company_name || 'CocoStation';
+  const companyLogoUrl = settings?.company_logo
+    ? `${api?.baseUrl || ''}/api/settings/company/logo?t=${Math.floor(Date.now() / 60000)}`
+    : null;
 
   // Build nav items with permission checks
   const allNavItems = [
@@ -29,22 +35,36 @@ export default function Sidebar({ onNavClick }) {
       border: 'none',
       borderRight: '1px solid var(--panel-border)',
     }}>
-      <div style={{ marginBottom: '3rem', display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
-        <div style={{
-          width: '40px',
-          height: '40px',
-          background: 'linear-gradient(135deg, var(--accent-blue), #5f27cd)',
-          borderRadius: '10px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontWeight: 'bold',
-          fontSize: '1.2rem',
-          boxShadow: '0 0 15px var(--accent-glow)',
-          flexShrink: 0,
-        }}>C</div>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: '600', letterSpacing: '0.5px' }}>CocoStation</h2>
+      {/* ── Company Branding Section — reads live from DB via settings context ── */}
+      <div style={{ marginBottom: '3rem', marginTop: '0.5rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          {/* Logo: shows saved image if company_logo is set in DB, otherwise initials badge */}
+          <div style={{
+            width: '40px',
+            height: '40px',
+            background: companyLogoUrl ? 'transparent' : 'linear-gradient(135deg, var(--accent-blue), #5f27cd)',
+            borderRadius: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontWeight: 'bold',
+            fontSize: '1.2rem',
+            boxShadow: companyLogoUrl ? 'none' : '0 0 15px var(--accent-glow)',
+            flexShrink: 0,
+            overflow: 'hidden',
+          }}>
+            {companyLogoUrl
+              ? <img src={companyLogoUrl} alt={companyName} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              : companyName.charAt(0).toUpperCase()
+            }
+          </div>
+          {/* Company name from DB */}
+          <h2 style={{ fontSize: '1.4rem', fontWeight: '600', letterSpacing: '0.5px', margin: 0 }}>
+            {companyName}
+          </h2>
+        </div>
       </div>
+      {/* ── End Company Branding ── */}
 
       {/* Role badge */}
       {currentUser && (
