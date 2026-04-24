@@ -45,6 +45,7 @@ from schemas import (
     RecurringMixerSchedule, RecurringMixerScheduleCreateRequest,
 )
 from tts import generate_tts
+import announcement_engine as ann_engine
 from db_client import db
 from auth import verify_token, hash_password, require_permission, require_deck_access, require_admin
 from rbac import router as rbac_router
@@ -537,7 +538,7 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
         return
 
 
-    filepath = str(Path("/chimes") / filename)
+    filepath = f"/data/chimes/{filename}"
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             tasks = [
@@ -691,76 +692,15 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
 # ═══════════════════════════════════════════════════════════
 
 async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int = None):
-    if _TRIGGER_LOCK_REF[0].locked():
-        print(f"[trigger] Queuing '{Path(filepath).name}' — engine busy")
-
-    async with _TRIGGER_LOCK_REF[0]:
-        print(f"[trigger] announcement locked — {Path(filepath).name}")
-        try:
-            # STATE 2 & 3: Duck music and play intro jingle IN PARALLEL
-            # This makes the transition feel immediate and professional
-            duck_task   = asyncio.create_task(_duck_acquire(level=level))
-            jingle_task = asyncio.create_task(_play_global_jingle("intro", deck_ids))
-            await asyncio.gather(duck_task, jingle_task)
-
-            # STATE 4: PLAY (Content)
-            events = []
-            for did in deck_ids:
-                event = asyncio.Event()
-                _ANNOUNCEMENT_EVENTS[did] = event
-                events.append(event.wait())
-
-            try:
-                async with httpx.AsyncClient(timeout=5) as c:
-                    tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/play_announcement", json={"filepath": filepath}) for did in deck_ids]
-                    responses = await asyncio.gather(*tasks, return_exceptions=True)
-                    for did, resp in zip(deck_ids, responses):
-                        if not (isinstance(resp, httpx.Response) and resp.status_code == 200):
-                            if did in _ANNOUNCEMENT_EVENTS:
-                                _ANNOUNCEMENT_EVENTS[did].set()
-            except Exception as e:
-                print(f"[trigger] play error: {e}")
-
-            try:
-                await asyncio.wait_for(asyncio.gather(*events), timeout=60.0)
-            except asyncio.TimeoutError:
-                print("[trigger] Announcement wait timeout (60s)!")
-
-            for did in deck_ids:
-                _ANNOUNCEMENT_EVENTS.pop(did, None)
-
-            await asyncio.sleep(0.3)
-
-            # STATE 5: outro jingle plays while music is still ducked
-            await _play_global_jingle("outro", deck_ids)
-
-        finally:
-            # STATE 6: RESTORE — music comes back after both jingles finish
-            await _duck_release()
-            print(f"[trigger] announcement unlocked")
+    await ann_engine.play_announcement_sequence(deck_ids, filepath)
 
 
 async def fade_and_enable_mic(deck_ids: list):
-    await _TRIGGER_LOCK_REF[0].acquire()
-    print(f"[trigger] mic locked — decks {deck_ids}")
-    # STATE 2 & 3: Duck and play intro jingle in parallel
-    duck_task   = asyncio.create_task(_duck_acquire(source_type="mic"))
-    jingle_task = asyncio.create_task(_play_global_jingle("intro", deck_ids))
-    await asyncio.gather(duck_task, jingle_task)
+    await ann_engine.mic_open_sequence(deck_ids)
 
 
 async def fade_restore_after_mic(deck_ids: list):
-    try:
-        # STATE 5: outro jingle plays while music is still ducked
-        await _play_global_jingle("outro", deck_ids)
-        # STATE 6: restore music after outro finishes
-        await _duck_release()
-    finally:
-        try:
-            _TRIGGER_LOCK_REF[0].release()
-            print(f"[trigger] mic unlocked")
-        except RuntimeError:
-            pass
+    await ann_engine.mic_close_sequence(deck_ids)
 
 
 # ── Health ──────────────────────────────────────────────────
