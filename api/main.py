@@ -68,9 +68,11 @@ def _audit(request: Request, user: dict, action: str, details: dict = None):
 MEDIA_DIR         = Path("data/library")
 ANNOUNCEMENTS_DIR = Path("data/announcements")
 CHIMES_DIR        = Path("data/chimes")
+BRANDING_DIR      = Path("data/branding")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 ANNOUNCEMENTS_DIR.mkdir(parents=True, exist_ok=True)
 CHIMES_DIR.mkdir(parents=True, exist_ok=True)
+BRANDING_DIR.mkdir(parents=True, exist_ok=True)
 START_TIME    = time.time()
 TRACKS_PLAYED = 0
 
@@ -87,6 +89,8 @@ SETTINGS: dict = {
     "db_mode": "local",
     "jingle_intro": None,    # filename in /data/chimes/ — plays before every feed
     "jingle_outro": None,    # filename in /data/chimes/ — plays after every feed
+    "company_name": "",      # station / company display name
+    "company_logo": None,    # filename in /data/branding/ (set on upload)
     "timezone": "Africa/Casablanca",
     "session_hours": 8,
     # LDAP
@@ -287,6 +291,122 @@ app.include_router(rbac_router)
 #  NOTE: set_auth_settings_ref(SETTINGS) is called inside
 #  lifespan() after DB settings are loaded — see above.
 # ═══════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════
+#  COMPANY BRANDING ENDPOINTS  (logo upload / serve / delete)
+# ═══════════════════════════════════════════════════════════
+
+ALLOWED_LOGO_EXTS  = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
+LOGO_MIME_MAP = {
+    ".png":  "image/png",  ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif":  "image/gif",  ".svg": "image/svg+xml", ".webp": "image/webp",
+}
+
+
+@app.get("/api/settings/company/logo")
+async def get_company_logo():
+    """Serve the company logo. Reads base64 data-URI from DB and streams it as an image.
+    No auth required — used directly as <img src=...>.
+    """
+    from fastapi.responses import Response
+    import base64
+    try:
+        branding = await asyncio.get_event_loop().run_in_executor(None, db.get_branding)
+        logo_data = branding.get("logo_data")
+        logo_mime = branding.get("logo_mime") or "image/png"
+        if not logo_data:
+            raise HTTPException(status_code=404, detail="No company logo uploaded")
+        # logo_data is stored as  "data:image/png;base64,XXXX"
+        if "," in logo_data:
+            raw_b64 = logo_data.split(",", 1)[1]
+        else:
+            raw_b64 = logo_data
+        image_bytes = base64.b64decode(raw_b64)
+        return Response(content=image_bytes, media_type=logo_mime)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[branding] get_company_logo failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load logo")
+
+
+@app.post("/api/settings/company/logo")
+async def upload_company_logo(
+    file: UploadFile = File(...),
+    _user=Depends(verify_token),
+):
+    """Upload (replace) the company logo.
+    Stored as a base64 data-URI in the company_branding DB table.
+    Also written to data/branding/ on disk as a backup.
+    """
+    import base64
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED_LOGO_EXTS:
+        raise HTTPException(status_code=400, detail="Only PNG, JPG, GIF, SVG, WEBP allowed")
+
+    content  = await file.read()
+    mime     = LOGO_MIME_MAP.get(suffix, "image/png")
+    b64_data = "data:" + mime + ";base64," + base64.b64encode(content).decode()
+
+    # 1. Save to DB (primary storage — survives volume wipes)
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, db.save_branding, None, b64_data, mime, len(content)
+        )
+        print(f"[branding] Logo saved to DB: {file.filename} ({len(content)} bytes, {mime})")
+    except Exception as e:
+        print(f"[DB] Failed to save branding logo: {e}")
+        raise HTTPException(status_code=500, detail="DB write failed")
+
+    # 2. Also write to disk as fallback
+    try:
+        dest = BRANDING_DIR / f"company_logo{suffix}"
+        # Remove any old logo with different extension
+        for ext in ALLOWED_LOGO_EXTS:
+            old = BRANDING_DIR / f"company_logo{ext}"
+            if old.exists() and old != dest:
+                old.unlink(missing_ok=True)
+        await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+    except Exception as e:
+        print(f"[branding] Disk write failed (non-fatal): {e}")
+
+    # 3. Update settings flag so frontend knows logo exists
+    SETTINGS["company_logo"] = f"company_logo{suffix}"
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, db.save_settings, {"company_logo": f"company_logo{suffix}"}
+        )
+    except Exception as e:
+        print(f"[DB] Failed to save company_logo setting: {e}")
+
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
+    return {"status": "ok", "filename": f"company_logo{suffix}", "mime": mime, "size": len(content)}
+
+
+@app.delete("/api/settings/company/logo")
+async def delete_company_logo(_user=Depends(verify_token)):
+    """Delete the company logo from DB and disk."""
+    # 1. Clear from DB
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, db.clear_branding_logo)
+    except Exception as e:
+        print(f"[DB] Failed to clear branding logo: {e}")
+    # 2. Clear from disk
+    for ext in ALLOWED_LOGO_EXTS:
+        p = BRANDING_DIR / f"company_logo{ext}"
+        if p.exists():
+            p.unlink(missing_ok=True)
+    # 3. Clear setting
+    SETTINGS["company_logo"] = None
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, db.save_settings, {"company_logo": None}
+        )
+    except Exception as e:
+        print(f"[DB] Failed to clear company_logo setting: {e}")
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
+    return {"status": "ok"}
 
 
 # ═══════════════════════════════════════════════════════════

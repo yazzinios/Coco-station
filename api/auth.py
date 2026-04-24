@@ -293,3 +293,81 @@ def test_ldap_connection(ldap_cfg: dict) -> dict:
         return {"ok": True, "detail": f"Connected. {count} object(s) visible under base DN."}
     except Exception as e:
         return {"ok": False, "detail": str(e)}
+
+
+def query_ldap_directory(ldap_cfg: dict) -> dict:
+    """Connect to LDAP and return user_count + list of group names.
+    Used by the Directory Stats panel in Settings.
+    Returns: { user_count: int, group_count: int, groups: [str], error: str|None }
+    """
+    try:
+        from ldap3 import Server, Connection, ALL, Tls, SUBTREE
+        import ssl
+
+        server_url = ldap_cfg.get("server", "")
+        port       = int(ldap_cfg.get("port", 389))
+        bind_dn    = ldap_cfg.get("bind_dn", "")
+        bind_pw    = ldap_cfg.get("bind_pw", "")
+        base_dn    = ldap_cfg.get("base_dn", "")
+        use_tls    = ldap_cfg.get("use_ssl", False)
+        tls_verify = ldap_cfg.get("tls_verify", True)
+
+        tls = None
+        if use_tls and not tls_verify:
+            tls = Tls(validate=ssl.CERT_NONE)
+
+        srv  = Server(server_url, port=port, get_info=ALL, tls=tls, connect_timeout=8)
+        conn = Connection(srv, user=bind_dn, password=bind_pw, auto_bind=True)
+
+        # ── Count users (objectClass=person covers AD + OpenLDAP) ──
+        conn.search(
+            search_base=base_dn,
+            search_filter="(objectClass=person)",
+            search_scope=SUBTREE,
+            attributes=["cn"],
+            paged_size=1000,
+        )
+        user_count = len(conn.entries)
+
+        # ── Fetch groups ──
+        # Try AD-style group first, then fall back to posixGroup / groupOfNames
+        groups = []
+        for group_filter in [
+            "(objectClass=group)",
+            "(objectClass=groupOfNames)",
+            "(objectClass=posixGroup)",
+        ]:
+            conn.search(
+                search_base=base_dn,
+                search_filter=group_filter,
+                search_scope=SUBTREE,
+                attributes=["cn", "name"],
+                paged_size=200,
+            )
+            if conn.entries:
+                for entry in conn.entries:
+                    name = None
+                    if hasattr(entry, 'cn') and entry.cn.value:
+                        name = str(entry.cn.value)
+                    elif hasattr(entry, 'name') and entry.name.value:
+                        name = str(entry.name.value)
+                    if name and name not in groups:
+                        groups.append(name)
+                break  # found groups with this filter, stop trying others
+
+        groups.sort(key=str.lower)
+        conn.unbind()
+
+        return {
+            "user_count":  user_count,
+            "group_count": len(groups),
+            "groups":      groups,
+            "error":       None,
+        }
+    except Exception as e:
+        return {
+            "user_count":  None,
+            "group_count": None,
+            "groups":      [],
+            "error":       str(e),
+        }

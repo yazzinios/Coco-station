@@ -43,6 +43,7 @@ services:
       - ./data/library:/app/data/library
       - ./data/announcements:/app/data/announcements
       - ./data/chimes:/app/data/chimes
+      - ./data/branding:/app/data/branding
       - ./api:/app  # For hot-reloading in dev
       - ./supabase/migrations:/app/supabase/migrations:ro
     environment:

@@ -1332,4 +1332,90 @@ class DBClient:
                 self._put_conn(conn)
 
 
+    # ── Company Branding ──────────────────────────────────────
+
+    def get_branding(self) -> dict:
+        """Return the single company_branding row as a dict, or empty defaults."""
+        defaults = {"company_name": "", "logo_data": None, "logo_mime": None, "logo_size": 0}
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("company_branding").select("*").eq("id", 1).limit(1).execute()
+                return dict(res.data[0]) if res.data else defaults
+            except Exception as e:
+                print(f"[DB] get_branding (cloud) failed: {e}"); return defaults
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT company_name, logo_data, logo_mime, logo_size FROM company_branding WHERE id = 1"
+                    )
+                    row = cur.fetchone()
+                    return dict(row) if row else defaults
+            except Exception as e:
+                print(f"[DB] get_branding (local) failed: {e}"); return defaults
+            finally:
+                self._put_conn(conn)
+
+    def save_branding(self, company_name: str = None, logo_data: str = None,
+                      logo_mime: str = None, logo_size: int = None):
+        """Upsert the single company_branding row (only updates non-None fields)."""
+        if self.mode == "cloud":
+            try:
+                payload = {"id": 1, "updated_at": "now()"}
+                if company_name is not None: payload["company_name"] = company_name
+                if logo_data    is not None: payload["logo_data"]    = logo_data
+                if logo_mime    is not None: payload["logo_mime"]    = logo_mime
+                if logo_size    is not None: payload["logo_size"]    = logo_size
+                self.supabase.table("company_branding").upsert(payload, on_conflict="id").execute()
+            except Exception as e:
+                print(f"[DB] save_branding (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    sets, vals = [], []
+                    if company_name is not None: sets.append("company_name = %s"); vals.append(company_name)
+                    if logo_data    is not None: sets.append("logo_data = %s");    vals.append(logo_data)
+                    if logo_mime    is not None: sets.append("logo_mime = %s");    vals.append(logo_mime)
+                    if logo_size    is not None: sets.append("logo_size = %s");    vals.append(logo_size)
+                    if not sets: return
+                    sets.append("updated_at = NOW()")
+                    vals.append(1)  # WHERE id = 1
+                    cur.execute(
+                        f"UPDATE company_branding SET {', '.join(sets)} WHERE id = %s",
+                        vals,
+                    )
+            except Exception as e:
+                print(f"[DB] save_branding (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def clear_branding_logo(self):
+        """Set logo fields to NULL in the company_branding row."""
+        self.save_branding(logo_data=None, logo_mime=None, logo_size=0)
+        # Force NULLs explicitly since save_branding skips None values
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("company_branding").update(
+                    {"logo_data": None, "logo_mime": None, "logo_size": 0, "updated_at": "now()"}
+                ).eq("id", 1).execute()
+            except Exception as e:
+                print(f"[DB] clear_branding_logo (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE company_branding SET logo_data=NULL, logo_mime=NULL, logo_size=0, updated_at=NOW() WHERE id=1"
+                    )
+            except Exception as e:
+                print(f"[DB] clear_branding_logo (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+
 db = DBClient()

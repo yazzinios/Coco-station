@@ -28,7 +28,7 @@ from pydantic import BaseModel as _PydanticBase
 
 from auth import (
     verify_token, verify_password, create_token,
-    verify_ldap_credentials, test_ldap_connection,
+    verify_ldap_credentials, test_ldap_connection, query_ldap_directory,
 )
 from db_client import db
 from db_auth_helpers import get_user_by_username, update_last_login, get_user_by_id
@@ -357,3 +357,28 @@ async def ldap_save(
         pass
 
     return {"status": "ok", "ldap_enabled": enabled}
+
+
+@auth_router.get("/api/settings/ldap/info")
+async def ldap_info(_user: dict = Depends(verify_token)):
+    """Query the configured LDAP server and return directory statistics:
+    user count, group count, and list of group names.
+    Uses the currently saved LDAP settings — no body required.
+    """
+    s = _SETTINGS_REF  # the global SETTINGS dict injected via set_auth_settings_ref
+    if not s.get("ldap_enabled") or not s.get("ldap_server", "").strip():
+        raise HTTPException(status_code=400, detail="LDAP is not enabled or not configured")
+
+    ldap_cfg = {
+        "server":      s.get("ldap_server", ""),
+        "port":        s.get("ldap_port", 389),
+        "base_dn":     s.get("ldap_base_dn", ""),
+        "bind_dn":     s.get("ldap_bind_dn", ""),
+        "bind_pw":     s.get("ldap_bind_pw", ""),
+        "use_ssl":     s.get("ldap_use_ssl", False),
+        "tls_verify":  s.get("ldap_tls_verify", True),
+    }
+
+    loop   = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, query_ldap_directory, ldap_cfg)
+    return result

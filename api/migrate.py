@@ -83,6 +83,16 @@ CREATE TABLE IF NOT EXISTS chimes (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS company_branding (
+    id           SERIAL PRIMARY KEY,
+    company_name VARCHAR(255) NOT NULL DEFAULT '',
+    logo_data    TEXT,
+    logo_mime    VARCHAR(50),
+    logo_size    INT DEFAULT 0,
+    updated_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO company_branding (id, company_name) VALUES (1, '') ON CONFLICT (id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username VARCHAR(100) UNIQUE NOT NULL,
