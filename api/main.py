@@ -232,6 +232,15 @@ async def lifespan(app: FastAPI):
     init_scheduler(state)
     start_scheduler(RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES)
 
+    ann_engine.init(
+        ffmpeg_url=FFMPEG_URL,
+        chimes_dir=CHIMES_DIR,
+        settings=SETTINGS,
+        decks=DECKS,
+        announcement_events=_ANNOUNCEMENT_EVENTS,
+        trigger_lock=_TRIGGER_LOCK_REF[0],
+    )
+
     # --- JINGLE VALIDATION & AUTO-DISCOVERY ---
     # 1. If DB has a filename but the file is missing on disk → clear the stale setting
     # 2. If DB has no filename → scan disk in case a file was manually added

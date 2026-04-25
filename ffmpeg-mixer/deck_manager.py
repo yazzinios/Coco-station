@@ -60,22 +60,24 @@ class Deck:
         self.is_playing      = False
         self.is_loop         = False
         self.current_track   = None
-        self._stop_requested = False  # True when stop() was called explicitly
+        self._stop_requested = False
 
         self.track_proc = None
         self.ann_proc   = None
+        # FIX: track whether the current ann_proc should notify on completion
+        self._ann_notify = False
+        # FIX: a generation counter so old reader threads know they've been superseded
+        self._ann_generation = 0
 
-        # Mic hold-off: keeps ducking active for N seconds after last mic chunk
-        # prevents audible volume "pumping" when mic audio is slightly choppy
         self._mic_last_active = 0.0
-        self._mic_holdoff     = 0.8   # seconds to stay ducked after mic goes silent
+        self._mic_holdoff     = 0.8
 
-        self.track_q = queue.Queue(maxsize=500)  # ~1.16s buffer — absorbs FFmpeg startup spikes
+        self.track_q = queue.Queue(maxsize=500)
         self.ann_q   = queue.Queue(maxsize=200)
         self.mic_q   = queue.Queue(maxsize=100)
 
         self.stream_proc = None
-        self._last_track_chunk = b'\x00' * CHUNK_SIZE  # carry-over: avoids silence holes on starvation
+        self._last_track_chunk = b'\x00' * CHUNK_SIZE
         self._start_master_stream()
 
         self.mixer_thread = threading.Thread(target=self._mix_loop, daemon=True)
@@ -103,24 +105,20 @@ class Deck:
                 time.sleep(sleep_for)
             next_tick += CHUNK_DURATION
 
-            # Track audio — use carry-over instead of silence on starvation
             track_chunk = silence
             try:
                 track_chunk = self.track_q.get(timeout=CHUNK_DURATION * 0.5)
-                self._last_track_chunk = track_chunk  # keep last good chunk
+                self._last_track_chunk = track_chunk
             except queue.Empty:
                 if self.is_playing:
-                    track_chunk = self._last_track_chunk  # repeat last chunk instead of silence
-                # else: deck stopped, silence is correct
+                    track_chunk = self._last_track_chunk
 
-            # Announcement audio
             ann_chunk = silence
             try:
                 ann_chunk = self.ann_q.get_nowait()
             except queue.Empty:
                 pass
 
-            # Mic audio
             mic_chunk  = silence
             mic_active = False
             try:
@@ -130,12 +128,9 @@ class Deck:
             except queue.Empty:
                 pass
 
-            # Hold ducking for _mic_holdoff seconds after last mic chunk
-            # This prevents volume pumping during brief gaps in mic audio
             if not mic_active and (time.time() - self._mic_last_active) < self._mic_holdoff:
-                mic_active = True   # keep vol_factor ducked; mic_chunk stays silence
+                mic_active = True
 
-            # Volume + ducking
             vol_factor = self.volume / 100.0
             if mic_active:
                 vol_factor *= self.duck_volume / 100.0
@@ -145,7 +140,6 @@ class Deck:
                 except Exception:
                     pass
 
-            # Mix
             mixed = silence
             try:
                 mixed = audioop.add(track_chunk, ann_chunk, SAMPWIDTH)
@@ -153,7 +147,6 @@ class Deck:
             except Exception:
                 pass
 
-            # Write to RTMP encoder (no per-chunk flush — OS buffer handles it, saves syscalls)
             try:
                 if self.stream_proc and self.stream_proc.stdin:
                     self.stream_proc.stdin.write(mixed)
@@ -163,7 +156,14 @@ class Deck:
                 next_tick = time.time()
 
     def _reader_thread(self, proc, q, proc_name):
-        """Reads PCM chunks from a subprocess stdout into a queue."""
+        """
+        Reads PCM chunks from a subprocess stdout into a queue.
+
+        proc_name values:
+          "track" — main music track; fires track_ended on natural finish
+          "ann"   — announcement (notify=True); fires announcement_ended on finish
+          "jingle"— announcement (notify=False); fires nothing on finish
+        """
         try:
             while proc and proc.poll() is None:
                 chunk = proc.stdout.read(CHUNK_SIZE)
@@ -183,20 +183,29 @@ class Deck:
                 with self.lock:
                     self.is_playing    = False
                     self.current_track = None
-                # Notify API if track ended naturally (not via explicit stop/play)
                 if not was_stopped_manually:
                     threading.Thread(
                         target=_notify_track_ended, args=(self.name,), daemon=True
                     ).start()
             elif proc_name == "ann":
-                threading.Thread(
-                    target=_notify_announcement_ended, args=(self.name,), daemon=True
-                ).start()
+                # FIX: only notify if this reader corresponds to the CURRENT ann_proc.
+                # If play_announcement was called again while this reader was running,
+                # self._ann_generation will have advanced and we should NOT notify —
+                # the new jingle/announcement will handle its own lifecycle.
+                my_generation = getattr(proc, "_ann_generation", None)
+                current_generation = self._ann_generation
+                if my_generation is None or my_generation == current_generation:
+                    threading.Thread(
+                        target=_notify_announcement_ended, args=(self.name,), daemon=True
+                    ).start()
+                else:
+                    print(f"[Deck {self.name}] Skipping stale announcement_ended notify (gen {my_generation} != {current_generation})")
+            # "jingle" — intentionally fires nothing
 
     def play(self, filepath, loop: bool = False):
-        """Start (or restart) playback of filepath. If loop=True, use -stream_loop -1."""
-        self.stop()  # sets _stop_requested=True for old track
-        self._stop_requested = False  # reset for new track
+        """Start (or restart) playback of filepath."""
+        self.stop()
+        self._stop_requested = False
         with self.lock:
             self.is_playing    = True
             self.is_loop       = loop
@@ -237,7 +246,7 @@ class Deck:
 
     def stop(self):
         with self.lock:
-            self._stop_requested = True  # mark before terminating so reader won't notify
+            self._stop_requested = True
             if self.track_proc and self.track_proc.poll() is None:
                 try:
                     self.track_proc.terminate()
@@ -248,8 +257,7 @@ class Deck:
             self.is_playing    = False
             self.is_loop       = False
             self.current_track = None
-            self._last_track_chunk = b'\x00' * CHUNK_SIZE  # reset carry-over on stop
-            # Drain track queue
+            self._last_track_chunk = b'\x00' * CHUNK_SIZE
             while not self.track_q.empty():
                 try: self.track_q.get_nowait()
                 except: pass
@@ -263,29 +271,60 @@ class Deck:
             self.duck_volume = max(0, min(100, vol))
 
     def play_announcement(self, filepath, notify: bool = True):
-        """Play an announcement clip on top of whatever is on the deck."""
-        if self.ann_proc and self.ann_proc.poll() is None:
-            try:
-                self.ann_proc.terminate()
-                self.ann_proc.wait(timeout=2)
-            except Exception:
-                pass
-        while not self.ann_q.empty():
-            try: self.ann_q.get_nowait()
-            except: pass
+        """
+        Play an announcement or jingle clip on top of whatever is on the deck.
 
-        # Use -v error to capture only real errors, and redirect to stderr
+        FIX: Terminate any existing ann_proc BEFORE starting the new one, and
+        drain the ann_q so leftover audio from the previous clip doesn't bleed
+        into the new one.
+
+        FIX: Stamp each ann_proc with the current _ann_generation counter so
+        the _reader_thread can detect if it has been superseded and should NOT
+        fire the announcement_ended callback.
+        """
+        with self.lock:
+            # Terminate previous announcement if still running
+            if self.ann_proc and self.ann_proc.poll() is None:
+                try:
+                    self.ann_proc.terminate()
+                    self.ann_proc.wait(timeout=2)
+                except Exception:
+                    pass
+            self.ann_proc = None
+
+            # Drain leftover audio from previous announcement
+            drained = 0
+            while not self.ann_q.empty():
+                try:
+                    self.ann_q.get_nowait()
+                    drained += 1
+                except Exception:
+                    break
+            if drained:
+                print(f"[Deck {self.name}] Drained {drained} stale ann_q chunks")
+
+            # Advance generation so any in-flight reader knows it is superseded
+            self._ann_generation += 1
+            current_gen = self._ann_generation
+            self._ann_notify = notify
+
         cmd = [
             "ffmpeg", "-y", "-v", "error", "-i", filepath,
             "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1",
         ]
-        # We capture stderr to log ffmpeg errors if the file can't be read
-        self.ann_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # FIX: stamp the proc with its generation so _reader_thread can check
+        proc._ann_generation = current_gen
+
+        with self.lock:
+            self.ann_proc = proc
+
+        # proc_name controls whether _reader_thread fires announcement_ended
         proc_name = "ann" if notify else "jingle"
 
-        def _ann_stderr_logger(proc, name, fpath):
+        def _ann_stderr_logger(p, name, fpath):
             try:
-                stderr_data = proc.stderr.read()
+                stderr_data = p.stderr.read()
                 if stderr_data:
                     print(f"[Deck {name}] FFMPEG ERROR playing {fpath}: {stderr_data.decode().strip()}")
             except Exception:
@@ -293,18 +332,17 @@ class Deck:
 
         threading.Thread(
             target=self._reader_thread,
-            args=(self.ann_proc, self.ann_q, proc_name),
+            args=(proc, self.ann_q, proc_name),
             daemon=True,
         ).start()
 
-        # Start a thread to wait for process and log errors if any
         threading.Thread(
             target=_ann_stderr_logger,
-            args=(self.ann_proc, self.name, filepath),
-            daemon=True
+            args=(proc, self.name, filepath),
+            daemon=True,
         ).start()
 
-        print(f"[Deck {self.name}] Announcement/Jingle started: {filepath} (notify={notify})")
+        print(f"[Deck {self.name}] Announcement/Jingle started: {filepath} (notify={notify}, gen={current_gen})")
 
 
 # ── Initialise decks ─────────────────────────────────────────
@@ -375,20 +413,15 @@ def stop_track(deck_id: str):
 
 @app.post("/decks/{deck_id}/loop")
 def set_loop(deck_id: str, req: LoopRequest):
-    """
-    Toggle loop mode. If the deck is currently playing, restart with the new flag.
-    """
     if deck_id not in decks:
         raise HTTPException(status_code=404, detail="Deck not found")
     deck = decks[deck_id]
     current_track = deck.current_track
     was_playing   = deck.is_playing
-
     if was_playing and current_track:
         deck.play(current_track, loop=req.loop)
     else:
         deck.is_loop = req.loop
-
     return {"status": "ok", "deck": deck_id, "loop": req.loop}
 
 @app.post("/decks/{deck_id}/volume/{level}")
@@ -419,7 +452,6 @@ def mic_stream_start(req: MicStreamStartRequest):
         if deck_id in decks:
             decks[deck_id].set_ducking(duck_vol)
 
-    # Convert mono PCM mic input → stereo for mixing
     cmd = [
         "ffmpeg", "-y",
         "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0",
