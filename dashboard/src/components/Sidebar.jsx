@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut, Lock, Music2 } from 'lucide-react';
+import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut, Music2, ListMusic } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 export default function Sidebar({ onNavClick }) {
@@ -18,7 +18,8 @@ export default function Sidebar({ onNavClick }) {
     { name: 'Library',       path: '/library',       icon: <FolderOpen size={20} />, visible: hasFeature('can_library') },
     { name: 'Announcements', path: '/announcements', icon: <Mic2 size={20} />,       visible: hasFeature('can_announce') },
     { name: 'Schedules',     path: '/schedules',     icon: <Calendar size={20} />,   visible: hasFeature('can_schedule') },
-    { name: 'Requests',      path: '/stats',         icon: <BarChart2 size={20} />,  visible: hasFeature('can_requests') },
+    { name: 'Analytics',     path: '/stats',         icon: <BarChart2 size={20} />,  visible: hasFeature('can_requests') },
+    { name: 'Requests',      path: '/requests',      icon: <ListMusic size={20} />,  visible: hasFeature('can_requests') },
     { name: 'Settings',      path: '/settings',      icon: <Settings size={20} />,   visible: hasFeature('can_settings') || isElevated },
     { name: 'Users',         path: '/users',         icon: <Users size={20} />,      visible: isElevated },
   ];

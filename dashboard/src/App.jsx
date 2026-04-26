@@ -11,6 +11,7 @@ import StatisticsPage from './pages/StatisticsPage';
 import SettingsPage from './pages/SettingsPage';
 import SchedulesPage from './pages/SchedulesPage';
 import RequestPage from './pages/RequestPage';
+import RequestsManagementPage from './pages/RequestsManagementPage';
 import LoginPage from './pages/LoginPage';
 import UsersPage from './pages/UsersPage';
 import { useApp } from './context/useApp';
@@ -145,6 +146,9 @@ function AppLayout() {
           } />
           <Route path="/stats" element={
             <ProtectedRoute feature="can_requests"><StatisticsPage /></ProtectedRoute>
+          } />
+          <Route path="/requests" element={
+            <ProtectedRoute feature="can_requests"><RequestsManagementPage /></ProtectedRoute>
           } />
           <Route path="/settings" element={
             <ProtectedRoute feature="can_settings"><SettingsPage /></ProtectedRoute>
