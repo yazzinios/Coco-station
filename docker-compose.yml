@@ -91,16 +91,17 @@ services:
     build:
       context: ./dashboard
       dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:8000
+        - VITE_WS_URL=ws://localhost:8000
+        - VITE_SUPABASE_URL=${SUPABASE_URL:-}
+        - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
     container_name: cc_dashboard
     restart: unless-stopped
     ports:
       - "8083:80"
     environment:
       - TZ=Africa/Casablanca
-      - VITE_API_URL=http://localhost:8000
-      - VITE_WS_URL=ws://localhost:8000
-      - VITE_SUPABASE_URL=${SUPABASE_URL:-}
-      - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
     depends_on:
       api:
         condition: service_healthy
