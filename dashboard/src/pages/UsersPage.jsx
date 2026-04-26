@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Users, Plus, Edit2, Trash2, Key, ShieldCheck, Shield, Star,
+  Users, Plus, Edit2, Trash2, Key, Star,
   Check, X, RefreshCw, Lock, Activity, Sliders, Mic2, Calendar,
   FolderOpen, Settings2, Music2, Eye, EyeOff, Play, Square,
-  SkipForward, Volume2, ListMusic, Crosshair, Layers, Paintbrush,
-  RotateCcw, ChevronDown, ChevronUp,
+  SkipForward, Volume2, ListMusic, Crosshair, Layers,
+  RotateCcw, Link2,
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
@@ -343,8 +343,6 @@ function PermEditor({ perms, setPerms, keyPrefix='' }) {
       {tab === 'features' && (
         <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
           {FEATURE_DEFS.map(({ key, label, icon, desc }) => {
-            const fKey = keyPrefix ? `${keyPrefix}${key.replace('can_', 'can_')}` : key;
-            // For role forms the keys are default_can_XXX, for user perms just can_XXX
             const resolvedKey = keyPrefix ? `${keyPrefix}${key}`.replace('default_can_', 'default_can_') : key;
             return (
               <ToggleRow key={key} icon={icon} label={label} desc={desc}
@@ -352,6 +350,296 @@ function PermEditor({ perms, setPerms, keyPrefix='' }) {
                 onChange={() => setPerms(p => ({ ...p, [resolvedKey]: !p[resolvedKey] }))}/>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── LDAP Group Mapping Panel ───────────────────────────────────────────────
+
+function LdapGroupMappingPanel({ roles, api, toast, isAdmin }) {
+  const [mappings,      setMappings]      = useState({});
+  const [ldapGroups,    setLdapGroups]    = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [saving,        setSaving]        = useState(false);
+  const [expanded,      setExpanded]      = useState(true);
+  const [manualInput,   setManualInput]   = useState('');
+  const [ldapEnabled,   setLdapEnabled]   = useState(false);
+
+  useEffect(() => {
+    loadMappings();
+    fetchLdapGroups();
+  }, []); // eslint-disable-line
+
+  const loadMappings = async () => {
+    try {
+      const r = await api.authFetch('/api/settings/ldap/role-mappings');
+      if (r.ok) {
+        const data = await r.json();
+        setMappings(data.mappings || data || {});
+        setLdapEnabled(data.ldap_enabled ?? true);
+      }
+    } catch (_) {}
+  };
+
+  const fetchLdapGroups = async () => {
+    setGroupsLoading(true);
+    try {
+      const r = await api.authFetch('/api/settings/ldap/info');
+      if (r.ok) {
+        const data = await r.json();
+        setLdapGroups(data.groups || []);
+        setLdapEnabled(!data.error);
+      }
+    } catch (_) {}
+    finally { setGroupsLoading(false); }
+  };
+
+  const toggleGroup = (roleName, group) => {
+    setMappings(prev => {
+      const current = prev[roleName] || [];
+      const updated = current.includes(group)
+        ? current.filter(g => g !== group)
+        : [...current, group];
+      return { ...prev, [roleName]: updated };
+    });
+  };
+
+  const addManualGroup = (roleName) => {
+    const g = manualInput.trim();
+    if (!g) return;
+    setMappings(prev => {
+      const current = prev[roleName] || [];
+      if (current.includes(g)) return prev;
+      return { ...prev, [roleName]: [...current, g] };
+    });
+    setManualInput('');
+  };
+
+  const removeGroup = (roleName, group) => {
+    setMappings(prev => ({
+      ...prev,
+      [roleName]: (prev[roleName] || []).filter(g => g !== group),
+    }));
+  };
+
+  const saveMappings = async () => {
+    setSaving(true);
+    try {
+      const r = await api.authFetch('/api/settings/ldap/role-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mappings }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      toast.success('LDAP group mappings saved!');
+    } catch (e) {
+      toast.error('Save failed: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const totalMappings = Object.values(mappings).reduce((acc, arr) => acc + (arr?.length || 0), 0);
+
+  return (
+    <div className="glass-panel" style={{ padding:'1.25rem', marginBottom:'1.5rem' }}>
+      {/* Header */}
+      <div
+        style={{ display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer', userSelect:'none' }}
+        onClick={() => setExpanded(v => !v)}
+      >
+        <div style={{ display:'flex', alignItems:'center', gap:'0.65rem' }}>
+          <Link2 size={16} color="#a55eea"/>
+          <div>
+            <div style={{ fontSize:'0.95rem', fontWeight:'600', color:'white', display:'flex', alignItems:'center', gap:'0.5rem' }}>
+              LDAP Group → Role Mapping
+              {totalMappings > 0 && (
+                <span style={{ fontSize:'0.7rem', padding:'0.1rem 0.5rem', borderRadius:'10px',
+                  background:'rgba(165,94,234,0.15)', border:'1px solid rgba(165,94,234,0.3)', color:'#a55eea' }}>
+                  {totalMappings} group{totalMappings !== 1 ? 's':''} mapped
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize:'0.75rem', color:'var(--text-secondary)', marginTop:'0.1rem' }}>
+              Automatically assign roles to LDAP users based on their directory groups
+            </div>
+          </div>
+        </div>
+        <span style={{ fontSize:'0.8rem', color:'var(--text-secondary)' }}>{expanded ? '▲' : '▼'}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop:'1.25rem' }}>
+
+          {/* LDAP not enabled notice */}
+          {!ldapEnabled && (
+            <div style={{ padding:'0.75rem 1rem', borderRadius:'8px', marginBottom:'1rem',
+              background:'rgba(253,150,68,0.08)', border:'1px solid rgba(253,150,68,0.3)',
+              fontSize:'0.82rem', color:'#fd9644', display:'flex', alignItems:'center', gap:'0.5rem' }}>
+              ⚠ LDAP is not enabled or unreachable. You can still pre-configure mappings — they take effect once LDAP is active.
+            </div>
+          )}
+
+          {/* Info row */}
+          <div style={{ padding:'0.6rem 0.9rem', borderRadius:'8px', marginBottom:'1.25rem',
+            background:'rgba(165,94,234,0.06)', border:'1px solid rgba(165,94,234,0.15)',
+            fontSize:'0.78rem', color:'var(--text-secondary)' }}>
+            📌 When a user logs in via LDAP, their groups are checked against this mapping. The first matching role is assigned.
+            If no group matches, the user gets the <strong style={{ color:'white' }}>default operator role</strong>.
+          </div>
+
+          {/* Groups loading */}
+          {groupsLoading && (
+            <div style={{ fontSize:'0.8rem', color:'var(--text-secondary)', marginBottom:'1rem' }}>
+              ⟳ Loading LDAP groups…
+            </div>
+          )}
+
+          {/* Per-role mapping rows */}
+          <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+            {roles.map(role => {
+              const selected  = mappings[role.name] || [];
+              const roleColor = role.color || SYSTEM_COLORS[role.name] || '#6B7280';
+              const available = ldapGroups.filter(g => !selected.includes(g));
+
+              return (
+                <div key={role.name} style={{
+                  borderRadius:'10px', border:`1px solid ${roleColor}33`,
+                  background:`${roleColor}08`, overflow:'hidden',
+                }}>
+                  {/* Role header */}
+                  <div style={{
+                    padding:'0.7rem 1rem', borderBottom:`1px solid ${roleColor}22`,
+                    background:`${roleColor}10`,
+                    display:'flex', alignItems:'center', gap:'0.6rem',
+                  }}>
+                    <div style={{ width:10, height:10, borderRadius:'50%', background:roleColor, flexShrink:0 }}/>
+                    <span style={{ fontWeight:'600', fontSize:'0.88rem', color:roleColor }}>{role.display_name}</span>
+                    <span style={{ fontSize:'0.7rem', color:'var(--text-secondary)' }}>/{role.name}</span>
+                    {selected.length > 0 && (
+                      <span style={{ marginLeft:'auto', fontSize:'0.7rem', padding:'0.1rem 0.45rem', borderRadius:'10px',
+                        background:`${roleColor}18`, border:`1px solid ${roleColor}40`, color:roleColor }}>
+                        {selected.length} group{selected.length !== 1 ? 's':''}
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ padding:'0.85rem 1rem', display:'flex', flexDirection:'column', gap:'0.75rem' }}>
+                    {/* Currently mapped groups */}
+                    {selected.length > 0 ? (
+                      <div>
+                        <div style={{ ...LBL_STYLE, marginBottom:'0.45rem' }}>Mapped groups</div>
+                        <div style={{ display:'flex', flexWrap:'wrap', gap:'0.35rem' }}>
+                          {selected.map(g => (
+                            <span key={g} style={{
+                              display:'inline-flex', alignItems:'center', gap:'0.35rem',
+                              padding:'0.25rem 0.6rem', borderRadius:'20px', fontSize:'0.75rem',
+                              background:`${roleColor}18`, border:`1px solid ${roleColor}45`, color:roleColor,
+                            }}>
+                              🗂 {g}
+                              {isAdmin && (
+                                <button
+                                  onClick={() => removeGroup(role.name, g)}
+                                  style={{ background:'none', border:'none', color:roleColor, cursor:'pointer',
+                                    padding:0, fontSize:'0.75rem', lineHeight:1, opacity:0.7,
+                                    display:'flex', alignItems:'center' }}
+                                  title="Remove">
+                                  ✕
+                                </button>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize:'0.78rem', color:'rgba(255,255,255,0.25)', fontStyle:'italic' }}>
+                        No groups mapped — users in this role won't be auto-assigned via LDAP.
+                      </div>
+                    )}
+
+                    {isAdmin && (
+                      <>
+                        {/* LDAP group listbox */}
+                        {ldapGroups.length > 0 && (
+                          <div>
+                            <div style={{ ...LBL_STYLE, marginBottom:'0.45rem' }}>
+                              Add from LDAP directory
+                              <span style={{ marginLeft:'0.5rem', color:'rgba(255,255,255,0.25)', textTransform:'none', fontWeight:400 }}>
+                                ({ldapGroups.length} groups detected)
+                              </span>
+                            </div>
+                            <div style={{
+                              maxHeight:'130px', overflowY:'auto', borderRadius:'8px',
+                              border:'1px solid var(--panel-border)', background:'rgba(0,0,0,0.25)',
+                            }}>
+                              {available.length === 0 ? (
+                                <div style={{ padding:'0.65rem 0.9rem', fontSize:'0.78rem', color:'var(--text-secondary)', fontStyle:'italic' }}>
+                                  All detected groups already mapped to this role.
+                                </div>
+                              ) : (
+                                available.map(g => (
+                                  <div key={g}
+                                    onClick={() => toggleGroup(role.name, g)}
+                                    style={{
+                                      padding:'0.5rem 0.9rem', cursor:'pointer', fontSize:'0.82rem',
+                                      display:'flex', alignItems:'center', gap:'0.5rem',
+                                      borderBottom:'1px solid var(--panel-border)',
+                                      transition:'background 0.12s',
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.background = `${roleColor}15`}
+                                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                  >
+                                    <span style={{ fontSize:'0.75rem' }}>🗂</span>
+                                    <span style={{ flex:1, color:'var(--text-primary)' }}>{g}</span>
+                                    <span style={{ fontSize:'0.7rem', color:roleColor, opacity:0.7 }}>+ Add</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Manual entry */}
+                        <div>
+                          <div style={{ ...LBL_STYLE, marginBottom:'0.45rem' }}>Or type a group name manually</div>
+                          <div style={{ display:'flex', gap:'0.5rem' }}>
+                            <input
+                              value={manualInput}
+                              onChange={e => setManualInput(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') addManualGroup(role.name); }}
+                              placeholder="e.g. CN=IT-Team,OU=Groups,DC=company,DC=com"
+                              style={{ ...INP_STYLE, fontSize:'0.82rem', padding:'0.5rem 0.75rem' }}
+                            />
+                            <button
+                              onClick={() => addManualGroup(role.name)}
+                              style={{ ...mkBtn('purple'), whiteSpace:'nowrap', flexShrink:0 }}
+                            >
+                              <Plus size={12}/> Add
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Footer actions */}
+          {isAdmin && (
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:'0.75rem', marginTop:'1.25rem',
+              paddingTop:'1rem', borderTop:'1px solid var(--panel-border)' }}>
+              <button onClick={fetchLdapGroups} disabled={groupsLoading} style={mkBtn('blue')}>
+                <RefreshCw size={12}/> Refresh LDAP Groups
+              </button>
+              <button onClick={saveMappings} disabled={saving} style={{ ...mkBtn('green'), opacity:saving?0.6:1 }}>
+                {saving ? '⟳ Saving…' : <><Check size={12}/> Save Mappings</>}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -371,35 +659,30 @@ export default function UsersPage() {
   const [rolesLoading, setRolesLoading] = useState(false);
   const [logsLoading,  setLogsLoading]  = useState(false);
 
-  // User CRUD
   const [showUserForm, setShowUserForm] = useState(false);
   const [editTarget,   setEditTarget]   = useState(null);
   const [userForm,     setUserForm]     = useState(EMPTY_USER_FORM);
   const [saving,       setSaving]       = useState(false);
   const [deleting,     setDeleting]     = useState(null);
 
-  // Password modal
   const [pwModal, setPwModal] = useState(null);
   const [pwForm,  setPwForm]  = useState({ password:'', confirm:'' });
 
-  // Permissions modal
   const [permModal,   setPermModal]   = useState(null);
   const [perms,       setPerms]       = useState(DEFAULT_PERMS);
   const [permSaving,  setPermSaving]  = useState(false);
 
-  // Role CRUD
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [editRole,     setEditRole]     = useState(null);
   const [roleForm,     setRoleForm]     = useState(EMPTY_ROLE_FORM);
   const [roleSaving,   setRoleSaving]   = useState(false);
 
-  // Log filter
   const [logFilter, setLogFilter] = useState('');
 
-  const isSuper  = currentUser?.is_super_admin;
-  const isAdmin  = currentUser?.role === 'admin' || isSuper;
+  const isSuper = currentUser?.is_super_admin;
+  const isAdmin = currentUser?.role === 'admin' || isSuper;
 
-  // ── Loaders ────────────────────────────────────────────────
+  // ── Loaders ──────────────────────────────────────────────────────────────
   const loadUsers = useCallback(async () => {
     setLoading(true);
     try { setUsers(await api.getUsers()); }
@@ -424,7 +707,7 @@ export default function UsersPage() {
   useEffect(() => { loadUsers(); loadRoles(); }, []); // eslint-disable-line
   useEffect(() => { if (tab === 'logs') loadLogs(); }, [tab]); // eslint-disable-line
 
-  // ── Permissions modal ──────────────────────────────────────
+  // ── Permissions modal ─────────────────────────────────────────────────────
   const openPerms = async (u) => {
     try {
       const p = await api.getPermissions(u.id);
@@ -449,7 +732,6 @@ export default function UsersPage() {
     finally { setPermSaving(false); }
   };
 
-  // Apply role template
   const applyRoleTemplate = async (u) => {
     if (!window.confirm(`Reset @${u.username}'s permissions to the "${u.role}" role defaults?`)) return;
     try {
@@ -459,9 +741,9 @@ export default function UsersPage() {
     } catch(e) { toast.error(e.message); }
   };
 
-  // ── User form ──────────────────────────────────────────────
+  // ── User form ─────────────────────────────────────────────────────────────
   const openCreateUser = () => {
-    setUserForm({ ...EMPTY_USER_FORM, role: roles.find(r=>r.name==='operator') ? 'operator':'operator' });
+    setUserForm({ ...EMPTY_USER_FORM, role:'operator' });
     setEditTarget(null);
     setShowUserForm('create');
   };
@@ -512,8 +794,8 @@ export default function UsersPage() {
   };
 
   const handleChangePw = async () => {
-    if (pwForm.password.length < 6)            { toast.error('Password min 6 chars'); return; }
-    if (pwForm.password !== pwForm.confirm)    { toast.error('Passwords do not match'); return; }
+    if (pwForm.password.length < 6)         { toast.error('Password min 6 chars'); return; }
+    if (pwForm.password !== pwForm.confirm)  { toast.error('Passwords do not match'); return; }
     setSaving(true);
     try {
       await api.updateUser(pwModal.id, { password:pwForm.password });
@@ -523,7 +805,7 @@ export default function UsersPage() {
     finally { setSaving(false); }
   };
 
-  // ── Role form ──────────────────────────────────────────────
+  // ── Role form ─────────────────────────────────────────────────────────────
   const openCreateRole = () => {
     setRoleForm({ ...EMPTY_ROLE_FORM });
     setEditRole(null);
@@ -608,11 +890,11 @@ export default function UsersPage() {
     JSON.stringify(l.details||{}).includes(logFilter)
   );
 
-  // ── Render ─────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   const PAGE_TABS = [
-    { id:'users',  label:'Users',        icon:<Users size={14}/> },
-    { id:'roles',  label:'Roles',        icon:<Layers size={14}/> },
-    { id:'logs',   label:'Activity Log', icon:<Activity size={14}/> },
+    { id:'users', label:'Users',        icon:<Users size={14}/> },
+    { id:'roles', label:'Roles',        icon:<Layers size={14}/> },
+    { id:'logs',  label:'Activity Log', icon:<Activity size={14}/> },
   ];
 
   return (
@@ -635,7 +917,7 @@ export default function UsersPage() {
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Page tabs */}
       <div style={{ display:'flex', gap:0, marginBottom:'1.5rem', borderBottom:'1px solid var(--panel-border)' }}>
         {PAGE_TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
@@ -650,7 +932,7 @@ export default function UsersPage() {
         ))}
       </div>
 
-      {/* ══════════════ USERS TAB ══════════════ */}
+      {/* ══ USERS TAB ══════════════════════════════════════════════════════ */}
       {tab === 'users' && (
         <div className="glass-panel" style={{ padding:0, overflow:'hidden' }}>
           {loading ? (
@@ -669,9 +951,9 @@ export default function UsersPage() {
                 </thead>
                 <tbody>
                   {users.map((u, i) => {
-                    const isSelf  = u.id === currentUser?.id;
-                    const canEdit = isSuper || (isAdmin && !u.is_super_admin) || isSelf;
-                    const dc      = u.permissions?.deck_control || {};
+                    const isSelf    = u.id === currentUser?.id;
+                    const canEdit   = isSuper || (isAdmin && !u.is_super_admin) || isSelf;
+                    const dc        = u.permissions?.deck_control || {};
                     const roleColor = roles.find(r=>r.name===u.role)?.color || SYSTEM_COLORS[u.role] || '#6B7280';
                     return (
                       <tr key={u.id}
@@ -680,7 +962,6 @@ export default function UsersPage() {
                         onMouseEnter={e => e.currentTarget.style.background='rgba(255,255,255,0.025)'}
                         onMouseLeave={e => e.currentTarget.style.background='transparent'}>
 
-                        {/* User */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           <div style={{ display:'flex', alignItems:'center', gap:'0.7rem' }}>
                             <div style={{ width:34, height:34, borderRadius:'50%', flexShrink:0,
@@ -700,12 +981,10 @@ export default function UsersPage() {
                           </div>
                         </td>
 
-                        {/* Role */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           <RoleBadge role={u.role} isSuperAdmin={u.is_super_admin} roles={roles}/>
                         </td>
 
-                        {/* Deck access */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           {(u.role==='super_admin' || u.is_super_admin || u.role==='admin') ? (
                             <span style={{ fontSize:'0.72rem', color:'#ffd700' }}>⭐ All decks</span>
@@ -732,7 +1011,6 @@ export default function UsersPage() {
                           )}
                         </td>
 
-                        {/* Status */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           {isAdmin && !isSelf && !u.is_super_admin ? (
                             <button onClick={() => toggleEnabled(u)}
@@ -751,7 +1029,6 @@ export default function UsersPage() {
                           )}
                         </td>
 
-                        {/* Actions */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           <div style={{ display:'flex', gap:'0.35rem', flexWrap:'wrap' }}>
                             {canEdit && (
@@ -793,7 +1070,7 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* ══════════════ ROLES TAB ══════════════ */}
+      {/* ══ ROLES TAB ══════════════════════════════════════════════════════ */}
       {tab === 'roles' && (
         <>
           {!isAdmin && (
@@ -803,6 +1080,13 @@ export default function UsersPage() {
               ℹ Roles are view-only for non-admins.
             </div>
           )}
+
+          {/* ── LDAP Group → Role Mapping panel ── */}
+          {roles.length > 0 && (
+            <LdapGroupMappingPanel roles={roles} api={api} toast={toast} isAdmin={isAdmin}/>
+          )}
+
+          {/* ── Roles table ── */}
           <div className="glass-panel" style={{ padding:0, overflow:'hidden' }}>
             {rolesLoading ? (
               <div style={{ padding:'3rem', textAlign:'center', color:'var(--text-secondary)' }}>Loading…</div>
@@ -826,7 +1110,6 @@ export default function UsersPage() {
                         onMouseEnter={e => e.currentTarget.style.background='rgba(255,255,255,0.025)'}
                         onMouseLeave={e => e.currentTarget.style.background='transparent'}>
 
-                        {/* Role name + badge */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
                             <div style={{ width:10, height:10, borderRadius:'50%', background:role.color||'#6B7280', flexShrink:0 }}/>
@@ -839,12 +1122,10 @@ export default function UsersPage() {
                           </div>
                         </td>
 
-                        {/* Description */}
                         <td style={{ padding:'0.85rem 1rem', fontSize:'0.8rem', color:'var(--text-secondary)', maxWidth:'200px' }}>
                           {role.description || '—'}
                         </td>
 
-                        {/* Type */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           <span style={{ fontSize:'0.72rem', padding:'0.18rem 0.55rem', borderRadius:'12px',
                             background: role.is_system ? 'rgba(255,215,0,0.08)':'rgba(165,94,234,0.1)',
@@ -854,7 +1135,6 @@ export default function UsersPage() {
                           </span>
                         </td>
 
-                        {/* Deck Defaults */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           <div style={{ display:'flex', gap:'0.25rem', flexWrap:'wrap' }}>
                             {(role.default_allowed_decks || DECK_IDS).map(d => {
@@ -872,7 +1152,6 @@ export default function UsersPage() {
                           </div>
                         </td>
 
-                        {/* Actions */}
                         <td style={{ padding:'0.85rem 1rem' }}>
                           <div style={{ display:'flex', gap:'0.35rem' }}>
                             {isAdmin && (
@@ -897,7 +1176,7 @@ export default function UsersPage() {
         </>
       )}
 
-      {/* ══════════════ LOGS TAB ══════════════ */}
+      {/* ══ LOGS TAB ═══════════════════════════════════════════════════════ */}
       {tab === 'logs' && (
         <>
           <div style={{ display:'flex', gap:'0.75rem', marginBottom:'1rem', alignItems:'center', flexWrap:'wrap' }}>
@@ -971,7 +1250,7 @@ export default function UsersPage() {
         </>
       )}
 
-      {/* ══════ Create / Edit User Modal ══════ */}
+      {/* ══ Create / Edit User Modal ════════════════════════════════════════ */}
       {showUserForm && (
         <Modal title={showUserForm==='create' ? 'Create New User':`Edit — @${editTarget?.username}`}
           onClose={() => { setShowUserForm(false); setEditTarget(null); }}>
@@ -1023,7 +1302,7 @@ export default function UsersPage() {
         </Modal>
       )}
 
-      {/* ══════ Password Modal ══════ */}
+      {/* ══ Password Modal ═══════════════════════════════════════════════════ */}
       {pwModal && (
         <Modal title={`Change Password — @${pwModal.username}`} onClose={() => setPwModal(null)}>
           <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
@@ -1053,7 +1332,7 @@ export default function UsersPage() {
         </Modal>
       )}
 
-      {/* ══════ Permissions Modal ══════ */}
+      {/* ══ Permissions Modal ════════════════════════════════════════════════ */}
       {permModal && (
         <Modal title={`🔐 Permissions — @${permModal.username}`} onClose={() => setPermModal(null)} wide>
           <div style={{ marginBottom:'0.75rem', padding:'0.55rem 0.9rem', borderRadius:'8px',
@@ -1076,13 +1355,12 @@ export default function UsersPage() {
         </Modal>
       )}
 
-      {/* ══════ Create / Edit Role Modal ══════ */}
+      {/* ══ Create / Edit Role Modal ═════════════════════════════════════════ */}
       {showRoleForm && (
         <Modal title={editRole ? `Edit Role — ${editRole.display_name}`:'Create Custom Role'}
           onClose={() => { setShowRoleForm(false); setEditRole(null); }} wide>
           <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
 
-            {/* Basic info */}
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem' }}>
               {!editRole && (
                 <div>
@@ -1123,7 +1401,6 @@ export default function UsersPage() {
               </div>
             </div>
 
-            {/* Default permission template */}
             <div style={{ borderTop:'1px solid var(--panel-border)', paddingTop:'1rem' }}>
               <div style={{ fontSize:'0.8rem', color:'var(--text-secondary)', marginBottom:'0.75rem' }}>
                 🎭 <strong style={{ color:'white' }}>Default permissions</strong> — applied to new users assigned this role.
