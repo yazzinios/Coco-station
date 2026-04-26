@@ -547,7 +547,10 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
         return
 
 
-    filepath = f"/data/chimes/{filename}"
+    # docker-compose mounts ./data/chimes → /chimes inside the mixer container
+    # The API container sees the file at data/chimes/<name> (for ffprobe)
+    # The mixer container must receive /chimes/<name>  (NOT /data/chimes/<name>)
+    filepath = f"/chimes/{filename}"
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             tasks = [
@@ -720,6 +723,36 @@ async def root(): return {"message": "CocoStation API is running", "status": "he
 def health():
     return {"status": "healthy", "uptime_seconds": int(time.time()-START_TIME), "decks": len(DECKS),
             "library_count": len(list(MEDIA_DIR.glob("*.*"))), "announcements_count": len(ANNOUNCEMENTS)}
+
+@app.get("/api/debug/paths")
+def debug_paths():
+    """Show exactly what files are visible inside the API container.
+    Use this to confirm volume mounts are working and files are present.
+    curl http://localhost:8000/api/debug/paths
+    """
+    def _ls(p: Path):
+        try:
+            return [
+                {"name": f.name, "size": f.stat().st_size, "path": str(f)}
+                for f in sorted(p.iterdir())
+                if f.is_file()
+            ]
+        except Exception as e:
+            return {"error": str(e)}
+
+    return {
+        "chimes_dir":        str(CHIMES_DIR.resolve()),
+        "chimes_exists":     CHIMES_DIR.exists(),
+        "chimes_files":      _ls(CHIMES_DIR),
+        "announcements_dir": str(ANNOUNCEMENTS_DIR.resolve()),
+        "announcements_files": _ls(ANNOUNCEMENTS_DIR),
+        "library_dir":       str(MEDIA_DIR.resolve()),
+        "library_files":     _ls(MEDIA_DIR),
+        "jingle_intro_setting":  SETTINGS.get("jingle_intro"),
+        "jingle_outro_setting":  SETTINGS.get("jingle_outro"),
+        "jingle_intro_on_disk":  bool(SETTINGS.get("jingle_intro") and (CHIMES_DIR / SETTINGS["jingle_intro"]).exists()),
+        "jingle_outro_on_disk":  bool(SETTINGS.get("jingle_outro") and (CHIMES_DIR / SETTINGS["jingle_outro"]).exists()),
+    }
 
 # ── WebSocket ───────────────────────────────────────────────
 @app.websocket("/ws")

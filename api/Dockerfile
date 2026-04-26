@@ -21,8 +21,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source code
 COPY . .
 
-# Pre-create data dirs so volume mounts are always writable
-RUN mkdir -p /app/data/library /app/data/announcements
+# Pre-create ALL data dirs so volume mounts are always writable
+# These are created in the image layer; Docker then overlays the host
+# bind-mounts on top — the dirs must exist first or the mount is ignored.
+RUN mkdir -p \
+    /app/data/library \
+    /app/data/announcements \
+    /app/data/chimes \
+    /app/data/branding
 
 # Run as root — this is an internal container on a private Docker network
 # Running as non-root caused volume permission errors with named volumes

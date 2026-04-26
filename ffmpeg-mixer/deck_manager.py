@@ -64,9 +64,7 @@ class Deck:
 
         self.track_proc = None
         self.ann_proc   = None
-        # FIX: track whether the current ann_proc should notify on completion
-        self._ann_notify = False
-        # FIX: a generation counter so old reader threads know they've been superseded
+        self._ann_notify     = False
         self._ann_generation = 0
 
         self._mic_last_active = 0.0
@@ -157,12 +155,10 @@ class Deck:
 
     def _reader_thread(self, proc, q, proc_name):
         """
-        Reads PCM chunks from a subprocess stdout into a queue.
-
         proc_name values:
-          "track" — main music track; fires track_ended on natural finish
-          "ann"   — announcement (notify=True); fires announcement_ended on finish
-          "jingle"— announcement (notify=False); fires nothing on finish
+          "track"  — fires track_ended on natural finish
+          "ann"    — fires announcement_ended on natural finish (notify=True)
+          "jingle" — fires nothing (notify=False)
         """
         try:
             while proc and proc.poll() is None:
@@ -188,22 +184,17 @@ class Deck:
                         target=_notify_track_ended, args=(self.name,), daemon=True
                     ).start()
             elif proc_name == "ann":
-                # FIX: only notify if this reader corresponds to the CURRENT ann_proc.
-                # If play_announcement was called again while this reader was running,
-                # self._ann_generation will have advanced and we should NOT notify —
-                # the new jingle/announcement will handle its own lifecycle.
-                my_generation = getattr(proc, "_ann_generation", None)
+                my_generation      = getattr(proc, "_ann_generation", None)
                 current_generation = self._ann_generation
                 if my_generation is None or my_generation == current_generation:
                     threading.Thread(
                         target=_notify_announcement_ended, args=(self.name,), daemon=True
                     ).start()
                 else:
-                    print(f"[Deck {self.name}] Skipping stale announcement_ended notify (gen {my_generation} != {current_generation})")
-            # "jingle" — intentionally fires nothing
+                    print(f"[Deck {self.name}] Skipping stale announcement_ended (gen {my_generation} != {current_generation})")
+            # "jingle" → fires nothing intentionally
 
     def play(self, filepath, loop: bool = False):
-        """Start (or restart) playback of filepath."""
         self.stop()
         self._stop_requested = False
         with self.lock:
@@ -253,10 +244,10 @@ class Deck:
                     self.track_proc.wait(timeout=2)
                 except Exception:
                     pass
-            self.track_proc    = None
-            self.is_playing    = False
-            self.is_loop       = False
-            self.current_track = None
+            self.track_proc        = None
+            self.is_playing        = False
+            self.is_loop           = False
+            self.current_track     = None
             self._last_track_chunk = b'\x00' * CHUNK_SIZE
             while not self.track_q.empty():
                 try: self.track_q.get_nowait()
@@ -271,19 +262,9 @@ class Deck:
             self.duck_volume = max(0, min(100, vol))
 
     def play_announcement(self, filepath, notify: bool = True):
-        """
-        Play an announcement or jingle clip on top of whatever is on the deck.
-
-        FIX: Terminate any existing ann_proc BEFORE starting the new one, and
-        drain the ann_q so leftover audio from the previous clip doesn't bleed
-        into the new one.
-
-        FIX: Stamp each ann_proc with the current _ann_generation counter so
-        the _reader_thread can detect if it has been superseded and should NOT
-        fire the announcement_ended callback.
-        """
+        """Play a jingle or announcement over the deck audio."""
         with self.lock:
-            # Terminate previous announcement if still running
+            # Stop previous ann_proc
             if self.ann_proc and self.ann_proc.poll() is None:
                 try:
                     self.ann_proc.terminate()
@@ -292,7 +273,7 @@ class Deck:
                     pass
             self.ann_proc = None
 
-            # Drain leftover audio from previous announcement
+            # Drain stale audio
             drained = 0
             while not self.ann_q.empty():
                 try:
@@ -303,9 +284,9 @@ class Deck:
             if drained:
                 print(f"[Deck {self.name}] Drained {drained} stale ann_q chunks")
 
-            # Advance generation so any in-flight reader knows it is superseded
+            # Advance generation counter
             self._ann_generation += 1
-            current_gen = self._ann_generation
+            current_gen      = self._ann_generation
             self._ann_notify = notify
 
         cmd = [
@@ -313,13 +294,11 @@ class Deck:
             "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1",
         ]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # FIX: stamp the proc with its generation so _reader_thread can check
         proc._ann_generation = current_gen
 
         with self.lock:
             self.ann_proc = proc
 
-        # proc_name controls whether _reader_thread fires announcement_ended
         proc_name = "ann" if notify else "jingle"
 
         def _ann_stderr_logger(p, name, fpath):
@@ -335,7 +314,6 @@ class Deck:
             args=(proc, self.ann_q, proc_name),
             daemon=True,
         ).start()
-
         threading.Thread(
             target=_ann_stderr_logger,
             args=(proc, self.name, filepath),
@@ -416,10 +394,8 @@ def set_loop(deck_id: str, req: LoopRequest):
     if deck_id not in decks:
         raise HTTPException(status_code=404, detail="Deck not found")
     deck = decks[deck_id]
-    current_track = deck.current_track
-    was_playing   = deck.is_playing
-    if was_playing and current_track:
-        deck.play(current_track, loop=req.loop)
+    if deck.is_playing and deck.current_track:
+        deck.play(deck.current_track, loop=req.loop)
     else:
         deck.is_loop = req.loop
     return {"status": "ok", "deck": deck_id, "loop": req.loop}
@@ -444,9 +420,8 @@ def play_announcement(deck_id: str, req: PlayAnnouncementRequest):
 def mic_stream_start(req: MicStreamStartRequest):
     raw_targets = req.targets
     target_ids  = ["a","b","c","d"] if (not raw_targets or "ALL" in raw_targets) else [t.lower() for t in raw_targets]
-
-    session_id = str(uuid.uuid4())[:8]
-    duck_vol   = max(0, min(100, req.ducking))
+    session_id  = str(uuid.uuid4())[:8]
+    duck_vol    = max(0, min(100, req.ducking))
 
     for deck_id in target_ids:
         if deck_id in decks:
@@ -538,6 +513,35 @@ def health():
         },
         "mic_sessions": list(mic_sessions.keys()),
     }
+
+
+# ── Debug endpoints — verify what the mixer container can see ─
+@app.get("/debug/chimes")
+def debug_chimes():
+    """List all files visible at /chimes/ inside the mixer container."""
+    try:
+        files = sorted(os.listdir("/chimes"))
+    except Exception as e:
+        files = [f"ERROR: {e}"]
+    return {"path": "/chimes", "files": files, "count": len(files)}
+
+@app.get("/debug/announcements")
+def debug_announcements():
+    """List all files visible at /announcements/ inside the mixer container."""
+    try:
+        files = sorted(os.listdir("/announcements"))
+    except Exception as e:
+        files = [f"ERROR: {e}"]
+    return {"path": "/announcements", "files": files, "count": len(files)}
+
+@app.get("/debug/library")
+def debug_library():
+    """List all files visible at /library/ inside the mixer container."""
+    try:
+        files = sorted(os.listdir("/library"))
+    except Exception as e:
+        files = [f"ERROR: {e}"]
+    return {"path": "/library", "files": files, "count": len(files)}
 
 
 if __name__ == "__main__":
