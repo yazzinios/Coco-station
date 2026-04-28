@@ -55,10 +55,10 @@ function LoginSuccess({ user }) {
 }
 
 // ── Method Selector (shown when LDAP is available) ────────────────────────────
-function MethodToggle({ method, setMethod, domain }) {
+function MethodToggle({ method, setMethod, domain, companyName }) {
   const opts = [
     { value: 'local', label: 'Local Account', icon: <User size={14} />,     desc: 'CocoStation DB' },
-    { value: 'ldap',  label: 'Domain',        icon: <Building2 size={14} />, desc: domain || 'Active Directory' },
+    { value: 'ldap',  label: 'Domain',        icon: <Building2 size={14} />, desc: companyName || domain || 'Active Directory' },
   ];
   return (
     <div style={{ marginBottom: '1.25rem' }}>
@@ -109,6 +109,7 @@ export default function LoginPage({ onLogin }) {
   const [method,      setMethod]      = useState('local'); // 'local' | 'ldap'
   const [ldapEnabled, setLdapEnabled] = useState(false);
   const [ldapDomain,  setLdapDomain]  = useState('');
+  const [companyName, setCompanyName] = useState('');
   const [methodsLoaded, setMethodsLoaded] = useState(false);
 
   // Detect available login methods
@@ -116,6 +117,9 @@ export default function LoginPage({ onLogin }) {
     fetch('/api/auth/methods')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
+        if (data?.company_name) {
+          setCompanyName(data.company_name);
+        }
         if (data?.ldap) {
           setLdapEnabled(true);
           setLdapDomain(data.domain || '');
@@ -215,7 +219,7 @@ export default function LoginPage({ onLogin }) {
                 <span style={{ fontSize: '1.6rem' }}>📻</span>
               </div>
               <h1 style={{ fontSize: '1.6rem', fontWeight: '700', marginBottom: '0.3rem', color: '#fff' }}>
-                CocoStation
+                {companyName || 'CocoStation'}
               </h1>
               <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
                 Sign in to access the mixer dashboard
@@ -238,7 +242,7 @@ export default function LoginPage({ onLogin }) {
 
               {/* Method toggle — only shown when LDAP is available */}
               {ldapEnabled && methodsLoaded && (
-                <MethodToggle method={method} setMethod={m => { setMethod(m); setError(''); }} domain={ldapDomain} />
+                <MethodToggle method={method} setMethod={m => { setMethod(m); setError(''); }} domain={ldapDomain} companyName={companyName} />
               )}
 
               {/* LDAP domain banner */}
@@ -249,7 +253,7 @@ export default function LoginPage({ onLogin }) {
                   fontSize: '0.78rem', color: '#a55eea', display: 'flex', alignItems: 'center', gap: '0.4rem',
                 }}>
                   <Building2 size={13} />
-                  Signing in with <strong>{ldapDomain || 'Active Directory'}</strong>
+                  Signing in with <strong>{companyName || ldapDomain || 'Active Directory'}</strong>
                 </div>
               )}
 
@@ -257,7 +261,7 @@ export default function LoginPage({ onLogin }) {
               <div>
                 <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.78rem',
                   color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  {method === 'ldap' ? 'Domain Username' : 'Username'}
+                  {method === 'ldap' ? (companyName ? `${companyName} Username` : 'Domain Username') : 'Username'}
                 </label>
                 <input
                   type="text"

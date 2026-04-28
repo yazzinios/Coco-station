@@ -63,6 +63,7 @@ def get_auth_methods():
         "local": True,
         "ldap":  ldap_enabled and bool(ldap_server.strip()),
         "domain": domain,
+        "company_name": settings.get("company_name", ""),
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
