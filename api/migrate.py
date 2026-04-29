@@ -247,11 +247,7 @@ def run_migrations_local(db_url: str):
     cur.execute(BASE_SCHEMA_SQL)
     print("[migrate] Base schema applied.")
 
-    # Seed system roles first (users.role references roles.name conceptually)
-    _seed_roles(cur)
-
-    # Seed default admin user
-    _seed_admin(cur)
+    # (Moved seeding to after schema repair to avoid missing column errors)
 
     # Schema Repair -- safe ALTER TABLE patches for existing deployments
     REPAIR_SQL = """
@@ -372,6 +368,22 @@ def run_migrations_local(db_url: str):
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         END IF;
+
+        -- Add missing columns to roles if rolling back from newer schema
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'roles') THEN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'display_name') THEN
+                ALTER TABLE roles ADD COLUMN display_name VARCHAR(100) NOT NULL DEFAULT 'Role';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'description') THEN
+                ALTER TABLE roles ADD COLUMN description TEXT DEFAULT '';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'color') THEN
+                ALTER TABLE roles ADD COLUMN color VARCHAR(20) DEFAULT '#6B7280';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'is_system') THEN
+                ALTER TABLE roles ADD COLUMN is_system BOOLEAN NOT NULL DEFAULT FALSE;
+            END IF;
+        END IF;
     END $$;
     """
     print("[migrate] Patching schema inconsistencies...")
@@ -379,6 +391,9 @@ def run_migrations_local(db_url: str):
 
     # Re-seed roles after repair (idempotent)
     _seed_roles(cur)
+
+    # Seed default admin user after repair
+    _seed_admin(cur)
 
     cur.execute("SELECT name FROM _migrations")
     applied = set(row[0] for row in cur.fetchall())
