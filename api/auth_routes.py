@@ -384,6 +384,195 @@ async def ldap_save(
     return {"status": "ok", "ldap_enabled": enabled}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  LDAP role-mappings  GET + POST
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LdapRoleMappingsRequest(_PydanticBase):
+    """Payload for saving LDAP role-group mappings.
+
+    The frontend (UsersPage LdapGroupMappingPanel) sends:
+        { "mappings": { "admin": ["CN=Admins,..."], "operator": [...], ... } }
+
+    where each key is a CocoStation role name and the value is a list of
+    LDAP group DNs that should map to that role.
+    """
+    mappings: dict = {}   # { roleName: [groupDN, ...] }
+
+
+def _mappings_to_settings(mappings: dict) -> dict:
+    """Convert the frontend { roleName: [groups] } dict to the flat
+    settings keys that the LDAP login flow reads from SETTINGS."""
+    # Built-in role keys (first group DN wins for single-value fields)
+    def _first(lst): return lst[0] if lst else ""
+
+    # Keep all groups for each built-in role joined so the login flow can
+    # iterate them. We store as a list of DNs under each key.
+    patch = {
+        "ldap_role_super_admin_group": _first(mappings.get("super_admin", [])),
+        "ldap_role_admin_group":       _first(mappings.get("admin",       [])),
+        "ldap_role_operator_group":    _first(mappings.get("operator",    [])),
+        "ldap_role_viewer_group":      _first(mappings.get("viewer",      [])),
+        # Custom roles → stored as [{group_dn, role_name}, ...] for the login flow
+        "ldap_role_custom_groups": [
+            {"group_dn": g, "role_name": role}
+            for role, groups in mappings.items()
+            if role not in ("super_admin", "admin", "operator", "viewer")
+            for g in groups
+        ],
+        # Keep full mapping blob for the UI to reload exactly
+        "ldap_role_mappings": mappings,
+    }
+    return patch
+
+
+def _settings_to_mappings(s: dict) -> dict:
+    """Reconstruct the { roleName: [groups] } dict from SETTINGS so the
+    UI gets back exactly what it saved."""
+    # If we stored the full blob, return it directly
+    blob = s.get("ldap_role_mappings")
+    if isinstance(blob, dict) and blob:
+        return blob
+
+    # Fallback: reconstruct from flat fields
+    mappings = {}
+    for role, key in [
+        ("super_admin", "ldap_role_super_admin_group"),
+        ("admin",       "ldap_role_admin_group"),
+        ("operator",    "ldap_role_operator_group"),
+        ("viewer",      "ldap_role_viewer_group"),
+    ]:
+        val = s.get(key, "")
+        if val:
+            mappings[role] = [val]
+    for item in s.get("ldap_role_custom_groups", []):
+        if isinstance(item, dict):
+            r = item.get("role_name", "")
+            g = item.get("group_dn",  "")
+            if r and g:
+                mappings.setdefault(r, []).append(g)
+    return mappings
+
+
+@auth_router.get("/api/settings/ldap/role-mappings")
+async def get_ldap_role_mappings(_user: dict = Depends(verify_token)):
+    """Return the currently saved LDAP group → role mappings."""
+    if not _is_elevated(_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    mappings = _settings_to_mappings(_SETTINGS_REF)
+    return {"mappings": mappings, "ldap_enabled": bool(_SETTINGS_REF.get("ldap_enabled", False))}
+
+
+@auth_router.post("/api/settings/ldap/role-mappings")
+async def save_ldap_role_mappings(
+    req: LdapRoleMappingsRequest,
+    request: Request,
+    _user: dict = Depends(verify_token),
+):
+    """Persist LDAP group → role mappings. Admin or super_admin only."""
+    if not _is_elevated(_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    patch = _mappings_to_settings(req.mappings)
+
+    # Update the live SETTINGS dict
+    _SETTINGS_REF.update(patch)
+
+    # Persist to DB
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, db.save_settings, patch)
+
+    try:
+        db.log_action(
+            _user.get("sub"), _user.get("username"),
+            "settings.ldap_role_mappings_save",
+            {"roles_configured": list(req.mappings.keys())},
+            _get_client_ip(request),
+        )
+    except Exception:
+        pass
+
+    return {"status": "ok", "mappings": req.mappings}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LDAP per-user role mappings  (GET / POST / DELETE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LdapUserMappingRequest(_PydanticBase):
+    """Payload for creating/updating a per-user LDAP override."""
+    ldap_username: str          # The LDAP sAMAccountName (or UPN prefix)
+    role:          str          # CocoStation role name
+    note:          str = ""     # Optional admin note
+
+
+@auth_router.get("/api/settings/ldap/user-mappings")
+async def list_ldap_user_mappings(_user: dict = Depends(verify_token)):
+    """Return all per-user LDAP username → role overrides."""
+    if not _is_elevated(_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    loop = asyncio.get_event_loop()
+    rows = await loop.run_in_executor(None, db.list_ldap_user_mappings)
+    return {"user_mappings": rows}
+
+
+@auth_router.post("/api/settings/ldap/user-mappings")
+async def save_ldap_user_mapping(
+    req: LdapUserMappingRequest,
+    request: Request,
+    _user: dict = Depends(verify_token),
+):
+    """Create or update a per-user LDAP username → role override."""
+    if not _is_elevated(_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not req.ldap_username.strip():
+        raise HTTPException(status_code=400, detail="ldap_username is required")
+    if not req.role.strip():
+        raise HTTPException(status_code=400, detail="role is required")
+    # Validate role exists
+    loop = asyncio.get_event_loop()
+    all_roles = await loop.run_in_executor(None, db.list_roles)
+    valid_names = {r["name"] for r in all_roles}
+    if req.role not in valid_names:
+        raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'. Valid: {sorted(valid_names)}")
+    await loop.run_in_executor(
+        None, db.save_ldap_user_mapping, req.ldap_username.strip(), req.role.strip(), req.note or ""
+    )
+    try:
+        db.log_action(
+            _user.get("sub"), _user.get("username"),
+            "settings.ldap_user_mapping_save",
+            {"ldap_username": req.ldap_username, "role": req.role},
+            _get_client_ip(request),
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "ldap_username": req.ldap_username, "role": req.role}
+
+
+@auth_router.delete("/api/settings/ldap/user-mappings/{ldap_username}")
+async def delete_ldap_user_mapping(
+    ldap_username: str,
+    request: Request,
+    _user: dict = Depends(verify_token),
+):
+    """Remove a per-user LDAP username → role override."""
+    if not _is_elevated(_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, db.delete_ldap_user_mapping, ldap_username)
+    try:
+        db.log_action(
+            _user.get("sub"), _user.get("username"),
+            "settings.ldap_user_mapping_delete",
+            {"ldap_username": ldap_username},
+            _get_client_ip(request),
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": ldap_username}
+
+
 @auth_router.get("/api/settings/ldap/info")
 async def ldap_info(_user: dict = Depends(verify_token)):
     """Query the configured LDAP server and return directory statistics:

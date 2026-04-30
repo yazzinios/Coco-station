@@ -139,6 +139,15 @@ CREATE TABLE IF NOT EXISTS roles (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ldap_user_mappings: per-user LDAP username → CocoStation role overrides
+CREATE TABLE IF NOT EXISTS ldap_user_mappings (
+    ldap_username  VARCHAR(255) PRIMARY KEY,
+    role           VARCHAR(50)  NOT NULL DEFAULT 'operator',
+    note           TEXT         DEFAULT '',
+    created_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS user_logs (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     TEXT NOT NULL,
@@ -349,6 +358,17 @@ DO $$ BEGIN
             ALTER TABLE user_permissions ADD COLUMN playlist_perms JSONB
                 DEFAULT '["playlist.view","playlist.load"]';
         END IF;
+    END IF;
+
+    -- ── ldap_user_mappings (create if missing on legacy deployments) ──────────
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ldap_user_mappings') THEN
+        CREATE TABLE ldap_user_mappings (
+            ldap_username  VARCHAR(255) PRIMARY KEY,
+            role           VARCHAR(50)  NOT NULL DEFAULT 'operator',
+            note           TEXT         DEFAULT '',
+            created_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
     END IF;
 
     -- ── user_logs (create if missing) ────────────────────────────────────────

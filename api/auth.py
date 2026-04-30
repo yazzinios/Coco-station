@@ -285,7 +285,19 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
             member_of = []
 
         # ── Resolve role from group mappings ──────────────────
-        role = _resolve_ldap_role(member_of, ldap_cfg)
+        # ── Resolve role: user-level override → group mapping → default ──
+        # Per-user mapping table takes priority over group-based resolution
+        try:
+            from db_client import db as _db
+            user_role_override = _db.get_ldap_user_mapping(username)
+            if user_role_override:
+                role = user_role_override
+                print("[ldap] User '" + username + "' has per-user role override: " + str(role))
+            else:
+                role = _resolve_ldap_role(member_of, ldap_cfg)
+        except Exception as _e:
+            print("[ldap] Could not check user mapping table: " + str(_e))
+            role = _resolve_ldap_role(member_of, ldap_cfg)
 
         try:
             display_name = str(entry[attr_name]) if attr_name in entry else username

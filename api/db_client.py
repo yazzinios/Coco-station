@@ -1418,4 +1418,109 @@ class DBClient:
                 self._put_conn(conn)
 
 
+    # ── LDAP User Mappings ─────────────────────────────────────────────────────
+
+    def list_ldap_user_mappings(self) -> list:
+        """Return all per-user LDAP username → role overrides."""
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("ldap_user_mappings").select("*").order("ldap_username").execute()
+                return res.data or []
+            except Exception as e:
+                print(f"[DB] list_ldap_user_mappings (cloud) failed: {e}")
+                return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT ldap_username, role, note, created_at, updated_at FROM ldap_user_mappings ORDER BY ldap_username")
+                    rows = cur.fetchall()
+                    result = []
+                    for row in rows:
+                        r = dict(row)
+                        for k in ("created_at", "updated_at"):
+                            if isinstance(r.get(k), datetime):
+                                r[k] = r[k].isoformat()
+                        result.append(r)
+                    return result
+            except Exception as e:
+                print(f"[DB] list_ldap_user_mappings (local) failed: {e}")
+                return []
+            finally:
+                self._put_conn(conn)
+
+    def get_ldap_user_mapping(self, ldap_username: str) -> Optional[str]:
+        """Return the role override for a specific LDAP username, or None."""
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("ldap_user_mappings").select("role").eq("ldap_username", ldap_username).execute()
+                return res.data[0]["role"] if res.data else None
+            except Exception as e:
+                print(f"[DB] get_ldap_user_mapping (cloud) failed: {e}")
+                return None
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT role FROM ldap_user_mappings WHERE ldap_username = %s", (ldap_username,))
+                    row = cur.fetchone()
+                    return row["role"] if row else None
+            except Exception as e:
+                print(f"[DB] get_ldap_user_mapping (local) failed: {e}")
+                return None
+            finally:
+                self._put_conn(conn)
+
+    def save_ldap_user_mapping(self, ldap_username: str, role: str, note: str = "") -> None:
+        """Upsert a per-user LDAP username → role override."""
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("ldap_user_mappings").upsert(
+                    {"ldap_username": ldap_username, "role": role, "note": note or ""},
+                    on_conflict="ldap_username",
+                ).execute()
+            except Exception as e:
+                print(f"[DB] save_ldap_user_mapping (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO ldap_user_mappings (ldap_username, role, note, updated_at)
+                        VALUES (%s, %s, %s, NOW())
+                        ON CONFLICT (ldap_username) DO UPDATE
+                            SET role = EXCLUDED.role,
+                                note = EXCLUDED.note,
+                                updated_at = NOW()
+                        """,
+                        (ldap_username, role, note or ""),
+                    )
+            except Exception as e:
+                print(f"[DB] save_ldap_user_mapping (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def delete_ldap_user_mapping(self, ldap_username: str) -> None:
+        """Remove a per-user LDAP username → role override."""
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("ldap_user_mappings").delete().eq("ldap_username", ldap_username).execute()
+            except Exception as e:
+                print(f"[DB] delete_ldap_user_mapping (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM ldap_user_mappings WHERE ldap_username = %s", (ldap_username,))
+            except Exception as e:
+                print(f"[DB] delete_ldap_user_mapping (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+
 db = DBClient()
