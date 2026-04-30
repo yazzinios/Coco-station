@@ -199,16 +199,17 @@ def _seed_roles(cur):
         ),
     ]
     for r in roles:
-        cur.execute("""
-            INSERT INTO roles
-                (name, display_name, description, color, is_system,
-                 default_allowed_decks, default_deck_control,
-                 default_deck_actions, default_playlist_perms,
-                 default_can_announce, default_can_schedule,
-                 default_can_library, default_can_requests, default_can_settings)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (name) DO NOTHING
-        """, r)
+        cur.execute("SELECT 1 FROM roles WHERE name = %s", (r[0],))
+        if not cur.fetchone():
+            cur.execute("""
+                INSERT INTO roles
+                    (name, display_name, description, color, is_system,
+                     default_allowed_decks, default_deck_control,
+                     default_deck_actions, default_playlist_perms,
+                     default_can_announce, default_can_schedule,
+                     default_can_library, default_can_requests, default_can_settings)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, r)
     print("[migrate] System roles seeded.")
 
 
