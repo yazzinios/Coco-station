@@ -179,10 +179,56 @@ def require_deck_access(level: str = "view"):
 
 # ── LDAP Authentication ───────────────────────────────────────
 
+def _resolve_ldap_role(member_of: list, ldap_cfg: dict) -> str:
+    """
+    Walk a priority-ordered list of group→role mappings and return the
+    highest-privilege role whose group DN appears in the user's memberOf list.
+
+    Priority order (highest first):
+      super_admin > admin > operator > viewer > custom (in list order)
+
+    Falls back to "operator" when no group matches.
+    """
+    member_of_lower = [g.lower() for g in member_of]
+
+    def _matched(dn: str) -> bool:
+        return bool(dn and dn.strip() and dn.strip().lower() in member_of_lower)
+
+    # ── Built-in roles (fixed priority) ──────────────────────
+    if _matched(ldap_cfg.get("role_super_admin_group", "")):
+        return "super_admin"
+    if _matched(ldap_cfg.get("role_admin_group", "")):
+        return "admin"
+    if _matched(ldap_cfg.get("role_operator_group", "")):
+        return "operator"
+    if _matched(ldap_cfg.get("role_viewer_group", "")):
+        return "viewer"
+
+    # ── Custom roles (evaluated in list order) ────────────────
+    # Each entry: {"group_dn": "CN=...", "role_name": "custom_dj"}
+    custom_groups = ldap_cfg.get("role_custom_groups") or []
+    for mapping in custom_groups:
+        if isinstance(mapping, dict) and _matched(mapping.get("group_dn", "")):
+            role_name = mapping.get("role_name", "").strip()
+            if role_name:
+                print(f"[ldap] Matched custom group → role '{role_name}'")
+                return role_name
+
+    # ── Default ───────────────────────────────────────────────
+    return "operator"
+
+
 def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Optional[dict]:
     """
     Try to authenticate username/password against an LDAP/AD server.
     Returns a user-info dict on success, None on failure.
+
+    Role resolution uses _resolve_ldap_role() which supports:
+      - ldap_cfg["role_super_admin_group"]  — DN for super_admin
+      - ldap_cfg["role_admin_group"]        — DN for admin
+      - ldap_cfg["role_operator_group"]     — DN for operator
+      - ldap_cfg["role_viewer_group"]       — DN for viewer
+      - ldap_cfg["role_custom_groups"]      — list of {group_dn, role_name}
     """
     try:
         from ldap3 import Server, Connection, ALL, Tls
@@ -199,7 +245,6 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
         user_filter= ldap_cfg.get("user_filter", "(sAMAccountName={username})").replace("{username}", username)
         attr_name  = ldap_cfg.get("attr_name",  "cn")
         attr_email = ldap_cfg.get("attr_email", "mail")
-        admin_group= ldap_cfg.get("role_admin_group", "")
         use_tls    = ldap_cfg.get("use_ssl", False)
         tls_verify = ldap_cfg.get("tls_verify", True)
 
@@ -232,15 +277,15 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
         user_conn = Connection(srv, user=user_dn, password=password, auto_bind=True)
         user_conn.unbind()
 
-        role = "operator"
-        if admin_group:
-            try:
-                raw_member_of = entry["memberOf"].values if hasattr(entry["memberOf"], "values") else []
-                member_of = [str(g) for g in raw_member_of]
-            except Exception:
-                member_of = []
-            if admin_group.lower() in [g.lower() for g in member_of]:
-                role = "admin"
+        # ── Collect memberOf list ─────────────────────────────
+        try:
+            raw_member_of = entry["memberOf"].values if hasattr(entry["memberOf"], "values") else []
+            member_of = [str(g) for g in raw_member_of]
+        except Exception:
+            member_of = []
+
+        # ── Resolve role from group mappings ──────────────────
+        role = _resolve_ldap_role(member_of, ldap_cfg)
 
         try:
             display_name = str(entry[attr_name]) if attr_name in entry else username
@@ -251,7 +296,7 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
         except Exception:
             email = ""
 
-        print(f"[ldap] Authenticated '{username}' from LDAP (role={role})")
+        print(f"[ldap] Authenticated '{username}' from LDAP (role={role}, groups={len(member_of)})")
         return {
             "id":           f"ldap-{username}",
             "username":     username,

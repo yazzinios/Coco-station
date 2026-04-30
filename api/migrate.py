@@ -250,10 +250,22 @@ def run_migrations_local(db_url: str):
 
     # (Moved seeding to after schema repair to avoid missing column errors)
 
+    # Seed new LDAP role-group mapping settings (idempotent, no PL/pgSQL needed)
+    _LDAP_SETTING_DEFAULTS = [
+        ("ldap_role_super_admin_group", '""'),
+        ("ldap_role_operator_group",    '""'),
+        ("ldap_role_viewer_group",      '""'),
+        ("ldap_role_custom_groups",     '[]'),
+    ]
+    for key, val in _LDAP_SETTING_DEFAULTS:
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES (%s, %s::jsonb) ON CONFLICT (key) DO NOTHING",
+            (key, val),
+        )
+    print("[migrate] LDAP role-group setting keys ensured.")
+
     # Schema Repair -- safe ALTER TABLE patches for existing deployments
     REPAIR_SQL = """
-    DO $$
-    BEGIN
         -- Fix recurring_mixer_schedules
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN
             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'stop_time') THEN

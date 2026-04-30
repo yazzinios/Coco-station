@@ -107,18 +107,30 @@ class LoginRequest(_PydanticBase):
     password: str
     login_method: str = "auto"   # "auto" | "local" | "ldap"
 
+class LdapGroupMapping(_PydanticBase):
+    """One custom LDAP group → CocoStation role mapping."""
+    group_dn:  str  # Full DN, e.g. CN=RadioDJs,OU=Groups,DC=company,DC=com
+    role_name: str  # Must match an existing role name, e.g. "custom_dj"
+
+
 class LdapConfigRequest(_PydanticBase):
-    server:           str
-    port:             int  = 389
-    base_dn:          str  = ""
-    bind_dn:          str  = ""
-    bind_pw:          str  = ""
-    user_filter:      str  = "(sAMAccountName={username})"
-    attr_name:        str  = "cn"
-    attr_email:       str  = "mail"
-    role_admin_group: str  = ""
-    use_ssl:          bool = False
-    tls_verify:       bool = True
+    server:                str
+    port:                  int   = 389
+    base_dn:               str   = ""
+    bind_dn:               str   = ""
+    bind_pw:               str   = ""
+    user_filter:           str   = "(sAMAccountName={username})"
+    attr_name:             str   = "cn"
+    attr_email:            str   = "mail"
+    # ── Role group mappings (built-in) ────────────────────────
+    role_super_admin_group: str  = ""   # DN whose members become super_admin
+    role_admin_group:       str  = ""   # DN whose members become admin
+    role_operator_group:    str  = ""   # DN whose members become operator
+    role_viewer_group:      str  = ""   # DN whose members become viewer
+    # ── Custom role mappings (evaluated after built-ins) ──────
+    role_custom_groups:    list  = []   # List of LdapGroupMapping dicts
+    use_ssl:               bool  = False
+    tls_verify:            bool  = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  POST /api/auth/login
@@ -142,17 +154,23 @@ async def login(req: LoginRequest, request: Request):
     # ── 1. LDAP attempt (skip if method=local) ─────────────────
     if method != "local" and settings.get("ldap_enabled") and settings.get("ldap_server", "").strip():
         ldap_cfg = {
-            "server":           settings.get("ldap_server", ""),
-            "port":             settings.get("ldap_port", 389),
-            "base_dn":          settings.get("ldap_base_dn", ""),
-            "bind_dn":          settings.get("ldap_bind_dn", ""),
-            "bind_pw":          settings.get("ldap_bind_pw", ""),
-            "user_filter":      settings.get("ldap_user_filter", "(sAMAccountName={username})"),
-            "attr_name":        settings.get("ldap_attr_name", "cn"),
-            "attr_email":       settings.get("ldap_attr_email", "mail"),
-            "role_admin_group": settings.get("ldap_role_admin_group", ""),
-            "use_ssl":          settings.get("ldap_use_ssl", False),
-            "tls_verify":       settings.get("ldap_tls_verify", True),
+            "server":                 settings.get("ldap_server", ""),
+            "port":                   settings.get("ldap_port", 389),
+            "base_dn":                settings.get("ldap_base_dn", ""),
+            "bind_dn":                settings.get("ldap_bind_dn", ""),
+            "bind_pw":                settings.get("ldap_bind_pw", ""),
+            "user_filter":            settings.get("ldap_user_filter", "(sAMAccountName={username})"),
+            "attr_name":              settings.get("ldap_attr_name", "cn"),
+            "attr_email":             settings.get("ldap_attr_email", "mail"),
+            # built-in role group DNs (priority order in auth.py)
+            "role_super_admin_group": settings.get("ldap_role_super_admin_group", ""),
+            "role_admin_group":       settings.get("ldap_role_admin_group", ""),
+            "role_operator_group":    settings.get("ldap_role_operator_group", ""),
+            "role_viewer_group":      settings.get("ldap_role_viewer_group", ""),
+            # custom group→role list
+            "role_custom_groups":     settings.get("ldap_role_custom_groups", []),
+            "use_ssl":                settings.get("ldap_use_ssl", False),
+            "tls_verify":             settings.get("ldap_tls_verify", True),
         }
         loop      = asyncio.get_event_loop()
         ldap_user = await loop.run_in_executor(
@@ -327,18 +345,24 @@ async def ldap_save(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     patch = {
-        "ldap_enabled":          enabled,
-        "ldap_server":           req.server,
-        "ldap_port":             req.port,
-        "ldap_base_dn":          req.base_dn,
-        "ldap_bind_dn":          req.bind_dn,
-        "ldap_bind_pw":          req.bind_pw,
-        "ldap_user_filter":      req.user_filter,
-        "ldap_attr_name":        req.attr_name,
-        "ldap_attr_email":       req.attr_email,
-        "ldap_role_admin_group": req.role_admin_group,
-        "ldap_use_ssl":          req.use_ssl,
-        "ldap_tls_verify":       req.tls_verify,
+        "ldap_enabled":                enabled,
+        "ldap_server":                 req.server,
+        "ldap_port":                   req.port,
+        "ldap_base_dn":                req.base_dn,
+        "ldap_bind_dn":                req.bind_dn,
+        "ldap_bind_pw":                req.bind_pw,
+        "ldap_user_filter":            req.user_filter,
+        "ldap_attr_name":              req.attr_name,
+        "ldap_attr_email":             req.attr_email,
+        # built-in role group mappings
+        "ldap_role_super_admin_group": req.role_super_admin_group,
+        "ldap_role_admin_group":       req.role_admin_group,
+        "ldap_role_operator_group":    req.role_operator_group,
+        "ldap_role_viewer_group":      req.role_viewer_group,
+        # custom role group mappings
+        "ldap_role_custom_groups":     req.role_custom_groups,
+        "ldap_use_ssl":                req.use_ssl,
+        "ldap_tls_verify":             req.tls_verify,
     }
 
     # Update shared SETTINGS dict in main.py

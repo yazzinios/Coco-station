@@ -104,7 +104,11 @@ SETTINGS: dict = {
     "ldap_user_filter":    "(sAMAccountName={username})",
     "ldap_attr_name":      "cn",
     "ldap_attr_email":     "mail",
-    "ldap_role_admin_group": "",
+    "ldap_role_admin_group":        "",
+    "ldap_role_super_admin_group":   "",
+    "ldap_role_operator_group":      "",
+    "ldap_role_viewer_group":        "",
+    "ldap_role_custom_groups":       [],
     "ldap_use_ssl":        False,
     "ldap_tls_verify":     True,
 }
