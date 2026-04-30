@@ -248,8 +248,6 @@ def run_migrations_local(db_url: str):
     cur.execute(BASE_SCHEMA_SQL)
     print("[migrate] Base schema applied.")
 
-    # (Moved seeding to after schema repair to avoid missing column errors)
-
     # Seed new LDAP role-group mapping settings (idempotent, no PL/pgSQL needed)
     _LDAP_SETTING_DEFAULTS = [
         ("ldap_role_super_admin_group", '""'),
@@ -264,168 +262,178 @@ def run_migrations_local(db_url: str):
         )
     print("[migrate] LDAP role-group setting keys ensured.")
 
-    # Schema Repair -- safe ALTER TABLE patches for existing deployments
+    # Schema Repair — safe ALTER TABLE patches for existing deployments.
+    # Must be wrapped in DO $$ BEGIN ... END $$; because IF/END IF are PL/pgSQL,
+    # not plain SQL, and cannot be executed as a bare statement via psycopg2.
     REPAIR_SQL = """
-        -- Fix recurring_mixer_schedules
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'stop_time') THEN
-                ALTER TABLE recurring_mixer_schedules DROP COLUMN stop_time;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_ids') THEN
-                ALTER TABLE recurring_mixer_schedules ADD COLUMN deck_ids JSONB DEFAULT '[]';
-                IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_id') THEN
-                    UPDATE recurring_mixer_schedules SET deck_ids = jsonb_build_array(deck_id);
-                END IF;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'multi_tracks') THEN
-                ALTER TABLE recurring_mixer_schedules ADD COLUMN multi_tracks JSONB DEFAULT '[]';
-            END IF;
-        END IF;
+DO $$ BEGIN
 
-        -- Fix recurring_schedules
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_schedules') THEN
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'stop_time') THEN
-                ALTER TABLE recurring_schedules DROP COLUMN stop_time;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'excluded_days') THEN
-                ALTER TABLE recurring_schedules ADD COLUMN excluded_days TEXT NOT NULL DEFAULT '[]';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_start') THEN
-                ALTER TABLE recurring_schedules ADD COLUMN jingle_start TEXT;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_end') THEN
-                ALTER TABLE recurring_schedules ADD COLUMN jingle_end TEXT;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'target_decks') THEN
-                ALTER TABLE recurring_schedules ADD COLUMN target_decks TEXT NOT NULL DEFAULT '[]';
+    -- ── recurring_mixer_schedules ────────────────────────────────────────────
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'stop_time') THEN
+            ALTER TABLE recurring_mixer_schedules DROP COLUMN stop_time;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_ids') THEN
+            ALTER TABLE recurring_mixer_schedules ADD COLUMN deck_ids JSONB DEFAULT '[]';
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_id') THEN
+                UPDATE recurring_mixer_schedules SET deck_ids = jsonb_build_array(deck_id);
             END IF;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'multi_tracks') THEN
+            ALTER TABLE recurring_mixer_schedules ADD COLUMN multi_tracks JSONB DEFAULT '[]';
+        END IF;
+    END IF;
 
-        -- Ensure users table has all required columns
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users') THEN
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'display_name') THEN
-                ALTER TABLE users ADD COLUMN display_name VARCHAR(255);
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_super_admin') THEN
-                ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN NOT NULL DEFAULT FALSE;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'enabled') THEN
-                ALTER TABLE users ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT TRUE;
-            END IF;
-            -- Widen role column from VARCHAR(20) to VARCHAR(50) for custom roles
-            ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50);
+    -- ── recurring_schedules ──────────────────────────────────────────────────
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_schedules') THEN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'stop_time') THEN
+            ALTER TABLE recurring_schedules DROP COLUMN stop_time;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'excluded_days') THEN
+            ALTER TABLE recurring_schedules ADD COLUMN excluded_days TEXT NOT NULL DEFAULT '[]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_start') THEN
+            ALTER TABLE recurring_schedules ADD COLUMN jingle_start TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'jingle_end') THEN
+            ALTER TABLE recurring_schedules ADD COLUMN jingle_end TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'target_decks') THEN
+            ALTER TABLE recurring_schedules ADD COLUMN target_decks TEXT NOT NULL DEFAULT '[]';
+        END IF;
+    END IF;
 
-        -- Create user_permissions if missing (legacy deployments)
-        IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
-            CREATE TABLE user_permissions (
-                user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-                allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
-                deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
-                deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.load_track","deck.load_playlist"]',
-                playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
-                can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
-                can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
-                can_library    BOOLEAN NOT NULL DEFAULT TRUE,
-                can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
-                can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
-                updated_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
+    -- ── users table ──────────────────────────────────────────────────────────
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users') THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'display_name') THEN
+            ALTER TABLE users ADD COLUMN display_name VARCHAR(255);
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_super_admin') THEN
+            ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN NOT NULL DEFAULT FALSE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'enabled') THEN
+            ALTER TABLE users ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT TRUE;
+        END IF;
+        -- Widen role column from VARCHAR(20) to VARCHAR(50) for custom roles
+        ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50);
+    END IF;
 
-        -- Add granular permission columns to existing user_permissions tables
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
-            ALTER TABLE user_permissions
-                ADD COLUMN IF NOT EXISTS deck_control JSONB
-                    DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
-                ADD COLUMN IF NOT EXISTS deck_actions JSONB
-                    DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
-                ADD COLUMN IF NOT EXISTS playlist_perms JSONB
-                    DEFAULT '["playlist.view","playlist.load"]';
-        END IF;
+    -- ── user_permissions (create if missing on legacy deployments) ────────────
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
+        CREATE TABLE user_permissions (
+            user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+            deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+            deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.load_track","deck.load_playlist"]',
+            playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
+            can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
+            can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
+            can_library    BOOLEAN NOT NULL DEFAULT TRUE,
+            can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
+            can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at     TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    END IF;
 
-        -- Create user_logs if missing
-        IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_logs') THEN
-            CREATE TABLE user_logs (
-                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                user_id     TEXT NOT NULL,
-                username    VARCHAR(100) NOT NULL,
-                action      VARCHAR(100) NOT NULL,
-                details     JSONB,
-                ip_address  VARCHAR(50),
-                created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX idx_user_logs_created ON user_logs (created_at DESC);
-            CREATE INDEX idx_user_logs_user    ON user_logs (user_id);
+    -- ── user_permissions (add granular columns if missing) ────────────────────
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_permissions') THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'user_permissions' AND column_name = 'deck_control') THEN
+            ALTER TABLE user_permissions ADD COLUMN deck_control JSONB
+                DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}';
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'user_permissions' AND column_name = 'deck_actions') THEN
+            ALTER TABLE user_permissions ADD COLUMN deck_actions JSONB
+                DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'user_permissions' AND column_name = 'playlist_perms') THEN
+            ALTER TABLE user_permissions ADD COLUMN playlist_perms JSONB
+                DEFAULT '["playlist.view","playlist.load"]';
+        END IF;
+    END IF;
 
-        -- Create roles table if missing (legacy deployments)
-        IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'roles') THEN
-            CREATE TABLE roles (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name VARCHAR(50) UNIQUE NOT NULL,
-                display_name VARCHAR(100) NOT NULL,
-                description TEXT DEFAULT '',
-                color VARCHAR(20) DEFAULT '#6B7280',
-                is_system BOOLEAN NOT NULL DEFAULT FALSE,
-                default_allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
-                default_deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
-                default_deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
-                default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
-                default_can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
-                default_can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
-                default_can_library    BOOLEAN NOT NULL DEFAULT TRUE,
-                default_can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
-                default_can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        END IF;
+    -- ── user_logs (create if missing) ────────────────────────────────────────
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_logs') THEN
+        CREATE TABLE user_logs (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id     TEXT NOT NULL,
+            username    VARCHAR(100) NOT NULL,
+            action      VARCHAR(100) NOT NULL,
+            details     JSONB,
+            ip_address  VARCHAR(50),
+            created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_user_logs_created ON user_logs (created_at DESC);
+        CREATE INDEX idx_user_logs_user    ON user_logs (user_id);
+    END IF;
 
-        -- Add missing columns to roles if rolling back from newer schema
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'roles') THEN
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'display_name') THEN
-                ALTER TABLE roles ADD COLUMN display_name VARCHAR(100) NOT NULL DEFAULT 'Role';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'description') THEN
-                ALTER TABLE roles ADD COLUMN description TEXT DEFAULT '';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'color') THEN
-                ALTER TABLE roles ADD COLUMN color VARCHAR(20) DEFAULT '#6B7280';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'is_system') THEN
-                ALTER TABLE roles ADD COLUMN is_system BOOLEAN NOT NULL DEFAULT FALSE;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_allowed_decks') THEN
-                ALTER TABLE roles ADD COLUMN default_allowed_decks JSONB NOT NULL DEFAULT '["a","b","c","d"]';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_deck_control') THEN
-                ALTER TABLE roles ADD COLUMN default_deck_control JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_deck_actions') THEN
-                ALTER TABLE roles ADD COLUMN default_deck_actions JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_playlist_perms') THEN
-                ALTER TABLE roles ADD COLUMN default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]';
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_announce') THEN
-                ALTER TABLE roles ADD COLUMN default_can_announce BOOLEAN NOT NULL DEFAULT TRUE;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_schedule') THEN
-                ALTER TABLE roles ADD COLUMN default_can_schedule BOOLEAN NOT NULL DEFAULT TRUE;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_library') THEN
-                ALTER TABLE roles ADD COLUMN default_can_library BOOLEAN NOT NULL DEFAULT TRUE;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_requests') THEN
-                ALTER TABLE roles ADD COLUMN default_can_requests BOOLEAN NOT NULL DEFAULT TRUE;
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_settings') THEN
-                ALTER TABLE roles ADD COLUMN default_can_settings BOOLEAN NOT NULL DEFAULT FALSE;
-            END IF;
+    -- ── roles table (create if missing on legacy deployments) ─────────────────
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'roles') THEN
+        CREATE TABLE roles (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(50) UNIQUE NOT NULL,
+            display_name VARCHAR(100) NOT NULL,
+            description TEXT DEFAULT '',
+            color VARCHAR(20) DEFAULT '#6B7280',
+            is_system BOOLEAN NOT NULL DEFAULT FALSE,
+            default_allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
+            default_deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+            default_deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
+            default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
+            default_can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
+            default_can_schedule   BOOLEAN NOT NULL DEFAULT TRUE,
+            default_can_library    BOOLEAN NOT NULL DEFAULT TRUE,
+            default_can_requests   BOOLEAN NOT NULL DEFAULT TRUE,
+            default_can_settings   BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    END IF;
+
+    -- ── roles columns (add if missing on rolling upgrades) ────────────────────
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'roles') THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'display_name') THEN
+            ALTER TABLE roles ADD COLUMN display_name VARCHAR(100) NOT NULL DEFAULT 'Role';
         END IF;
-    END $$;
-    """
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'description') THEN
+            ALTER TABLE roles ADD COLUMN description TEXT DEFAULT '';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'color') THEN
+            ALTER TABLE roles ADD COLUMN color VARCHAR(20) DEFAULT '#6B7280';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'is_system') THEN
+            ALTER TABLE roles ADD COLUMN is_system BOOLEAN NOT NULL DEFAULT FALSE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_allowed_decks') THEN
+            ALTER TABLE roles ADD COLUMN default_allowed_decks JSONB NOT NULL DEFAULT '["a","b","c","d"]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_deck_control') THEN
+            ALTER TABLE roles ADD COLUMN default_deck_control JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_deck_actions') THEN
+            ALTER TABLE roles ADD COLUMN default_deck_actions JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_playlist_perms') THEN
+            ALTER TABLE roles ADD COLUMN default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_announce') THEN
+            ALTER TABLE roles ADD COLUMN default_can_announce BOOLEAN NOT NULL DEFAULT TRUE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_schedule') THEN
+            ALTER TABLE roles ADD COLUMN default_can_schedule BOOLEAN NOT NULL DEFAULT TRUE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_library') THEN
+            ALTER TABLE roles ADD COLUMN default_can_library BOOLEAN NOT NULL DEFAULT TRUE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_requests') THEN
+            ALTER TABLE roles ADD COLUMN default_can_requests BOOLEAN NOT NULL DEFAULT TRUE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_settings') THEN
+            ALTER TABLE roles ADD COLUMN default_can_settings BOOLEAN NOT NULL DEFAULT FALSE;
+        END IF;
+    END IF;
+
+END $$;
+"""
     print("[migrate] Patching schema inconsistencies...")
     cur.execute(REPAIR_SQL)
 
