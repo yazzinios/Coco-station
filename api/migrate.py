@@ -383,6 +383,33 @@ def run_migrations_local(db_url: str):
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'is_system') THEN
                 ALTER TABLE roles ADD COLUMN is_system BOOLEAN NOT NULL DEFAULT FALSE;
             END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_allowed_decks') THEN
+                ALTER TABLE roles ADD COLUMN default_allowed_decks JSONB NOT NULL DEFAULT '["a","b","c","d"]';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_deck_control') THEN
+                ALTER TABLE roles ADD COLUMN default_deck_control JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_deck_actions') THEN
+                ALTER TABLE roles ADD COLUMN default_deck_actions JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_playlist_perms') THEN
+                ALTER TABLE roles ADD COLUMN default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_announce') THEN
+                ALTER TABLE roles ADD COLUMN default_can_announce BOOLEAN NOT NULL DEFAULT TRUE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_schedule') THEN
+                ALTER TABLE roles ADD COLUMN default_can_schedule BOOLEAN NOT NULL DEFAULT TRUE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_library') THEN
+                ALTER TABLE roles ADD COLUMN default_can_library BOOLEAN NOT NULL DEFAULT TRUE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_requests') THEN
+                ALTER TABLE roles ADD COLUMN default_can_requests BOOLEAN NOT NULL DEFAULT TRUE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'default_can_settings') THEN
+                ALTER TABLE roles ADD COLUMN default_can_settings BOOLEAN NOT NULL DEFAULT FALSE;
+            END IF;
         END IF;
     END $$;
     """
