@@ -44,7 +44,9 @@ services:
       - ./data/announcements:/app/data/announcements
       - ./data/chimes:/app/data/chimes
       - ./data/branding:/app/data/branding
-      - ./api:/app  # For hot-reloading in dev
+      # NOTE: ./api:/app removed — it shadowed the built image and broke rebuilds.
+      # For hot-reload dev, uncomment the line below AND run with the local compose:
+      # - ./api:/app
       - ./supabase/migrations:/app/supabase/migrations:ro
     environment:
       - TZ=Africa/Casablanca

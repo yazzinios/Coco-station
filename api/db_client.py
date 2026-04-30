@@ -943,6 +943,7 @@ class DBClient:
 
     def get_permissions(self, user_id: str) -> dict:
         """Return full granular permissions for a user. Returns safe defaults if none set."""
+        import re
         conn = None
         default = {
             "allowed_decks":   ["a", "b", "c", "d"],
@@ -955,6 +956,16 @@ class DBClient:
             "can_requests":    False,
             "can_settings":    False,
         }
+        # LDAP user IDs look like "ldap-username" — not valid UUIDs.
+        # Passing them to Postgres's UUID column raises: invalid input syntax for type uuid.
+        # Bail out early and return safe defaults instead of crashing.
+        _uuid_re = re.compile(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            re.IGNORECASE,
+        )
+        if not _uuid_re.match(str(user_id or "")):
+            print(f"[DB] get_permissions: non-UUID user_id '{user_id}' — skipping DB, returning defaults")
+            return default
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
