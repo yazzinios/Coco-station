@@ -21,6 +21,7 @@ HOW TO USE:
 
 import os
 import asyncio
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -55,7 +56,6 @@ def get_auth_methods():
     # Extract a friendly domain name from the LDAP server URL
     domain = ""
     if ldap_enabled and ldap_server:
-        import re
         m = re.search(r'(?:ldaps?://)?([^/:]+)', ldap_server)
         if m:
             domain = m.group(1)
@@ -79,7 +79,64 @@ def _get_client_ip(request: Request) -> str:
         or (request.client.host if request.client else "unknown")
     ).split(",")[0].strip()
 
-async def _fetch_permissions(user_id: str) -> dict:
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+async def _fetch_permissions(user_id: str, role: str = None) -> dict:
+    """
+    Fetch permissions for a user.
+
+    For LDAP users (non-UUID ids like 'ldap-username'), the DB lookup is
+    skipped because those IDs cannot match the UUID-typed user_permissions
+    primary key.  In that case we resolve permissions from the role's
+    defaults stored in the roles table so that admin / super_admin LDAP
+    users receive full permissions instead of the restricted viewer-level
+    defaults that were previously returned.
+
+    For regular local users (UUID ids) we read their stored row from
+    user_permissions as before.
+    """
+    is_ldap_user = not _UUID_RE.match(str(user_id or ""))
+
+    if is_ldap_user and role:
+        # ── LDAP path: look up permissions from the role definition ──────────
+        try:
+            loop = asyncio.get_event_loop()
+            role_obj = await loop.run_in_executor(None, db.get_role_by_name, role)
+            if role_obj:
+                from rbac import _role_to_perms
+                perms = _role_to_perms(role_obj)
+                print(f"[auth] LDAP user '{user_id}' — resolved permissions from role '{role}'")
+                return perms
+            else:
+                print(f"[auth] LDAP user '{user_id}' — role '{role}' not found in DB, using SYSTEM_ROLES fallback")
+        except Exception as e:
+            print(f"[auth] _fetch_permissions LDAP role lookup failed: {e}")
+
+        # Fallback: role not found in DB yet — use hardcoded SYSTEM_ROLES definition
+        try:
+            from rbac import DECK_IDS, ALL_DECK_ACTIONS, ALL_PLAYLIST_PERMS, _full_deck_control, SYSTEM_ROLES
+            sys_role = next((r for r in SYSTEM_ROLES if r["name"] == role), None)
+            if sys_role:
+                return {
+                    "allowed_decks":  sys_role.get("default_allowed_decks",  DECK_IDS),
+                    "deck_control":   sys_role.get("default_deck_control",   _full_deck_control(True, True)),
+                    "deck_actions":   sys_role.get("default_deck_actions",   ALL_DECK_ACTIONS),
+                    "playlist_perms": sys_role.get("default_playlist_perms", []),
+                    "can_announce":   sys_role.get("default_can_announce",   False),
+                    "can_schedule":   sys_role.get("default_can_schedule",   False),
+                    "can_library":    sys_role.get("default_can_library",    False),
+                    "can_requests":   sys_role.get("default_can_requests",   False),
+                    "can_settings":   sys_role.get("default_can_settings",   False),
+                }
+        except Exception as e:
+            print(f"[auth] _fetch_permissions SYSTEM_ROLES fallback failed: {e}")
+
+        return {}
+
+    # ── Local DB path ────────────────────────────────────────────────────────
     try:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, db.get_permissions, user_id)
@@ -108,7 +165,7 @@ class LoginRequest(_PydanticBase):
     login_method: str = "auto"   # "auto" | "local" | "ldap"
 
 class LdapGroupMapping(_PydanticBase):
-    """One custom LDAP group → CocoStation role mapping."""
+    """One custom LDAP group -> CocoStation role mapping."""
     group_dn:  str  # Full DN, e.g. CN=RadioDJs,OU=Groups,DC=company,DC=com
     role_name: str  # Must match an existing role name, e.g. "custom_dj"
 
@@ -122,12 +179,12 @@ class LdapConfigRequest(_PydanticBase):
     user_filter:           str   = "(sAMAccountName={username})"
     attr_name:             str   = "cn"
     attr_email:            str   = "mail"
-    # ── Role group mappings (built-in) ────────────────────────
+    # Role group mappings (built-in)
     role_super_admin_group: str  = ""   # DN whose members become super_admin
     role_admin_group:       str  = ""   # DN whose members become admin
     role_operator_group:    str  = ""   # DN whose members become operator
     role_viewer_group:      str  = ""   # DN whose members become viewer
-    # ── Custom role mappings (evaluated after built-ins) ──────
+    # Custom role mappings (evaluated after built-ins)
     role_custom_groups:    list  = []   # List of LdapGroupMapping dicts
     use_ssl:               bool  = False
     tls_verify:            bool  = True
@@ -142,7 +199,7 @@ async def login(req: LoginRequest, request: Request):
     Public endpoint — authenticate and return JWT + user + permissions.
 
     Flow:
-      1. If LDAP enabled → try LDAP first.
+      1. If LDAP enabled -> try LDAP first.
       2. Fallback to local DB (allows cocoadmin to always log in).
       3. On success: stamp last_login, return token + permissions.
     """
@@ -151,7 +208,7 @@ async def login(req: LoginRequest, request: Request):
     ip         = _get_client_ip(request)
     method     = req.login_method  # "auto" | "local" | "ldap"
 
-    # ── 1. LDAP attempt (skip if method=local) ─────────────────
+    # 1. LDAP attempt (skip if method=local)
     if method != "local" and settings.get("ldap_enabled") and settings.get("ldap_server", "").strip():
         ldap_cfg = {
             "server":                 settings.get("ldap_server", ""),
@@ -167,7 +224,7 @@ async def login(req: LoginRequest, request: Request):
             "role_admin_group":       settings.get("ldap_role_admin_group", ""),
             "role_operator_group":    settings.get("ldap_role_operator_group", ""),
             "role_viewer_group":      settings.get("ldap_role_viewer_group", ""),
-            # custom group→role list
+            # custom group->role list
             "role_custom_groups":     settings.get("ldap_role_custom_groups", []),
             "use_ssl":                settings.get("ldap_use_ssl", False),
             "tls_verify":             settings.get("ldap_tls_verify", True),
@@ -187,16 +244,16 @@ async def login(req: LoginRequest, request: Request):
                     await loop.run_in_executor(None, update_last_login, db, local["id"])
             except Exception:
                 pass
-            perms = await _fetch_permissions(ldap_user["id"])
+            # KEY FIX: pass the resolved role so LDAP users get role-appropriate permissions
+            perms = await _fetch_permissions(ldap_user["id"], role=ldap_user.get("role"))
             return _login_response(token, ldap_user, perms, expiry_hrs, source="ldap")
 
         print(f"[auth] LDAP auth failed for '{req.username}' — falling back to local DB")
 
-    # ── 2. Local DB login (skip if method=ldap) ─────────────────
+    # 2. Local DB login (skip if method=ldap)
     if method == "ldap":
         raise HTTPException(status_code=401, detail="LDAP authentication failed. Check your domain credentials.")
 
-    # ── 2. Local DB login ───────────────────────────────────────
     loop     = asyncio.get_event_loop()
     user_row = await loop.run_in_executor(None, get_user_by_username, db, req.username)
 
@@ -214,8 +271,7 @@ async def login(req: LoginRequest, request: Request):
             pass
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    # ── 3. Success ──────────────────────────────────────────────
-    # Stamp last_login (fire-and-forget)
+    # 3. Success
     await loop.run_in_executor(None, update_last_login, db, user_row["id"])
 
     token = create_token(user_row, expiry_hours=expiry_hrs)
@@ -298,7 +354,8 @@ async def refresh_token(user: dict = Depends(verify_token)):
 async def get_me(user: dict = Depends(verify_token)):
     """Return the currently authenticated user's info + fresh permissions."""
     user_id = user.get("sub")
-    perms   = await _fetch_permissions(user_id)
+    # For LDAP users the sub is "ldap-username"; pass the role from the token
+    perms   = await _fetch_permissions(user_id, role=user.get("role"))
     return {
         "id":             user_id,
         "username":       user.get("username"),
@@ -403,17 +460,14 @@ class LdapRoleMappingsRequest(_PydanticBase):
 def _mappings_to_settings(mappings: dict) -> dict:
     """Convert the frontend { roleName: [groups] } dict to the flat
     settings keys that the LDAP login flow reads from SETTINGS."""
-    # Built-in role keys (first group DN wins for single-value fields)
     def _first(lst): return lst[0] if lst else ""
 
-    # Keep all groups for each built-in role joined so the login flow can
-    # iterate them. We store as a list of DNs under each key.
     patch = {
         "ldap_role_super_admin_group": _first(mappings.get("super_admin", [])),
         "ldap_role_admin_group":       _first(mappings.get("admin",       [])),
         "ldap_role_operator_group":    _first(mappings.get("operator",    [])),
         "ldap_role_viewer_group":      _first(mappings.get("viewer",      [])),
-        # Custom roles → stored as [{group_dn, role_name}, ...] for the login flow
+        # Custom roles
         "ldap_role_custom_groups": [
             {"group_dn": g, "role_name": role}
             for role, groups in mappings.items()
@@ -427,9 +481,7 @@ def _mappings_to_settings(mappings: dict) -> dict:
 
 
 def _settings_to_mappings(s: dict) -> dict:
-    """Reconstruct the { roleName: [groups] } dict from SETTINGS so the
-    UI gets back exactly what it saved."""
-    # If we stored the full blob, return it directly
+    """Reconstruct the { roleName: [groups] } dict from SETTINGS."""
     blob = s.get("ldap_role_mappings")
     if isinstance(blob, dict) and blob:
         return blob
@@ -456,7 +508,7 @@ def _settings_to_mappings(s: dict) -> dict:
 
 @auth_router.get("/api/settings/ldap/role-mappings")
 async def get_ldap_role_mappings(_user: dict = Depends(verify_token)):
-    """Return the currently saved LDAP group → role mappings."""
+    """Return the currently saved LDAP group -> role mappings."""
     if not _is_elevated(_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     mappings = _settings_to_mappings(_SETTINGS_REF)
@@ -469,16 +521,14 @@ async def save_ldap_role_mappings(
     request: Request,
     _user: dict = Depends(verify_token),
 ):
-    """Persist LDAP group → role mappings. Admin or super_admin only."""
+    """Persist LDAP group -> role mappings. Admin or super_admin only."""
     if not _is_elevated(_user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     patch = _mappings_to_settings(req.mappings)
 
-    # Update the live SETTINGS dict
     _SETTINGS_REF.update(patch)
 
-    # Persist to DB
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, db.save_settings, patch)
 
@@ -508,7 +558,7 @@ class LdapUserMappingRequest(_PydanticBase):
 
 @auth_router.get("/api/settings/ldap/user-mappings")
 async def list_ldap_user_mappings(_user: dict = Depends(verify_token)):
-    """Return all per-user LDAP username → role overrides."""
+    """Return all per-user LDAP username -> role overrides."""
     if not _is_elevated(_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     loop = asyncio.get_event_loop()
@@ -522,14 +572,13 @@ async def save_ldap_user_mapping(
     request: Request,
     _user: dict = Depends(verify_token),
 ):
-    """Create or update a per-user LDAP username → role override."""
+    """Create or update a per-user LDAP username -> role override."""
     if not _is_elevated(_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     if not req.ldap_username.strip():
         raise HTTPException(status_code=400, detail="ldap_username is required")
     if not req.role.strip():
         raise HTTPException(status_code=400, detail="role is required")
-    # Validate role exists
     loop = asyncio.get_event_loop()
     all_roles = await loop.run_in_executor(None, db.list_roles)
     valid_names = {r["name"] for r in all_roles}
@@ -556,7 +605,7 @@ async def delete_ldap_user_mapping(
     request: Request,
     _user: dict = Depends(verify_token),
 ):
-    """Remove a per-user LDAP username → role override."""
+    """Remove a per-user LDAP username -> role override."""
     if not _is_elevated(_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     loop = asyncio.get_event_loop()
@@ -575,11 +624,8 @@ async def delete_ldap_user_mapping(
 
 @auth_router.get("/api/settings/ldap/info")
 async def ldap_info(_user: dict = Depends(verify_token)):
-    """Query the configured LDAP server and return directory statistics:
-    user count, group count, and list of group names.
-    Uses the currently saved LDAP settings — no body required.
-    """
-    s = _SETTINGS_REF  # the global SETTINGS dict injected via set_auth_settings_ref
+    """Query the configured LDAP server and return directory statistics."""
+    s = _SETTINGS_REF
     if not s.get("ldap_enabled") or not s.get("ldap_server", "").strip():
         raise HTTPException(status_code=400, detail="LDAP is not enabled or not configured")
 

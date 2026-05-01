@@ -646,6 +646,268 @@ function LdapGroupMappingPanel({ roles, api, toast, isAdmin }) {
   );
 }
 
+// ── LDAP User Mapping Panel ──────────────────────────────────────────────────
+
+function LdapUserMappingPanel({ roles, api, toast, isAdmin }) {
+  const [mappings,   setMappings]   = useState([]);  // [{ ldap_username, role, note }]
+  const [loading,    setLoading]    = useState(false);
+  const [saving,     setSaving]     = useState(false);
+  const [expanded,   setExpanded]   = useState(true);
+  const [showForm,   setShowForm]   = useState(false);
+  const [editTarget, setEditTarget] = useState(null); // existing row being edited
+  const [form,       setForm]       = useState({ ldap_username: '', role: '', note: '' });
+  const [search,     setSearch]     = useState('');
+
+  useEffect(() => { loadMappings(); }, []); // eslint-disable-line
+
+  const loadMappings = async () => {
+    setLoading(true);
+    try {
+      const r = await api.authFetch('/api/settings/ldap/user-mappings');
+      if (r.ok) {
+        const data = await r.json();
+        setMappings(data.user_mappings || []);
+      }
+    } catch (_) {}
+    finally { setLoading(false); }
+  };
+
+  const openCreate = () => {
+    setForm({ ldap_username: '', role: roles[0]?.name || 'operator', note: '' });
+    setEditTarget(null);
+    setShowForm(true);
+  };
+
+  const openEdit = (row) => {
+    setForm({ ldap_username: row.ldap_username, role: row.role, note: row.note || '' });
+    setEditTarget(row);
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.ldap_username.trim()) { toast.error('LDAP username required'); return; }
+    if (!form.role)                  { toast.error('Role required'); return; }
+    setSaving(true);
+    try {
+      const r = await api.authFetch('/api/settings/ldap/user-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ldap_username: form.ldap_username.trim(), role: form.role, note: form.note }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      toast.success(`Mapping saved for ${form.ldap_username}`);
+      setShowForm(false);
+      await loadMappings();
+    } catch (e) {
+      toast.error('Save failed: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (ldap_username) => {
+    if (!window.confirm(`Remove mapping for "${ldap_username}"?`)) return;
+    try {
+      const r = await api.authFetch(
+        `/api/settings/ldap/user-mappings/${encodeURIComponent(ldap_username)}`,
+        { method: 'DELETE' },
+      );
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      toast.info(`Mapping removed for ${ldap_username}`);
+      await loadMappings();
+    } catch (e) {
+      toast.error('Delete failed: ' + e.message);
+    }
+  };
+
+  const filtered = mappings.filter(m =>
+    !search ||
+    m.ldap_username?.toLowerCase().includes(search.toLowerCase()) ||
+    m.role?.toLowerCase().includes(search.toLowerCase()) ||
+    m.note?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="glass-panel" style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
+      {/* Header */}
+      <div
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
+        onClick={() => setExpanded(v => !v)}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+          <Users size={16} color="#fd9644" />
+          <div>
+            <div style={{ fontSize: '0.95rem', fontWeight: '600', color: 'white', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              LDAP User → Role Override
+              {mappings.length > 0 && (
+                <span style={{ fontSize: '0.7rem', padding: '0.1rem 0.5rem', borderRadius: '10px',
+                  background: 'rgba(253,150,68,0.15)', border: '1px solid rgba(253,150,68,0.3)', color: '#fd9644' }}>
+                  {mappings.length} override{mappings.length !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.1rem' }}>
+              Assign a specific role to an LDAP username, overriding group-based mapping
+            </div>
+          </div>
+        </div>
+        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{expanded ? '▲' : '▼'}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: '1.25rem' }}>
+          {/* Info banner */}
+          <div style={{ padding: '0.6rem 0.9rem', borderRadius: '8px', marginBottom: '1.25rem',
+            background: 'rgba(253,150,68,0.06)', border: '1px solid rgba(253,150,68,0.18)',
+            fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+            📌 Per-user overrides take priority over group-based mappings. Use this to give a specific LDAP user
+            a different role than their directory group would assign.
+          </div>
+
+          {/* Toolbar */}
+          <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            {isAdmin && (
+              <button onClick={openCreate} style={mkBtn('amber')}>
+                <Plus size={12} /> Add Override
+              </button>
+            )}
+            <button onClick={loadMappings} disabled={loading} style={mkBtn('blue')}>
+              <RefreshCw size={12} /> Refresh
+            </button>
+            {mappings.length > 0 && (
+              <input
+                type="text"
+                placeholder="Filter by username, role, note…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                style={{ ...INP_STYLE, maxWidth: '260px', padding: '0.42rem 0.8rem', fontSize: '0.82rem', marginLeft: 'auto' }}
+              />
+            )}
+          </div>
+
+          {/* Add / Edit form (inline) */}
+          {showForm && (
+            <div style={{ padding: '1rem', borderRadius: '10px', marginBottom: '1rem',
+              background: 'rgba(253,150,68,0.05)', border: '1px solid rgba(253,150,68,0.25)' }}>
+              <div style={{ fontWeight: '600', fontSize: '0.85rem', color: '#fd9644', marginBottom: '0.85rem' }}>
+                {editTarget ? `✏ Edit override — ${editTarget.ldap_username}` : '➕ New LDAP user override'}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                <div>
+                  <label style={LBL_STYLE}>LDAP Username (sAMAccountName)</label>
+                  <input
+                    style={{ ...INP_STYLE, opacity: editTarget ? 0.5 : 1, cursor: editTarget ? 'not-allowed' : 'text' }}
+                    readOnly={!!editTarget}
+                    value={form.ldap_username}
+                    onChange={e => setForm(p => ({ ...p, ldap_username: e.target.value }))}
+                    placeholder="jdoe"
+                  />
+                </div>
+                <div>
+                  <label style={LBL_STYLE}>Assign Role</label>
+                  <select
+                    style={{ ...INP_STYLE, cursor: 'pointer', colorScheme: 'dark' }}
+                    value={form.role}
+                    onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
+                  >
+                    {roles.map(r => (
+                      <option key={r.name} value={r.name}>{r.display_name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label style={LBL_STYLE}>Note <span style={{ textTransform: 'none', fontWeight: 400 }}>(optional)</span></label>
+                <input
+                  style={INP_STYLE}
+                  value={form.note}
+                  onChange={e => setForm(p => ({ ...p, note: e.target.value }))}
+                  placeholder="e.g. temp admin while on project"
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
+                <button onClick={() => setShowForm(false)} style={mkBtn('gray')}>Cancel</button>
+                <button onClick={handleSave} disabled={saving} style={{ ...mkBtn('amber'), opacity: saving ? 0.6 : 1 }}>
+                  {saving ? '⟳ Saving…' : <><Check size={12} /> Save Override</>}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Table */}
+          {loading ? (
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div style={{ padding: '1.5rem', textAlign: 'center', color: 'rgba(255,255,255,0.2)', fontSize: '0.82rem', fontStyle: 'italic' }}>
+              {search ? 'No matches.' : 'No per-user overrides configured.'}
+            </div>
+          ) : (
+            <div style={{ borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--panel-border)' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: 'rgba(0,0,0,0.25)', borderBottom: '1px solid var(--panel-border)' }}>
+                    {['LDAP Username', 'Assigned Role', 'Note', 'Added', isAdmin ? 'Actions' : ''].map(h => h && (
+                      <th key={h} style={{ padding: '0.65rem 0.9rem', textAlign: 'left', fontSize: '0.68rem',
+                        textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)', fontWeight: '600' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((row, i) => {
+                    const roleObj   = roles.find(r => r.name === row.role);
+                    const roleColor = roleObj?.color || SYSTEM_COLORS[row.role] || '#6B7280';
+                    const addedAt   = row.created_at ? new Date(row.created_at) : null;
+                    return (
+                      <tr key={row.ldap_username}
+                        style={{ borderBottom: i < filtered.length - 1 ? '1px solid var(--panel-border)' : 'none',
+                          transition: 'background 0.12s' }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.025)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                      >
+                        <td style={{ padding: '0.7rem 0.9rem', fontSize: '0.84rem', fontWeight: '500', fontFamily: 'monospace', color: '#fd9644' }}>
+                          {row.ldap_username}
+                        </td>
+                        <td style={{ padding: '0.7rem 0.9rem' }}>
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
+                            padding: '0.18rem 0.6rem', borderRadius: '20px', fontSize: '0.75rem', fontWeight: '600',
+                            background: `${roleColor}18`, border: `1px solid ${roleColor}55`, color: roleColor,
+                          }}>
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: roleColor, display: 'inline-block' }} />
+                            {roleObj?.display_name || row.role}
+                          </span>
+                        </td>
+                        <td style={{ padding: '0.7rem 0.9rem', fontSize: '0.78rem', color: 'var(--text-secondary)', maxWidth: '200px' }}>
+                          {row.note || <span style={{ opacity: 0.3 }}>—</span>}
+                        </td>
+                        <td style={{ padding: '0.7rem 0.9rem', fontSize: '0.72rem', color: 'rgba(255,255,255,0.3)', whiteSpace: 'nowrap' }}>
+                          {addedAt ? addedAt.toLocaleDateString() : '—'}
+                        </td>
+                        {isAdmin && (
+                          <td style={{ padding: '0.7rem 0.9rem' }}>
+                            <div style={{ display: 'flex', gap: '0.35rem' }}>
+                              <button onClick={() => openEdit(row)} style={mkBtn('blue')} title="Edit">
+                                <Edit2 size={12} />
+                              </button>
+                              <button onClick={() => handleDelete(row.ldap_username)} style={mkBtn('red')} title="Delete">
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ────────────────────────────────────────────────────────────────────
 
 export default function UsersPage() {
@@ -1084,6 +1346,11 @@ export default function UsersPage() {
           {/* ── LDAP Group → Role Mapping panel ── */}
           {roles.length > 0 && (
             <LdapGroupMappingPanel roles={roles} api={api} toast={toast} isAdmin={isAdmin}/>
+          )}
+
+          {/* ── LDAP User → Role Override panel ── */}
+          {roles.length > 0 && (
+            <LdapUserMappingPanel roles={roles} api={api} toast={toast} isAdmin={isAdmin}/>
           )}
 
           {/* ── Roles table ── */}
