@@ -366,6 +366,7 @@ function LdapGroupMappingPanel({ roles, api, toast, isAdmin }) {
   const [expanded,      setExpanded]      = useState(true);
   const [manualInput,   setManualInput]   = useState('');
   const [ldapEnabled,   setLdapEnabled]   = useState(false);
+  const [groupSearch,   setGroupSearch]   = useState('');
 
   useEffect(() => {
     loadMappings();
@@ -570,16 +571,39 @@ function LdapGroupMappingPanel({ roles, api, toast, isAdmin }) {
                                 ({ldapGroups.length} groups detected)
                               </span>
                             </div>
+                            {/* Group search box */}
+                            {ldapGroups.length > 5 && (
+                              <div style={{ marginBottom:'0.45rem', position:'relative' }}>
+                                <span style={{ position:'absolute', left:'0.65rem', top:'50%', transform:'translateY(-50%)',
+                                  fontSize:'0.75rem', color:'var(--text-secondary)', pointerEvents:'none' }}>🔍</span>
+                                <input
+                                  value={groupSearch}
+                                  onChange={e => setGroupSearch(e.target.value)}
+                                  placeholder="Search groups…"
+                                  style={{ ...INP_STYLE, paddingLeft:'2rem', padding:'0.45rem 0.75rem 0.45rem 2rem',
+                                    fontSize:'0.8rem', background:'rgba(0,0,0,0.2)' }}
+                                />
+                              </div>
+                            )}
                             <div style={{
-                              maxHeight:'130px', overflowY:'auto', borderRadius:'8px',
+                              maxHeight:'150px', overflowY:'auto', borderRadius:'8px',
                               border:'1px solid var(--panel-border)', background:'rgba(0,0,0,0.25)',
                             }}>
-                              {available.length === 0 ? (
-                                <div style={{ padding:'0.65rem 0.9rem', fontSize:'0.78rem', color:'var(--text-secondary)', fontStyle:'italic' }}>
-                                  All detected groups already mapped to this role.
-                                </div>
-                              ) : (
-                                available.map(g => (
+                              {(() => {
+                                const visibleGroups = available.filter(g =>
+                                  !groupSearch || g.toLowerCase().includes(groupSearch.toLowerCase())
+                                );
+                                if (available.length === 0) return (
+                                  <div style={{ padding:'0.65rem 0.9rem', fontSize:'0.78rem', color:'var(--text-secondary)', fontStyle:'italic' }}>
+                                    All detected groups already mapped to this role.
+                                  </div>
+                                );
+                                if (visibleGroups.length === 0) return (
+                                  <div style={{ padding:'0.65rem 0.9rem', fontSize:'0.78rem', color:'var(--text-secondary)', fontStyle:'italic' }}>
+                                    No groups match "{groupSearch}".
+                                  </div>
+                                );
+                                return visibleGroups.map(g => (
                                   <div key={g}
                                     onClick={() => toggleGroup(role.name, g)}
                                     style={{
@@ -592,11 +616,20 @@ function LdapGroupMappingPanel({ roles, api, toast, isAdmin }) {
                                     onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                                   >
                                     <span style={{ fontSize:'0.75rem' }}>🗂</span>
-                                    <span style={{ flex:1, color:'var(--text-primary)' }}>{g}</span>
+                                    <span style={{ flex:1, color:'var(--text-primary)' }}>
+                                      {groupSearch ? (
+                                        // Highlight matching substring
+                                        (() => {
+                                          const idx = g.toLowerCase().indexOf(groupSearch.toLowerCase());
+                                          if (idx === -1) return g;
+                                          return <>{g.slice(0, idx)}<mark style={{ background:`${roleColor}35`, color:roleColor, borderRadius:'2px' }}>{g.slice(idx, idx + groupSearch.length)}</mark>{g.slice(idx + groupSearch.length)}</>;
+                                        })()
+                                      ) : g}
+                                    </span>
                                     <span style={{ fontSize:'0.7rem', color:roleColor, opacity:0.7 }}>+ Add</span>
                                   </div>
-                                ))
-                              )}
+                                ));
+                              })()}
                             </div>
                           </div>
                         )}
@@ -649,16 +682,34 @@ function LdapGroupMappingPanel({ roles, api, toast, isAdmin }) {
 // ── LDAP User Mapping Panel ──────────────────────────────────────────────────
 
 function LdapUserMappingPanel({ roles, api, toast, isAdmin }) {
-  const [mappings,   setMappings]   = useState([]);  // [{ ldap_username, role, note }]
-  const [loading,    setLoading]    = useState(false);
-  const [saving,     setSaving]     = useState(false);
-  const [expanded,   setExpanded]   = useState(true);
-  const [showForm,   setShowForm]   = useState(false);
-  const [editTarget, setEditTarget] = useState(null); // existing row being edited
-  const [form,       setForm]       = useState({ ldap_username: '', role: '', note: '' });
-  const [search,     setSearch]     = useState('');
+  const [mappings,    setMappings]    = useState([]);  // [{ ldap_username, role, note }]
+  const [loading,     setLoading]     = useState(false);
+  const [saving,      setSaving]      = useState(false);
+  const [expanded,    setExpanded]    = useState(true);
+  const [showForm,    setShowForm]    = useState(false);
+  const [editTarget,  setEditTarget]  = useState(null);
+  const [form,        setForm]        = useState({ ldap_username: '', role: '', note: '' });
+  const [search,      setSearch]      = useState('');
+  // LDAP user picker state
+  const [ldapUsers,       setLdapUsers]       = useState([]);   // detected LDAP users
+  const [ldapUsersLoading, setLdapUsersLoading] = useState(false);
+  const [userPickerOpen,  setUserPickerOpen]  = useState(false);
+  const [userPickerQuery, setUserPickerQuery] = useState('');
 
-  useEffect(() => { loadMappings(); }, []); // eslint-disable-line
+  useEffect(() => { loadMappings(); fetchLdapUsers(); }, []); // eslint-disable-line
+
+  const fetchLdapUsers = async () => {
+    setLdapUsersLoading(true);
+    try {
+      const r = await api.authFetch('/api/settings/ldap/info');
+      if (r.ok) {
+        const data = await r.json();
+        // API may return users under `users` or `user_list` — handle both
+        setLdapUsers(data.users || data.user_list || []);
+      }
+    } catch (_) {}
+    finally { setLdapUsersLoading(false); }
+  };
 
   const loadMappings = async () => {
     setLoading(true);
@@ -674,12 +725,16 @@ function LdapUserMappingPanel({ roles, api, toast, isAdmin }) {
 
   const openCreate = () => {
     setForm({ ldap_username: '', role: roles[0]?.name || 'operator', note: '' });
+    setUserPickerQuery('');
+    setUserPickerOpen(false);
     setEditTarget(null);
     setShowForm(true);
   };
 
   const openEdit = (row) => {
     setForm({ ldap_username: row.ldap_username, role: row.role, note: row.note || '' });
+    setUserPickerQuery(row.ldap_username);
+    setUserPickerOpen(false);
     setEditTarget(row);
     setShowForm(true);
   };
@@ -771,7 +826,7 @@ function LdapUserMappingPanel({ roles, api, toast, isAdmin }) {
                 <Plus size={12} /> Add Override
               </button>
             )}
-            <button onClick={loadMappings} disabled={loading} style={mkBtn('blue')}>
+            <button onClick={() => { loadMappings(); fetchLdapUsers(); }} disabled={loading || ldapUsersLoading} style={mkBtn('blue')}>
               <RefreshCw size={12} /> Refresh
             </button>
             {mappings.length > 0 && (
@@ -794,14 +849,138 @@ function LdapUserMappingPanel({ roles, api, toast, isAdmin }) {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
                 <div>
-                  <label style={LBL_STYLE}>LDAP Username (sAMAccountName)</label>
-                  <input
-                    style={{ ...INP_STYLE, opacity: editTarget ? 0.5 : 1, cursor: editTarget ? 'not-allowed' : 'text' }}
-                    readOnly={!!editTarget}
-                    value={form.ldap_username}
-                    onChange={e => setForm(p => ({ ...p, ldap_username: e.target.value }))}
-                    placeholder="jdoe"
-                  />
+                  <label style={LBL_STYLE}>
+                    LDAP Username (sAMAccountName)
+                    {ldapUsers.length > 0 && !editTarget && (
+                      <span style={{ marginLeft: '0.5rem', color: 'rgba(255,255,255,0.25)', textTransform: 'none', fontWeight: 400 }}>
+                        ({ldapUsers.length} detected)
+                      </span>
+                    )}
+                  </label>
+
+                  {editTarget ? (
+                    // Read-only when editing
+                    <input
+                      style={{ ...INP_STYLE, opacity: 0.5, cursor: 'not-allowed' }}
+                      readOnly
+                      value={form.ldap_username}
+                    />
+                  ) : ldapUsers.length > 0 ? (
+                    // ── Searchable combobox ──────────────────────────────────
+                    <div style={{ position: 'relative' }}>
+                      {/* Trigger / search input */}
+                      <div style={{ position: 'relative' }}>
+                        <span style={{
+                          position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)',
+                          fontSize: '0.8rem', color: 'var(--text-secondary)', pointerEvents: 'none',
+                        }}>👤</span>
+                        <input
+                          value={userPickerQuery}
+                          onChange={e => {
+                            setUserPickerQuery(e.target.value);
+                            setForm(p => ({ ...p, ldap_username: e.target.value }));
+                            setUserPickerOpen(true);
+                          }}
+                          onFocus={() => setUserPickerOpen(true)}
+                          onBlur={() => setTimeout(() => setUserPickerOpen(false), 180)}
+                          placeholder={ldapUsersLoading ? 'Loading LDAP users…' : 'Search or type username…'}
+                          style={{ ...INP_STYLE, paddingLeft: '2.1rem', paddingRight: '2rem' }}
+                        />
+                        {/* Clear button */}
+                        {userPickerQuery && (
+                          <button
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={() => { setUserPickerQuery(''); setForm(p => ({ ...p, ldap_username: '' })); setUserPickerOpen(true); }}
+                            style={{
+                              position: 'absolute', right: '0.6rem', top: '50%', transform: 'translateY(-50%)',
+                              background: 'none', border: 'none', color: 'var(--text-secondary)',
+                              cursor: 'pointer', fontSize: '0.8rem', padding: '2px 4px',
+                            }}
+                          >✕</button>
+                        )}
+                      </div>
+
+                      {/* Dropdown listbox */}
+                      {userPickerOpen && (() => {
+                        const q = userPickerQuery.toLowerCase();
+                        const alreadyMapped = mappings.map(m => m.ldap_username);
+                        const visible = ldapUsers.filter(u => {
+                          const name = typeof u === 'string' ? u : (u.sAMAccountName || u.username || u.cn || '');
+                          return (!q || name.toLowerCase().includes(q)) && !alreadyMapped.includes(name);
+                        });
+                        if (visible.length === 0 && !userPickerQuery) return null;
+                        return (
+                          <div style={{
+                            position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 50,
+                            background: 'rgba(18,18,26,0.98)', border: '1px solid rgba(253,150,68,0.35)',
+                            borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+                            maxHeight: '220px', overflowY: 'auto',
+                          }}>
+                            {visible.length === 0 ? (
+                              <div style={{ padding: '0.75rem 1rem', fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                {userPickerQuery ? `No users match "${userPickerQuery}" — value will be used as-is.` : 'All detected users already mapped.'}
+                              </div>
+                            ) : (
+                              visible.map((u, idx) => {
+                                const name = typeof u === 'string' ? u : (u.sAMAccountName || u.username || u.cn || String(u));
+                                const display = typeof u === 'object' ? (u.displayName || u.display_name || name) : name;
+                                const hiIdx = q ? name.toLowerCase().indexOf(q) : -1;
+                                return (
+                                  <div
+                                    key={name}
+                                    onMouseDown={e => e.preventDefault()}
+                                    onClick={() => {
+                                      setForm(p => ({ ...p, ldap_username: name }));
+                                      setUserPickerQuery(name);
+                                      setUserPickerOpen(false);
+                                    }}
+                                    style={{
+                                      padding: '0.55rem 1rem', cursor: 'pointer', fontSize: '0.83rem',
+                                      display: 'flex', alignItems: 'center', gap: '0.6rem',
+                                      borderBottom: idx < visible.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                                      transition: 'background 0.1s',
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(253,150,68,0.12)'}
+                                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                  >
+                                    <span style={{
+                                      width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                                      background: 'rgba(253,150,68,0.15)', border: '1px solid rgba(253,150,68,0.3)',
+                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                      fontSize: '0.75rem', fontWeight: '700', color: '#fd9644',
+                                    }}>
+                                      {name.charAt(0).toUpperCase()}
+                                    </span>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ color: 'white', fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {hiIdx >= 0 ? (
+                                          <>{name.slice(0, hiIdx)}<mark style={{ background: 'rgba(253,150,68,0.35)', color: '#fd9644', borderRadius: '2px', padding: '0 1px' }}>{name.slice(hiIdx, hiIdx + q.length)}</mark>{name.slice(hiIdx + q.length)}</>
+                                        ) : name}
+                                      </div>
+                                      {display !== name && (
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                          {display}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <span style={{ fontSize: '0.68rem', color: '#fd9644', opacity: 0.6, flexShrink: 0 }}>↵ select</span>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    // Fallback plain input when no LDAP users detected
+                    <input
+                      style={INP_STYLE}
+                      value={form.ldap_username}
+                      onChange={e => setForm(p => ({ ...p, ldap_username: e.target.value }))}
+                      placeholder="jdoe"
+                    />
+                  )}
                 </div>
                 <div>
                   <label style={LBL_STYLE}>Assign Role</label>
@@ -971,6 +1150,11 @@ export default function UsersPage() {
 
   // ── Permissions modal ─────────────────────────────────────────────────────
   const openPerms = async (u) => {
+    // Block editing permissions of a super-admin unless current user is also super-admin
+    if ((u.is_super_admin || u.role === 'super_admin') && !isSuper) {
+      toast.error('Only a super admin can edit another super admin\'s permissions');
+      return;
+    }
     try {
       const p = await api.getPermissions(u.id);
       setPerms({ ...DEFAULT_PERMS, ...p,
@@ -1018,6 +1202,10 @@ export default function UsersPage() {
   const handleUserSubmit = async () => {
     if (!userForm.username.trim()) { toast.error('Username required'); return; }
     if (showUserForm==='create' && userForm.password.length < 6) { toast.error('Password min 6 chars'); return; }
+    // Prevent editing a super admin account unless you are super admin
+    if (showUserForm === 'edit' && (editTarget?.is_super_admin || editTarget?.role === 'super_admin') && !isSuper) {
+      toast.error('Only a super admin can edit another super admin account'); return;
+    }
     setSaving(true);
     try {
       if (showUserForm === 'create') {
@@ -1043,6 +1231,7 @@ export default function UsersPage() {
 
   const toggleEnabled = async (u) => {
     if (u.id === currentUser?.id) { toast.warning("Can't disable yourself"); return; }
+    if ((u.is_super_admin || u.role === 'super_admin') && !isSuper) { toast.error('Only a super admin can modify another super admin account'); return; }
     try { await api.updateUser(u.id, { enabled:!u.enabled }); await loadUsers(); }
     catch(e) { toast.error(e.message); }
   };
@@ -1058,6 +1247,11 @@ export default function UsersPage() {
   const handleChangePw = async () => {
     if (pwForm.password.length < 6)         { toast.error('Password min 6 chars'); return; }
     if (pwForm.password !== pwForm.confirm)  { toast.error('Passwords do not match'); return; }
+    // Block non-super-admins from changing a super admin's password
+    if ((pwModal?.is_super_admin || pwModal?.role === 'super_admin') && !isSuper) {
+      toast.error('Only a super admin can change another super admin\'s password');
+      return;
+    }
     setSaving(true);
     try {
       await api.updateUser(pwModal.id, { password:pwForm.password });
@@ -1213,8 +1407,10 @@ export default function UsersPage() {
                 </thead>
                 <tbody>
                   {users.map((u, i) => {
-                    const isSelf    = u.id === currentUser?.id;
-                    const canEdit   = isSuper || (isAdmin && !u.is_super_admin) || isSelf;
+                    const isSelf         = u.id === currentUser?.id;
+                    const isSuperAdminUser = u.is_super_admin || u.role === 'super_admin';
+                    // Super admin accounts can only be touched by other super admins
+                    const canEdit        = isSelf || (isSuperAdminUser ? isSuper : isAdmin);
                     const dc        = u.permissions?.deck_control || {};
                     const roleColor = roles.find(r=>r.name===u.role)?.color || SYSTEM_COLORS[u.role] || '#6B7280';
                     return (
@@ -1274,7 +1470,7 @@ export default function UsersPage() {
                         </td>
 
                         <td style={{ padding:'0.85rem 1rem' }}>
-                          {isAdmin && !isSelf && !u.is_super_admin ? (
+                          {isAdmin && !isSelf && !isSuperAdminUser ? (
                             <button onClick={() => toggleEnabled(u)}
                               style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem',
                                 padding:'0.2rem 0.6rem', borderRadius:'20px', fontSize:'0.75rem',
@@ -1304,17 +1500,18 @@ export default function UsersPage() {
                                 <Key size={12}/>
                               </button>
                             )}
-                            {isAdmin && !isSelf && !u.is_super_admin && (
-                              <button onClick={() => openPerms(u)} style={mkBtn('purple')} title="Edit permissions">
+                            {/* Permissions and role-reset only for non-super-admin targets (or if current user IS super-admin) */}
+                            {isAdmin && !isSelf && (!isSuperAdminUser || isSuper) && (
+                              <button onClick={() => openPerms(u)} style={mkBtn('purple')} title={isSuperAdminUser ? 'Edit super-admin permissions (super-admin only)' : 'Edit permissions'}>
                                 <Lock size={12}/>
                               </button>
                             )}
-                            {isAdmin && !isSelf && !u.is_super_admin && (
+                            {isAdmin && !isSelf && !isSuperAdminUser && (
                               <button onClick={() => applyRoleTemplate(u)} style={mkBtn('gray')} title="Reset to role defaults">
                                 <RotateCcw size={12}/>
                               </button>
                             )}
-                            {(isSuper || (isAdmin && !u.is_super_admin && !isSelf)) && (
+                            {!isSelf && (isSuperAdminUser ? isSuper : isAdmin) && (
                               <button onClick={() => handleDeleteUser(u)} disabled={deleting===u.id}
                                 style={{ ...mkBtn('red'), opacity:deleting===u.id?0.4:1 }} title="Delete user">
                                 <Trash2 size={12}/>
@@ -1353,93 +1550,154 @@ export default function UsersPage() {
             <LdapUserMappingPanel roles={roles} api={api} toast={toast} isAdmin={isAdmin}/>
           )}
 
-          {/* ── Roles table ── */}
-          <div className="glass-panel" style={{ padding:0, overflow:'hidden' }}>
-            {rolesLoading ? (
-              <div style={{ padding:'3rem', textAlign:'center', color:'var(--text-secondary)' }}>Loading…</div>
-            ) : (
-              <div style={{ overflowX:'auto' }}>
-                <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'560px' }}>
-                  <thead>
-                    <tr style={{ borderBottom:'1px solid var(--panel-border)', background:'rgba(0,0,0,0.2)' }}>
-                      {['Role','Description','Type','Deck Defaults','Actions'].map(h => (
-                        <th key={h} style={{ padding:'0.8rem 1rem', textAlign:'left', fontSize:'0.7rem',
-                          textTransform:'uppercase', letterSpacing:'0.5px',
-                          color:'var(--text-secondary)', fontWeight:'600' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {roles.map((role, i) => (
-                      <tr key={role.id}
-                        style={{ borderBottom: i<roles.length-1 ? '1px solid var(--panel-border)':'none',
-                          transition:'background 0.15s' }}
-                        onMouseEnter={e => e.currentTarget.style.background='rgba(255,255,255,0.025)'}
-                        onMouseLeave={e => e.currentTarget.style.background='transparent'}>
-
-                        <td style={{ padding:'0.85rem 1rem' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
-                            <div style={{ width:10, height:10, borderRadius:'50%', background:role.color||'#6B7280', flexShrink:0 }}/>
-                            <div>
-                              <div style={{ fontWeight:'600', fontSize:'0.88rem', color:role.color||'white' }}>
-                                {role.display_name}
-                              </div>
-                              <div style={{ fontSize:'0.72rem', color:'var(--text-secondary)' }}>/{role.name}</div>
-                            </div>
+          {/* ── Roles cards ── */}
+          {rolesLoading ? (
+            <div className="glass-panel" style={{ padding:'3rem', textAlign:'center', color:'var(--text-secondary)' }}>Loading…</div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem' }}>
+              {roles.map(role => {
+                const roleColor  = role.color || SYSTEM_COLORS[role.name] || '#6B7280';
+                const userCount  = users.filter(u => u.role === role.name).length;
+                const featureOn  = key => role[`default_${key}`] ?? false;
+                const isProtectedSystem = ['super_admin'].includes(role.name);
+                // Actions count for preview bar
+                const actionCount = (role.default_deck_actions || []).length;
+                const featureCount = FEATURE_DEFS.filter(f => role[`default_${f.key}`]).length;
+                return (
+                  <div key={role.id} style={{
+                    borderRadius:'12px', border:`1px solid ${roleColor}30`,
+                    background:`linear-gradient(135deg, ${roleColor}06 0%, rgba(0,0,0,0.15) 100%)`,
+                    overflow:'hidden',
+                    transition:'border-color 0.2s, box-shadow 0.2s',
+                    boxShadow:`0 2px 12px ${roleColor}08`,
+                  }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = `${roleColor}60`; e.currentTarget.style.boxShadow = `0 4px 24px ${roleColor}18`; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = `${roleColor}30`; e.currentTarget.style.boxShadow = `0 2px 12px ${roleColor}08`; }}
+                  >
+                    {/* Card header */}
+                    <div style={{
+                      padding:'0.9rem 1.2rem',
+                      background:`linear-gradient(90deg, ${roleColor}14 0%, ${roleColor}06 100%)`,
+                      borderBottom:`1px solid ${roleColor}22`,
+                      display:'flex', alignItems:'center', gap:'0.85rem',
+                    }}>
+                      {/* Color swatch + name */}
+                      <div style={{
+                        width:36, height:36, borderRadius:'10px', flexShrink:0,
+                        background:`${roleColor}20`, border:`2px solid ${roleColor}50`,
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        fontSize:'1rem', fontWeight:'800', color:roleColor,
+                      }}>
+                        {role.display_name.charAt(0).toUpperCase()}
+                      </div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap' }}>
+                          <span style={{ fontWeight:'700', fontSize:'0.92rem', color:roleColor }}>{role.display_name}</span>
+                          <span style={{ fontSize:'0.7rem', color:'rgba(255,255,255,0.3)', fontFamily:'monospace' }}>/{role.name}</span>
+                          {role.is_system ? (
+                            <span style={{ fontSize:'0.65rem', padding:'0.1rem 0.45rem', borderRadius:'10px',
+                              background:'rgba(255,215,0,0.08)', border:'1px solid rgba(255,215,0,0.25)', color:'#ffd700' }}>⚙ System</span>
+                          ) : (
+                            <span style={{ fontSize:'0.65rem', padding:'0.1rem 0.45rem', borderRadius:'10px',
+                              background:'rgba(165,94,234,0.1)', border:'1px solid rgba(165,94,234,0.3)', color:'#a55eea' }}>✦ Custom</span>
+                          )}
+                          {isProtectedSystem && (
+                            <span style={{ fontSize:'0.65rem', padding:'0.1rem 0.45rem', borderRadius:'10px',
+                              background:'rgba(220,38,38,0.1)', border:'1px solid rgba(220,38,38,0.3)', color:'#ef4444',
+                              display:'flex', alignItems:'center', gap:'0.25rem' }}>🔒 Protected</span>
+                          )}
+                        </div>
+                        {role.description && (
+                          <div style={{ fontSize:'0.75rem', color:'var(--text-secondary)', marginTop:'0.15rem', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                            {role.description}
                           </div>
-                        </td>
+                        )}
+                      </div>
+                      {/* User count chip */}
+                      <div style={{ textAlign:'center', flexShrink:0 }}>
+                        <div style={{ fontSize:'1.1rem', fontWeight:'700', color:roleColor, lineHeight:1 }}>{userCount}</div>
+                        <div style={{ fontSize:'0.62rem', color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.4px' }}>user{userCount!==1?'s':''}</div>
+                      </div>
+                      {/* Actions */}
+                      <div style={{ display:'flex', gap:'0.35rem', flexShrink:0 }}>
+                        {isAdmin && !isProtectedSystem && (
+                          <button onClick={() => openEditRole(role)} style={mkBtn('blue')} title="Edit role">
+                            <Edit2 size={12}/>
+                          </button>
+                        )}
+                        {isSuper && !role.is_system && !isProtectedSystem && (
+                          <button onClick={() => handleDeleteRole(role)} style={mkBtn('red')} title="Delete role">
+                            <Trash2 size={12}/>
+                          </button>
+                        )}
+                      </div>
+                    </div>
 
-                        <td style={{ padding:'0.85rem 1rem', fontSize:'0.8rem', color:'var(--text-secondary)', maxWidth:'200px' }}>
-                          {role.description || '—'}
-                        </td>
-
-                        <td style={{ padding:'0.85rem 1rem' }}>
-                          <span style={{ fontSize:'0.72rem', padding:'0.18rem 0.55rem', borderRadius:'12px',
-                            background: role.is_system ? 'rgba(255,215,0,0.08)':'rgba(165,94,234,0.1)',
-                            border:`1px solid ${role.is_system ? 'rgba(255,215,0,0.25)':'rgba(165,94,234,0.35)'}`,
-                            color: role.is_system ? '#ffd700':'#a55eea' }}>
-                            {role.is_system ? '⚙ System':'✦ Custom'}
+                    {/* Card body */}
+                    <div style={{ padding:'0.85rem 1.2rem', display:'flex', gap:'1.5rem', flexWrap:'wrap', alignItems:'flex-start', borderTop: `1px solid ${roleColor}10` }}>
+                      {/* Stats chips */}
+                      <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap', width:'100%', marginBottom:'0.1rem' }}>
+                        <span style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.12rem 0.55rem', borderRadius:'12px', fontSize:'0.68rem',
+                          background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', color:'var(--text-secondary)' }}>
+                          ⚡ {actionCount} action{actionCount!==1?'s':''}
+                        </span>
+                        <span style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.12rem 0.55rem', borderRadius:'12px', fontSize:'0.68rem',
+                          background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', color:'var(--text-secondary)' }}>
+                          🧩 {featureCount}/{FEATURE_DEFS.length} features
+                        </span>
+                        {isProtectedSystem && (
+                          <span style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.12rem 0.55rem', borderRadius:'12px', fontSize:'0.68rem',
+                            background:'rgba(220,38,38,0.08)', border:'1px solid rgba(220,38,38,0.25)', color:'#ef4444' }}>
+                            🛡 Immutable — protected from all modifications
                           </span>
-                        </td>
-
-                        <td style={{ padding:'0.85rem 1rem' }}>
-                          <div style={{ display:'flex', gap:'0.25rem', flexWrap:'wrap' }}>
-                            {(role.default_allowed_decks || DECK_IDS).map(d => {
-                              const ctrl = role.default_deck_control?.[d];
-                              return (
-                                <span key={d} style={{ padding:'0.08rem 0.45rem', borderRadius:'5px', fontSize:'0.68rem',
-                                  fontWeight:'600',
-                                  background: ctrl?.control ? 'rgba(0,212,255,0.1)':'rgba(255,215,0,0.06)',
-                                  border:`1px solid ${ctrl?.control?'rgba(0,212,255,0.25)':'rgba(255,215,0,0.2)'}`,
-                                  color: ctrl?.control ? 'var(--accent-blue)':'#ffd700' }}>
-                                  {d.toUpperCase()} {ctrl?.control ? '🎛':'👁'}
+                        )}
+                      </div>
+                      {/* Deck access */}
+                      <div>
+                        <div style={{ fontSize:'0.65rem', color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'0.35rem' }}>Deck Access</div>
+                        <div style={{ display:'flex', gap:'0.25rem' }}>
+                          {DECK_IDS.map(d => {
+                            const ctrl = role.default_deck_control?.[d];
+                            const hasCtrl = ctrl?.control;
+                            const hasView = ctrl?.view;
+                            return (
+                              <span key={d} title={hasCtrl?'View + Control':hasView?'View only':'No access'}
+                                style={{ padding:'0.15rem 0.5rem', borderRadius:'6px', fontSize:'0.7rem', fontWeight:'700',
+                                  background: hasCtrl?'rgba(0,212,255,0.12)':hasView?'rgba(255,215,0,0.08)':'rgba(255,255,255,0.03)',
+                                  border:`1px solid ${hasCtrl?'rgba(0,212,255,0.3)':hasView?'rgba(255,215,0,0.2)':'rgba(255,255,255,0.06)'}`,
+                                  color: hasCtrl?'var(--accent-blue)':hasView?'#ffd700':'rgba(255,255,255,0.2)' }}>
+                                  {d.toUpperCase()}{hasCtrl?' 🎛':hasView?' 👁':''}
                                 </span>
-                              );
-                            })}
-                          </div>
-                        </td>
-
-                        <td style={{ padding:'0.85rem 1rem' }}>
-                          <div style={{ display:'flex', gap:'0.35rem' }}>
-                            {isAdmin && (
-                              <button onClick={() => openEditRole(role)} style={mkBtn('blue')} title="Edit role">
-                                <Edit2 size={12}/>
-                              </button>
-                            )}
-                            {isSuper && !role.is_system && (
-                              <button onClick={() => handleDeleteRole(role)} style={mkBtn('red')} title="Delete role">
-                                <Trash2 size={12}/>
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      {/* Features */}
+                      <div>
+                        <div style={{ fontSize:'0.65rem', color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'0.35rem' }}>Features</div>
+                        <div style={{ display:'flex', gap:'0.25rem', flexWrap:'wrap' }}>
+                          {FEATURE_DEFS.map(({ key, label, icon }) => {
+                            const on = featureOn(key);
+                            return (
+                              <span key={key} style={{
+                                display:'inline-flex', alignItems:'center', gap:'0.25rem',
+                                padding:'0.15rem 0.5rem', borderRadius:'6px', fontSize:'0.7rem',
+                                background: on ? `${roleColor}12`:'rgba(255,255,255,0.03)',
+                                border:`1px solid ${on ? `${roleColor}35`:'rgba(255,255,255,0.06)'}`,
+                                color: on ? roleColor:'rgba(255,255,255,0.2)',
+                              }}>
+                                {icon}{label}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </>
       )}
 
