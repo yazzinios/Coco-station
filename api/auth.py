@@ -40,11 +40,13 @@ def verify_password(plain: str, hashed: str) -> bool:
 def create_token(user: dict, expiry_hours: int = DEFAULT_EXPIRY_HOURS) -> str:
     """Create a signed JWT for the given user dict."""
     expire = datetime.utcnow() + timedelta(hours=expiry_hours)
+    # is_super_admin is true if explicitly flagged OR if the role is super_admin
+    is_super = bool(user.get("is_super_admin", False)) or user.get("role") == "super_admin"
     payload = {
         "sub":            str(user["id"]),
         "username":       user["username"],
         "role":           user.get("role", "operator"),
-        "is_super_admin": bool(user.get("is_super_admin", False)),
+        "is_super_admin": is_super,
         "exp":            expire,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -353,9 +355,9 @@ def test_ldap_connection(ldap_cfg: dict) -> dict:
 
 
 def query_ldap_directory(ldap_cfg: dict) -> dict:
-    """Connect to LDAP and return user_count + list of group names.
-    Used by the Directory Stats panel in Settings.
-    Returns: { user_count: int, group_count: int, groups: [str], error: str|None }
+    """Connect to LDAP and return user_count + list of group names + list of users.
+    Used by the Directory Stats panel in Settings and the user-mapping combobox.
+    Returns: { user_count: int, group_count: int, groups: [str], users: [dict], error: str|None }
     """
     try:
         from ldap3 import Server, Connection, ALL, Tls, SUBTREE
@@ -385,6 +387,40 @@ def query_ldap_directory(ldap_cfg: dict) -> dict:
             paged_size=1000,
         )
         user_count = len(conn.entries)
+
+        # ── Fetch users (sAMAccountName + displayName) ──
+        users = []
+        conn.search(
+            search_base=base_dn,
+            search_filter="(objectClass=person)",
+            search_scope=SUBTREE,
+            attributes=["sAMAccountName", "cn", "displayName", "uid"],
+            paged_size=500,
+        )
+        for entry in conn.entries:
+            sam = None
+            # Try sAMAccountName first (AD), then uid (OpenLDAP), then cn
+            for attr in ["sAMAccountName", "uid", "cn"]:
+                try:
+                    val = getattr(entry, attr, None)
+                    if val and val.value:
+                        sam = str(val.value).strip()
+                        break
+                except Exception:
+                    pass
+            if not sam:
+                continue
+            display = sam
+            try:
+                dn_val = getattr(entry, "displayName", None)
+                if dn_val and dn_val.value:
+                    display = str(dn_val.value).strip()
+            except Exception:
+                pass
+            users.append({"sAMAccountName": sam, "displayName": display})
+
+        users.sort(key=lambda u: u["sAMAccountName"].lower())
+        user_count = len(users)
 
         # ── Fetch groups ──
         # Try AD-style group first, then fall back to posixGroup / groupOfNames
@@ -419,6 +455,7 @@ def query_ldap_directory(ldap_cfg: dict) -> dict:
             "user_count":  user_count,
             "group_count": len(groups),
             "groups":      groups,
+            "users":       users,
             "error":       None,
         }
     except Exception as e:
@@ -426,5 +463,6 @@ def query_ldap_directory(ldap_cfg: dict) -> dict:
             "user_count":  None,
             "group_count": None,
             "groups":      [],
+            "users":       [],
             "error":       str(e),
         }
