@@ -82,6 +82,7 @@ DECKS: Dict[str, dict] = {
     "b": {"id": "b", "name": "Deck B",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
     "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
     "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
+    "e": {"id": "e", "name": "Deck E",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
 }
 ANNOUNCEMENTS: List[dict] = []
 SETTINGS: dict = {
@@ -120,7 +121,7 @@ _DUCK_CURRENT_TYPE_REF: List[Optional[str]] = [None]
 _TRIGGER_LOCK_REF: List[asyncio.Lock] = [asyncio.Lock()]
 _ANNOUNCEMENT_EVENTS: Dict[str, asyncio.Event] = {}
 PLAYLISTS: Dict[str, dict] = {}
-DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None}
+DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None, "e": None}
 MUSIC_SCHEDULES: List[dict] = []
 RECURRING_SCHEDULES: List[dict] = []
 RECURRING_MIXER_SCHEDULES: List[dict] = []
@@ -818,7 +819,7 @@ async def mic_audio_ws(websocket: WebSocket):
                             if session_id: await close_ffmpeg_stream(session_id); session_id = None
                             await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
                             if was_active:
-                                deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+                                deck_ids = ["a","b","c","d","e"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
                                 asyncio.create_task(fade_restore_after_mic(deck_ids))
                     except json.JSONDecodeError: pass
                 elif "bytes" in msg and msg["bytes"] and session_id:
@@ -834,7 +835,7 @@ async def mic_audio_ws(websocket: WebSocket):
             prev_targets = list(MIC_STATE.get("targets", []))
             MIC_STATE["active"] = False; MIC_STATE["targets"] = []
             await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
-            deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+            deck_ids = ["a","b","c","d","e"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
             asyncio.create_task(fade_restore_after_mic(deck_ids))
 
 # ── Library ─────────────────────────────────────────────────

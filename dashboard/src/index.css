@@ -67,9 +67,16 @@ body {
 /* ── Mixer deck grid ────────────────────────────────────── */
 .deck-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 1.25rem;
   margin-bottom: 2rem;
+}
+
+/* ── Large desktop: clamp to 5 columns ─────────────────── */
+@media (max-width: 1600px) {
+  .deck-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 /* ── Mixer bottom row ───────────────────────────────────── */

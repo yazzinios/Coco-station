@@ -62,3 +62,9 @@ paths:
   deck-d-opus:
     source: rtsp://localhost:8554/deck-d
     sourceOnDemand: yes
+  deck-e:
+    source: publisher
+    sourceOnDemand: no
+  deck-e-opus:
+    source: rtsp://localhost:8554/deck-e
+    sourceOnDemand: yes

@@ -4,7 +4,7 @@ import DeckPanel from '../components/DeckPanel';
 import OnAirButton from '../components/OnAirButton';
 import { useApp } from '../context/useApp';
 
-const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644' };
+const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644', e: '#ff6b9d' };
 
 /* ─────────────────────── Playlist Launcher ─────────────────────── */
 function PlaylistLauncher() {
@@ -57,7 +57,7 @@ function PlaylistLauncher() {
               <Repeat size={11} style={{ color: loopState[pl.id] ? 'var(--accent-blue)' : 'var(--text-secondary)', flexShrink: 0 }} />
             </div>
             <div style={{ display: 'flex', gap: '0.35rem' }}>
-              {['a', 'b', 'c', 'd'].map(dId => {
+              {['a', 'b', 'c', 'd', 'e'].map(dId => {
                 const allowed = canControlDeck(dId);
                 return (
                   <button key={dId} onClick={() => handleLoad(pl.id, dId)}
@@ -233,12 +233,13 @@ export default function MixerPage() {
     <div>
       <h2 style={{ marginBottom: '1.5rem', fontSize: '1.5rem', fontWeight: '500' }}>Mixer Deck</h2>
 
-      {/* 4 decks */}
+      {/* 5 decks */}
       <div className="deck-grid">
         {canViewDeck('a') && <DeckPanel id="a" />}
         {canViewDeck('b') && <DeckPanel id="b" />}
         {canViewDeck('c') && <DeckPanel id="c" />}
         {canViewDeck('d') && <DeckPanel id="d" />}
+        {canViewDeck('e') && <DeckPanel id="e" />}
       </div>
 
       {/* Bottom row: Playlist Launcher + On Air + Music Requests */}

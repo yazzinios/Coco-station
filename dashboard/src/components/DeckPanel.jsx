@@ -3,10 +3,11 @@ import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusi
 import { useApp } from '../context/useApp';
 
 const DECK_COLORS = {
-  a: { accent: '#00d4ff', glow: 'rgba(0,212,255,0.3)' },
-  b: { accent: '#a55eea', glow: 'rgba(165,94,234,0.3)' },
-  c: { accent: '#26de81', glow: 'rgba(38,222,129,0.3)' },
-  d: { accent: '#fd9644', glow: 'rgba(253,150,68,0.3)' },
+  a: { accent: '#00d4ff', glow: 'rgba(0,212,255,0.3)'   },
+  b: { accent: '#a55eea', glow: 'rgba(165,94,234,0.3)'  },
+  c: { accent: '#26de81', glow: 'rgba(38,222,129,0.3)'  },
+  d: { accent: '#fd9644', glow: 'rgba(253,150,68,0.3)'  },
+  e: { accent: '#ff6b9d', glow: 'rgba(255,107,157,0.3)' },
 };
 
 function copyToClipboard(text) {

@@ -42,7 +42,7 @@ ALL_PLAYLIST_PERMS: List[str] = [
     "playlist.delete",
 ]
 
-DECK_IDS = ["a", "b", "c", "d"]
+DECK_IDS = ["a", "b", "c", "d", "e"]
 
 
 def _full_deck_control(view: bool = True, control: bool = True) -> Dict[str, dict]:
