@@ -186,24 +186,43 @@ def _resolve_ldap_role(member_of: list, ldap_cfg: dict) -> str:
     Walk a priority-ordered list of group→role mappings and return the
     highest-privilege role whose group DN appears in the user's memberOf list.
 
+    Matching strategy (in order, first hit wins):
+      1. Exact full-DN match (case-insensitive)
+      2. Partial DN match  — configured value is contained anywhere in the group DN
+         (handles CN-only configs like "Domain Admins" matching the full DN)
+
     Priority order (highest first):
       super_admin > admin > operator > viewer > custom (in list order)
 
     Falls back to "operator" when no group matches.
     """
-    member_of_lower = [g.lower() for g in member_of]
+    member_of_lower = [g.lower().strip() for g in member_of]
 
     def _matched(dn: str) -> bool:
-        return bool(dn and dn.strip() and dn.strip().lower() in member_of_lower)
+        if not dn or not dn.strip():
+            return False
+        needle = dn.strip().lower()
+        # 1. Exact match
+        if needle in member_of_lower:
+            return True
+        # 2. Partial / substring match (e.g. configured as "Domain Admins" or short CN)
+        for grp in member_of_lower:
+            if needle in grp:
+                return True
+        return False
 
     # ── Built-in roles (fixed priority) ──────────────────────
     if _matched(ldap_cfg.get("role_super_admin_group", "")):
+        print(f"[ldap] role resolved: super_admin (matched group DN '{ldap_cfg.get('role_super_admin_group')}'")
         return "super_admin"
     if _matched(ldap_cfg.get("role_admin_group", "")):
+        print(f"[ldap] role resolved: admin (matched group DN '{ldap_cfg.get('role_admin_group')}'")
         return "admin"
     if _matched(ldap_cfg.get("role_operator_group", "")):
+        print(f"[ldap] role resolved: operator (matched group DN '{ldap_cfg.get('role_operator_group')}'")
         return "operator"
     if _matched(ldap_cfg.get("role_viewer_group", "")):
+        print(f"[ldap] role resolved: viewer (matched group DN '{ldap_cfg.get('role_viewer_group')}'")
         return "viewer"
 
     # ── Custom roles (evaluated in list order) ────────────────
@@ -217,6 +236,7 @@ def _resolve_ldap_role(member_of: list, ldap_cfg: dict) -> str:
                 return role_name
 
     # ── Default ───────────────────────────────────────────────
+    print(f"[ldap] No group DN matched any configured role mapping — defaulting to 'operator'")
     return "operator"
 
 
@@ -256,6 +276,7 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
 
         srv = Server(server_url, port=port, get_info=ALL, tls=tls, connect_timeout=5)
 
+        # ── Step 1: bind with service account to find the user DN + groups ──
         if bind_dn and bind_pw:
             conn = Connection(srv, user=bind_dn, password=bind_pw, auto_bind=True)
         else:
@@ -264,7 +285,8 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
         conn.search(
             search_base=base_dn,
             search_filter=user_filter,
-            attributes=[attr_name, attr_email, "memberOf", "userAccountControl"],
+            attributes=[attr_name, attr_email, "memberOf", "userAccountControl",
+                        "sAMAccountName", "distinguishedName"],
         )
 
         if not conn.entries:
@@ -274,21 +296,53 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
 
         entry    = conn.entries[0]
         user_dn  = entry.entry_dn
-        conn.unbind()
 
-        user_conn = Connection(srv, user=user_dn, password=password, auto_bind=True)
-        user_conn.unbind()
-
-        # ── Collect memberOf list ─────────────────────────────
+        # ── Step 2: collect memberOf BEFORE unbinding the service account ──
+        # Some AD servers only return memberOf to the bind account, not to the
+        # user themselves, so we must read it here while still bound as service.
         try:
             raw_member_of = entry["memberOf"].values if hasattr(entry["memberOf"], "values") else []
             member_of = [str(g) for g in raw_member_of]
         except Exception:
             member_of = []
 
+        # ── Step 2b: if memberOf is empty, try a direct group membership query ──
+        # Handles AD configurations where memberOf is not returned in the initial search.
+        if not member_of:
+            try:
+                escaped_dn = user_dn.replace('\\', '\\\\').replace(')', '\\)').replace('(', '\\(').replace('*', '\\*')
+                conn.search(
+                    search_base=base_dn,
+                    search_filter=f"(&(objectClass=group)(member={escaped_dn}))",
+                    attributes=["distinguishedName", "cn"],
+                    paged_size=200,
+                )
+                member_of = [str(e.entry_dn) for e in conn.entries]
+                print(f"[ldap] memberOf fallback query found {len(member_of)} groups for '{username}'")
+            except Exception as _ge:
+                print(f"[ldap] memberOf fallback query failed: {_ge}")
+
+        conn.unbind()
+
+        # ── Step 3: verify password by binding as the user ──
+        user_conn = Connection(srv, user=user_dn, password=password, auto_bind=True)
+        user_conn.unbind()
+
         # ── Resolve role from group mappings ──────────────────
         # ── Resolve role: user-level override → group mapping → default ──
         # Per-user mapping table takes priority over group-based resolution
+
+        # Debug: print all group DNs so admins can verify their configured DNs
+        print(f"[ldap] '{username}' memberOf ({len(member_of)} groups):")
+        for g in member_of:
+            print(f"[ldap]   {g}")
+        cfg_groups = {
+            "super_admin": ldap_cfg.get("role_super_admin_group", ""),
+            "admin":       ldap_cfg.get("role_admin_group", ""),
+            "operator":    ldap_cfg.get("role_operator_group", ""),
+            "viewer":      ldap_cfg.get("role_viewer_group", ""),
+        }
+        print(f"[ldap] Configured role DNs: { {k:v for k,v in cfg_groups.items() if v} }")
         try:
             from db_client import db as _db
             user_role_override = _db.get_ldap_user_mapping(username)
