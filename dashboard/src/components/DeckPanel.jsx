@@ -78,7 +78,15 @@ function DeckMonitor({ id, color }) {
       return;
     }
     if (window.Hls?.isSupported()) {
-      const hls = new window.Hls({ lowLatencyMode: true, backBufferLength: 4 });
+      const hls = new window.Hls({
+        lowLatencyMode: true,
+        backBufferLength: 0,
+        maxBufferLength: 4,
+        maxMaxBufferLength: 8,
+        liveSyncDurationCount: 1,
+        liveMaxLatencyDurationCount: 3,
+        liveDurationInfinity: true,
+      });
       hlsRef.current = hls;
       hls.loadSource(hlsUrl);
       hls.attachMedia(audio);

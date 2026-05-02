@@ -12,6 +12,7 @@ DEFAULT_DECK_CONTROL = {
     "b": {"view": True, "control": False},
     "c": {"view": True, "control": False},
     "d": {"view": True, "control": False},
+    "e": {"view": True, "control": False},
 }
 DEFAULT_DECK_ACTIONS = []
 DEFAULT_PLAYLIST_PERMS = ["playlist.view"]

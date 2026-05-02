@@ -117,12 +117,13 @@ const DEFAULT_DECK_CONTROL = {
   b: { view: true, control: false },
   c: { view: true, control: false },
   d: { view: true, control: false },
+  e: { view: true, control: false },
 };
 const DEFAULT_DECK_ACTIONS = [];
 const DEFAULT_PLAYLIST_PERMS = ['playlist.view'];
 
 const DEFAULT_PERMISSIONS = {
-  allowed_decks:  ['a','b','c','d'],
+  allowed_decks:  ['a','b','c','d','e'],
   deck_control:   DEFAULT_DECK_CONTROL,
   deck_actions:   DEFAULT_DECK_ACTIONS,
   playlist_perms: DEFAULT_PLAYLIST_PERMS,
