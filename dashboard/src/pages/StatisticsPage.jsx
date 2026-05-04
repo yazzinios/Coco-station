@@ -43,7 +43,7 @@ export default function StatisticsPage() {
   const statCards = stats ? [
     { label: 'Total Uptime',       value: formatUptime(stats.uptime_seconds), icon: <Clock size={22} />, color: '#00d4ff' },
     { label: 'Tracks Played',      value: stats.tracks_played ?? 0,           icon: <Music size={22} />, color: '#26de81' },
-    { label: 'Active Decks',       value: `${stats.playing_decks ?? 0} / 4`,  icon: <Layers size={22} />, color: '#a55eea' },
+    { label: 'Active Decks',       value: `${stats.playing_decks ?? 0} / 5`,  icon: <Layers size={22} />, color: '#a55eea' },
     { label: 'Library Tracks',     value: stats.library_count ?? 0,           icon: <Library size={22} />, color: '#fd9644' },
   ] : [];
 

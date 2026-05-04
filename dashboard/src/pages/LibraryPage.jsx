@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
-const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644' };
+const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644', e: '#ff6b9d' };
 const ALLOWED_EXTS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
 
 /* ─────────────────────── Upload Queue Item ─────────────────────── */
@@ -573,7 +573,7 @@ export default function LibraryPage() {
                         </div>
                       </div>
                       <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center', flexShrink: 0 }}>
-                        {['a', 'b', 'c', 'd'].map(deckId => {
+                        {['a', 'b', 'c', 'd', 'e'].map(deckId => {
                           const allowed = canControlDeck(deckId);
                           const isLoaded  = decks[deckId]?.track === track.filename;
                           const isPlaying = decks[deckId]?.is_playing && isLoaded;
@@ -704,7 +704,7 @@ export default function LibraryPage() {
 
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                       <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.3)', marginRight: '0.15rem' }}>Send to:</span>
-                      {['a', 'b', 'c', 'd'].map(deckId => {
+                      {['a', 'b', 'c', 'd', 'e'].map(deckId => {
                         const allowed = canControlDeck(deckId);
                         return (
                           <button key={deckId} onClick={() => handleLoadPlaylist(pl.id, deckId)}

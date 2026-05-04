@@ -73,7 +73,7 @@ const TIMEZONES = [
 export default function SettingsPage() {
   const { decks, toast, api, settings } = useApp();
 
-  const [deckNames,    setDeckNames]    = useState({ a: '', b: '', c: '', d: '' });
+  const [deckNames,    setDeckNames]    = useState({ a: '', b: '', c: '', d: '', e: '' });
   const [ducking,      setDucking]      = useState(5);
   const [micDucking,   setMicDucking]   = useState(20);
   const [dbMode,       setDbMode]       = useState('local');
@@ -126,6 +126,7 @@ export default function SettingsPage() {
     setDeckNames({
       a: decks.a?.name || 'Deck A', b: decks.b?.name || 'Deck B',
       c: decks.c?.name || 'Deck C', d: decks.d?.name || 'Deck D',
+      e: decks.e?.name || 'Deck E',
     });
   }, [decks]);
 
@@ -779,7 +780,7 @@ export default function SettingsPage() {
         <div className="glass-panel" style={panel}>
           <h3 style={{ marginBottom: '1.1rem', color: 'var(--accent-blue)', fontSize: '1rem' }}>Deck Names</h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            {['a', 'b', 'c', 'd'].map(id => (
+            {['a', 'b', 'c', 'd', 'e'].map(id => (
               <div key={id}>
                 <label style={lbl}>Deck {id.toUpperCase()}</label>
                 <input type="text" value={deckNames[id]}

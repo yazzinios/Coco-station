@@ -356,7 +356,7 @@ export default function OnAirButton() {
 
       {/* Target selector */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: '0.4rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
-        {['ALL', 'A', 'B', 'C', 'D'].map(t => {
+        {['ALL', 'A', 'B', 'C', 'D', 'E'].map(t => {
           const sel = targets.includes(t);
           return (
             <button key={t} onClick={() => !isOnAir && toggleTarget(t)} style={{

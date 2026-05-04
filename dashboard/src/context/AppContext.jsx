@@ -149,6 +149,7 @@ export function AppProvider({ children }) {
     b: DEFAULT_DECK('b', 'Deck B'),
     c: DEFAULT_DECK('c', 'Karting'),
     d: DEFAULT_DECK('d', 'Deck D'),
+    e: DEFAULT_DECK('e', 'Deck E'),
   });
   const [library,                   setLibrary]                   = useState([]);
   const [announcements,             setAnnouncements]             = useState([]);
@@ -268,7 +269,7 @@ export function AppProvider({ children }) {
     const cfg = dc[deckId.toLowerCase()];
     if (cfg !== undefined) return cfg.view !== false;
     // fallback: old allowed_decks
-    return (p.allowed_decks || ['a','b','c','d']).includes(deckId.toLowerCase());
+    return (p.allowed_decks || ['a','b','c','d','e']).includes(deckId.toLowerCase());
   }, [currentUser, isElevated, userPermissions]);
 
   /**
@@ -283,7 +284,7 @@ export function AppProvider({ children }) {
     const cfg = dc[deckId.toLowerCase()];
     if (cfg !== undefined) return cfg.control === true;
     // fallback: old allowed_decks = full control
-    return (p.allowed_decks || ['a','b','c','d']).includes(deckId.toLowerCase());
+    return (p.allowed_decks || ['a','b','c','d','e']).includes(deckId.toLowerCase());
   }, [currentUser, isElevated, userPermissions]);
 
   /**
