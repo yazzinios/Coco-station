@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { Music, Upload, Trash2, ListMusic, Plus, ChevronUp, ChevronDown, Play, CheckCircle, XCircle, Loader, X } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
-const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644' };
+const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644', e: '#ff6b9d' };
 const ALLOWED_EXTS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
 
 /* ─────────────────────── Upload Queue Item ─────────────────────── */
@@ -535,7 +535,7 @@ export default function LibraryManager() {
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', flexShrink: 0 }}>
-                      {['a', 'b', 'c', 'd'].map(deckId => {
+                      {['a', 'b', 'c', 'd', 'e'].map(deckId => {
                         const isLoaded  = decks[deckId]?.track === track.filename;
                         const isPlaying = decks[deckId]?.is_playing && isLoaded;
                         const color     = DECK_COLORS[deckId];
@@ -637,7 +637,7 @@ export default function LibraryManager() {
 
                   <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                     <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)', marginRight: '0.1rem' }}>Send to:</span>
-                    {['a', 'b', 'c', 'd'].map(deckId => (
+                    {['a', 'b', 'c', 'd', 'e'].map(deckId => (
                       <button key={deckId} onClick={() => handleLoadPlaylist(pl.id, deckId)}
                         title={`Load & play on Deck ${deckId.toUpperCase()}`}
                         style={{

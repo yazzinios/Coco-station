@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Music, Check, X, Trash2, RefreshCw, Inbox, User, Phone, MessageSquare, Play } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
-const DECK_IDS = ['a', 'b', 'c', 'd'];
+const DECK_IDS = ['a', 'b', 'c', 'd', 'e'];
 
 export default function RequestsManagementPage() {
   const { api, toast, musicRequests, decks } = useApp();

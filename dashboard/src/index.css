@@ -135,8 +135,15 @@ body {
    RESPONSIVE BREAKPOINTS
    ════════════════════════════════════════════════════════════ */
 
-/* ── Large tablet / small desktop: 2-column deck grid ──── */
+/* ── Large tablet / small desktop: 3-column deck grid ──── */
 @media (max-width: 1200px) {
+  .deck-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* ── Medium tablet: 2+3 layout ─────────────────────────── */
+@media (max-width: 900px) {
   .deck-grid {
     grid-template-columns: repeat(2, 1fr);
   }

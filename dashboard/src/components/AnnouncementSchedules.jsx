@@ -12,7 +12,7 @@ const DAYS_OF_WEEK = [
   { id: 6, label: 'Sun', full: 'Sunday' },
 ];
 
-const DECK_OPTIONS = ['A', 'B', 'C', 'D'];
+const DECK_OPTIONS = ['A', 'B', 'C', 'D', 'E'];
 
 export default function AnnouncementSchedules() {
   const { announcements, recurringSchedules, toast, api } = useApp();
