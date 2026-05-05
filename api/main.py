@@ -995,7 +995,7 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(requir
 async def mic_on(req: MicControlRequest, _user=Depends(require_permission("can_announce"))):
     if _TRIGGER_LOCK_REF[0].locked():
         raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
-    deck_ids = ["a","b","c","d"] if "ALL" in req.targets else [t.lower() for t in req.targets]
+    deck_ids = ["a","b","c","d","e"] if "ALL" in req.targets else [t.lower() for t in req.targets]
     await fade_and_enable_mic(deck_ids)
     MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
     await manager.broadcast({"type": "MIC_STATUS", "active": True, "targets": req.targets})
@@ -1009,7 +1009,7 @@ async def mic_off(_user=Depends(require_permission("can_announce"))):
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/off")
     except Exception: pass
     await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
-    deck_ids = ["a","b","c","d"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+    deck_ids = ["a","b","c","d","e"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
     asyncio.create_task(fade_restore_after_mic(deck_ids))
     return {"status": "ok"}
 
@@ -1078,7 +1078,7 @@ async def play_announcement(ann_id: str, _user=Depends(require_permission("can_a
         raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
-    deck_ids = ["a","b","c","d"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
+    deck_ids = ["a","b","c","d","e"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
     asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
@@ -1138,7 +1138,7 @@ async def get_listeners():
     except Exception as e:
         print(f"[listeners] Failed to query mediamtx: {e}")
     decks_summary = {}; total = 0
-    for deck_id in ["deck-a", "deck-b", "deck-c", "deck-d"]:
+    for deck_id in ["deck-a", "deck-b", "deck-c", "deck-d", "deck-e"]:
         count = sum(info["listeners"] for name, info in result.items() if name.startswith(deck_id))
         decks_summary[deck_id] = count; total += count
     return {"total": total, "decks": decks_summary, "paths": result}
@@ -1681,7 +1681,7 @@ async def delete_user(user_id: str, request: Request, _user: dict = Depends(veri
 # ── Permissions ─────────────────────────────────────────────
 
 class PermissionsRequest(_PydanticBase):
-    allowed_decks:  List[str]            = ["a","b","c","d"]
+    allowed_decks:  List[str]            = ["a","b","c","d","e"]
     deck_control:   Optional[dict]       = None
     deck_actions:   Optional[List[str]]  = None
     playlist_perms: Optional[List[str]]  = None

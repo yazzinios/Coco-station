@@ -846,7 +846,7 @@ class DBClient:
                                 try: perm[jk] = json.loads(perm[jk])
                                 except Exception: pass
                         if perm['allowed_decks'] is None:
-                            perm['allowed_decks'] = ['a','b','c','d']
+                            perm['allowed_decks'] = ['a','b','c','d','e']
                         if perm['deck_control'] is None:
                             perm['deck_control'] = DEFAULT_DECK_CONTROL
                         if perm['deck_actions'] is None:
@@ -947,7 +947,7 @@ class DBClient:
         import re
         conn = None
         default = {
-            "allowed_decks":   ["a", "b", "c", "d"],
+            "allowed_decks":   ["a", "b", "c", "d", "e"],
             "deck_control":    DEFAULT_DECK_CONTROL,
             "deck_actions":    DEFAULT_DECK_ACTIONS,
             "playlist_perms":  DEFAULT_PLAYLIST_PERMS,
@@ -981,7 +981,7 @@ class DBClient:
                     return default
                 data = dict(row)
                 # Parse JSONB fields
-                data["allowed_decks"]  = self._parse_jsonb(data.get("allowed_decks"),  ["a","b","c","d"])
+                data["allowed_decks"]  = self._parse_jsonb(data.get("allowed_decks"),  ["a","b","c","d","e"])
                 data["deck_control"]   = self._parse_jsonb(data.get("deck_control"),   DEFAULT_DECK_CONTROL)
                 data["deck_actions"]   = self._parse_jsonb(data.get("deck_actions"),   DEFAULT_DECK_ACTIONS)
                 data["playlist_perms"] = self._parse_jsonb(data.get("playlist_perms"), DEFAULT_PLAYLIST_PERMS)
@@ -1152,7 +1152,7 @@ class DBClient:
                     role['id'], role['name'], role['display_name'],
                     role.get('description', ''), role.get('color', '#6B7280'),
                     role.get('is_system', False),
-                    json.dumps(role.get('default_allowed_decks', ['a','b','c','d'])),
+                    json.dumps(role.get('default_allowed_decks', ['a','b','c','d','e'])),
                     json.dumps(role.get('default_deck_control', {})),
                     json.dumps(role.get('default_deck_actions', [])),
                     json.dumps(role.get('default_playlist_perms', [])),
