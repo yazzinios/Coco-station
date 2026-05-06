@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS chimes (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS deck_names (
+    deck_id VARCHAR(1) PRIMARY KEY,
+    name    VARCHAR(255) NOT NULL DEFAULT ''
+);
+INSERT INTO deck_names (deck_id, name) VALUES
+    ('a', 'Castle'), ('b', 'Deck B'), ('c', 'Karting'), ('d', 'Deck D'), ('e', 'Deck E')
+ON CONFLICT (deck_id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS company_branding (
     id           SERIAL PRIMARY KEY,
     company_name VARCHAR(255) NOT NULL DEFAULT '',
@@ -106,8 +114,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS user_permissions (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
-    deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+    allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d","e"]',
+    deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true},"e":{"view":true,"control":true}}',
     deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
     playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
     can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
@@ -126,8 +134,8 @@ CREATE TABLE IF NOT EXISTS roles (
     description TEXT DEFAULT '',
     color VARCHAR(20) DEFAULT '#6B7280',
     is_system BOOLEAN NOT NULL DEFAULT FALSE,
-    default_allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d"]',
-    default_deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}',
+    default_allowed_decks  JSONB NOT NULL DEFAULT '["a","b","c","d","e"]',
+    default_deck_control   JSONB NOT NULL DEFAULT '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true},"e":{"view":true,"control":true}}',
     default_deck_actions   JSONB NOT NULL DEFAULT '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]',
     default_playlist_perms JSONB NOT NULL DEFAULT '["playlist.view","playlist.load"]',
     default_can_announce   BOOLEAN NOT NULL DEFAULT TRUE,
@@ -164,16 +172,17 @@ INSERT INTO decks (id, name, volume, is_playing) VALUES
     ('a', 'Castle',  100, false),
     ('b', 'Deck B',  100, false),
     ('c', 'Karting', 100, false),
-    ('d', 'Deck D',  100, false)
+    ('d', 'Deck D',  100, false),
+    ('e', 'Deck E',  100, false)
 ON CONFLICT (id) DO NOTHING;
 """
 
 
 def _seed_roles(cur):
     """Insert the four built-in system roles if they don't already exist."""
-    FULL_DECKS         = '["a","b","c","d"]'
-    FULL_CTRL          = '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true}}'
-    VIEW_ONLY_CTRL     = '{"a":{"view":true,"control":false},"b":{"view":true,"control":false},"c":{"view":true,"control":false},"d":{"view":true,"control":false}}'
+    FULL_DECKS         = '["a","b","c","d","e"]'
+    FULL_CTRL          = '{"a":{"view":true,"control":true},"b":{"view":true,"control":true},"c":{"view":true,"control":true},"d":{"view":true,"control":true},"e":{"view":true,"control":true}}'
+    VIEW_ONLY_CTRL     = '{"a":{"view":true,"control":false},"b":{"view":true,"control":false},"c":{"view":true,"control":false},"d":{"view":true,"control":false},"e":{"view":true,"control":false}}'
     ALL_ACTIONS        = '["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"]'
     ALL_PL_PERMS       = '["playlist.view","playlist.load","playlist.create","playlist.edit","playlist.delete"]'
     OPERATOR_PL_PERMS  = '["playlist.view","playlist.load","playlist.create","playlist.edit"]'
@@ -276,6 +285,21 @@ def run_migrations_local(db_url: str):
     # not plain SQL, and cannot be executed as a bare statement via psycopg2.
     REPAIR_SQL = """
 DO $$ BEGIN
+
+    -- ── deck_names (create if missing on legacy deployments) ─────────────────
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'deck_names') THEN
+        CREATE TABLE deck_names (
+            deck_id VARCHAR(1) PRIMARY KEY,
+            name    VARCHAR(255) NOT NULL DEFAULT ''
+        );
+        INSERT INTO deck_names (deck_id, name) VALUES
+            ('a', 'Castle'), ('b', 'Deck B'), ('c', 'Karting'), ('d', 'Deck D'), ('e', 'Deck E')
+        ON CONFLICT (deck_id) DO NOTHING;
+    ELSE
+        -- Ensure Deck E row exists even if table was created before
+        INSERT INTO deck_names (deck_id, name) VALUES ('e', 'Deck E')
+        ON CONFLICT (deck_id) DO NOTHING;
+    END IF;
 
     -- ── recurring_mixer_schedules ────────────────────────────────────────────
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN

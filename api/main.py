@@ -962,6 +962,66 @@ async def stop_deck(deck_id: str, _user=Depends(require_permission("deck.stop"))
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
 
+
+class DeckCloneRequest(_PydanticBase):
+    source_deck: str   # e.g. "a"
+    target_deck: str   # e.g. "b"
+
+
+@app.post("/api/decks/clone")
+async def clone_deck(req: DeckCloneRequest, request: Request,
+                     _user=Depends(require_permission("deck.play")),
+                     _access=Depends(require_deck_access("control"))):
+    """Start the same track on target_deck at the exact same playback position as source_deck.
+    Both decks end up playing in sync (within ~1 second of network + ffmpeg seek latency).
+    """
+    src, tgt = req.source_deck.lower(), req.target_deck.lower()
+    if src not in DECKS: raise HTTPException(status_code=404, detail=f"Source deck '{src}' not found")
+    if tgt not in DECKS: raise HTTPException(status_code=404, detail=f"Target deck '{tgt}' not found")
+    if src == tgt: raise HTTPException(status_code=400, detail="Source and target deck must be different")
+
+    src_state = DECKS[src]
+    if not src_state.get("is_playing") or not src_state.get("track"):
+        raise HTTPException(status_code=400, detail=f"Deck {src.upper()} is not currently playing")
+
+    track    = src_state["track"]
+    is_loop  = src_state.get("is_loop", False)
+    volume   = src_state.get("volume", 100)
+
+    # Ask the mixer for the live playback position on the source deck
+    elapsed = 0.0
+    try:
+        async with httpx.AsyncClient(timeout=3) as c:
+            r = await c.get(f"{FFMPEG_URL}/decks/{src}/position")
+            if r.status_code == 200:
+                data     = r.json()
+                elapsed  = float(data.get("elapsed", 0.0))
+    except Exception as e:
+        print(f"[clone] Could not get position from mixer for deck {src}: {e}")
+
+    # Add a small buffer to compensate for HTTP round-trip latency (~0.3 s)
+    seek_to = max(0.0, elapsed + 0.3)
+
+    # Load the track state on target deck
+    DECKS[tgt]["track"]      = track
+    DECKS[tgt]["is_playing"] = True
+    DECKS[tgt]["is_paused"]  = False
+    DECKS[tgt]["is_loop"]    = is_loop
+    DECKS[tgt]["volume"]     = volume
+
+    filepath = str(Path("/library") / track)
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{FFMPEG_URL}/decks/{tgt}/play",
+                         json={"filepath": filepath, "loop": is_loop, "seek_seconds": seek_to})
+            await c.post(f"{FFMPEG_URL}/decks/{tgt}/volume/{volume}")
+    except Exception as e:
+        print(f"[clone] Mixer play failed for deck {tgt}: {e}")
+
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    _audit(request, _user, "deck.clone", {"source": src, "target": tgt, "track": track, "seek": seek_to})
+    return {"status": "ok", "source": src, "target": tgt, "track": track, "seek_seconds": seek_to}
+
 @app.post("/api/decks/{deck_id}/loop")
 async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")

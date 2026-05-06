@@ -404,7 +404,9 @@ export function AppProvider({ children }) {
     if (!currentUser) return;
 
     let reconnectTimer = null;
+    let destroyed = false;  // guard: stop reconnecting after unmount
     const connectWS = () => {
+      if (destroyed) return;  // don't reconnect after cleanup
       const token  = getStoredToken();
       const wsUrl  = buildWsUrl('/ws') + (token ? `?token=${encodeURIComponent(token)}` : '');
       const ws = new WebSocket(wsUrl);
@@ -416,12 +418,13 @@ export function AppProvider({ children }) {
       ws.onclose = (evt) => {
         setWsConnected(false);
         if (evt.code === 4001) { logout(); return; }
-        reconnectTimer = setTimeout(connectWS, 3000);
+        if (!destroyed) reconnectTimer = setTimeout(connectWS, 3000);
       };
       ws.onerror = () => ws.close();
     };
 
     connectWS();
+    // Fetch initial data right after WS connects
     setTimeout(() => {
       fetchLibrary();
       fetchAnnouncements();
@@ -431,11 +434,16 @@ export function AppProvider({ children }) {
       fetchSchedulerStatus();
     }, 0);
 
-    const statusTimer = setInterval(fetchSchedulerStatus, 5000);
+    // Poll scheduler status every 60 s.
+    // IMPORTANT: the interval id is captured in a const so the cleanup
+    // closure always clears the correct timer — prevents stacking when
+    // the component re-mounts (e.g. multiple browser tabs / HMR).
+    const statusTimer = setInterval(fetchSchedulerStatus, 60_000);
 
     return () => {
-      if (reconnectTimer) clearTimeout(reconnectTimer);
+      destroyed = true;  // stop any pending reconnect from firing
       clearInterval(statusTimer);
+      clearTimeout(reconnectTimer);  // also cancel any pending reconnect
       wsRef.current?.close();
     };
   }, [currentUser]); // eslint-disable-line
@@ -710,6 +718,15 @@ export function AppProvider({ children }) {
       if (!r.ok) throw new Error(await parseError(r));
     },
     getSchedulerStatus: fetchSchedulerStatus,
+    // ── Deck Clone (sync) ──
+    cloneDeck: async (sourceDeck, targetDeck) => {
+      const r = await authFetch('/api/decks/clone', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_deck: sourceDeck, target_deck: targetDeck }),
+      });
+      if (!r.ok) throw new Error(await parseError(r));
+      return r.json();
+    },
     // ── Users ──
     authFetch,
     getUsers: async () => {

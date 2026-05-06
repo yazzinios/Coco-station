@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ListMusic, Play, Repeat, Music2, User, MessageSquare, Check, X, Trash2 } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { ListMusic, Play, Repeat, Music2, User, MessageSquare, Check, X, Trash2, Search, Download, Copy } from 'lucide-react';
 import DeckPanel from '../components/DeckPanel';
 import OnAirButton from '../components/OnAirButton';
 import { useApp } from '../context/useApp';
@@ -14,7 +14,10 @@ function BroadcastLauncher() {
   const [selectedDecks, setSelectedDecks] = useState([]);
   const [loop,          setLoop]          = useState(false);
   const [launching,     setLaunching]     = useState(false);
-  const [tab,           setTab]           = useState('playlists'); // 'playlists' | 'tracks'
+  const [tab,           setTab]           = useState('playlists'); // 'playlists' | 'tracks' | 'sync'
+  const [trackSearch,   setTrackSearch]   = useState('');
+  const [syncSource,    setSyncSource]    = useState('');
+  const [syncing,       setSyncing]       = useState(false);
 
   const controllableDecks = DECK_IDS.filter(d => canControlDeck(d));
 
@@ -63,9 +66,12 @@ function BroadcastLauncher() {
       toast.error('Load failed on all decks');
   };
 
-  const trackList = (library || []).filter(t =>
-    /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(t.filename)
-  );
+  const trackList = useMemo(() => {
+    const q = trackSearch.trim().toLowerCase();
+    return (library || [])
+      .filter(t => /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(t.filename))
+      .filter(t => !q || t.filename.toLowerCase().includes(q));
+  }, [library, trackSearch]);
 
   return (
     <div className="glass-panel" style={{ padding: '1.25rem' }}>
@@ -144,18 +150,59 @@ function BroadcastLauncher() {
       </div>
 
       {/* ── Tab switcher ── */}
-      <div style={{ display: 'flex', gap: '0.35rem', marginBottom: '0.75rem' }}>
-        {['playlists', 'tracks'].map(t => (
+      <div style={{ display: 'flex', gap: '0.35rem', marginBottom: tab === 'tracks' ? '0.45rem' : '0.75rem' }}>
+        {['playlists', 'tracks', 'sync'].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             flex: 1, padding: '0.32rem', borderRadius: '6px', fontFamily: 'inherit', cursor: 'pointer',
-            border: `1px solid ${tab === t ? 'rgba(0,212,255,0.4)' : 'rgba(255,255,255,0.08)'}`,
-            background: tab === t ? 'rgba(0,212,255,0.1)' : 'transparent',
-            color: tab === t ? 'var(--accent-blue)' : 'var(--text-secondary)',
+            border: `1px solid ${
+              tab === t
+                ? t === 'sync' ? 'rgba(46,213,115,0.4)' : 'rgba(0,212,255,0.4)'
+                : 'rgba(255,255,255,0.08)'
+            }`,
+            background: tab === t
+              ? t === 'sync' ? 'rgba(46,213,115,0.1)' : 'rgba(0,212,255,0.1)'
+              : 'transparent',
+            color: tab === t
+              ? t === 'sync' ? '#2ed573' : 'var(--accent-blue)'
+              : 'var(--text-secondary)',
             fontSize: '0.75rem', fontWeight: tab === t ? '700' : '400',
             textTransform: 'capitalize', transition: 'all 0.15s',
-          }}>{t}</button>
+          }}>{t === 'sync' ? '🔗 Sync' : t}</button>
         ))}
       </div>
+
+      {/* ── Track search bar (only in tracks tab) ── */}
+      {tab === 'tracks' && (
+        <div style={{ position: 'relative', marginBottom: '0.55rem' }}>
+          <Search size={13} style={{
+            position: 'absolute', left: '0.6rem', top: '50%', transform: 'translateY(-50%)',
+            color: 'rgba(255,255,255,0.3)', pointerEvents: 'none',
+          }} />
+          <input
+            type="text"
+            value={trackSearch}
+            onChange={e => setTrackSearch(e.target.value)}
+            placeholder="Search tracks…"
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              padding: '0.38rem 0.75rem 0.38rem 2rem',
+              borderRadius: '7px', border: '1px solid rgba(255,255,255,0.1)',
+              background: 'rgba(0,0,0,0.25)', color: 'white',
+              fontFamily: 'inherit', fontSize: '0.78rem', outline: 'none',
+            }}
+          />
+          {trackSearch && (
+            <button
+              onClick={() => setTrackSearch('')}
+              style={{
+                position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', color: 'rgba(255,255,255,0.35)',
+                cursor: 'pointer', padding: '0', lineHeight: 1, fontSize: '0.85rem',
+              }}
+            >✕</button>
+          )}
+        </div>
+      )}
 
       {/* ── Content ── */}
       <div style={{ maxHeight: '260px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
@@ -201,7 +248,7 @@ function BroadcastLauncher() {
         {tab === 'tracks' && (
           trackList.length === 0
             ? <div style={{ textAlign: 'center', padding: '1.5rem', color: 'rgba(255,255,255,0.2)', fontSize: '0.82rem' }}>
-                No tracks in library
+                {trackSearch ? `No tracks match "${trackSearch}"` : 'No tracks in library'}
               </div>
             : trackList.map(t => (
                 <div key={t.filename} style={{
@@ -213,9 +260,11 @@ function BroadcastLauncher() {
                   <div style={{ flex: 1, minWidth: 0, fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {t.filename.replace(/\.[^.]+$/, '')}
                   </div>
+                  {/* Load-only button — sends track to deck without auto-playing */}
                   <button
                     onClick={() => launchTrack(t.filename)}
                     disabled={launching || selectedDecks.length === 0}
+                    title={selectedDecks.length === 0 ? 'Select a deck first' : `Load onto Deck ${selectedDecks.map(d=>d.toUpperCase()).join('+')} (does not auto-play)`}
                     style={{
                       padding: '0.28rem 0.65rem', borderRadius: '6px', border: 'none', fontFamily: 'inherit',
                       background: selectedDecks.length > 0 ? 'rgba(165,94,234,0.15)' : 'rgba(255,255,255,0.05)',
@@ -226,12 +275,119 @@ function BroadcastLauncher() {
                       transition: 'all 0.15s', flexShrink: 0,
                     }}
                   >
-                    <Play size={10} fill="currentColor" />
+                    <Download size={10} />
                     {launching ? '…' : `→ ${selectedDecks.length > 0 ? selectedDecks.map(d=>d.toUpperCase()).join('+') : '?'}`}
                   </button>
                 </div>
               ))
         )}
+
+        {/* ── Sync Tab ── */}
+        {tab === 'sync' && (() => {
+          const playingDecks = DECK_IDS.filter(d => decks[d]?.is_playing && decks[d]?.track);
+          const targetDecks  = DECK_IDS.filter(d => canControlDeck(d) && d !== syncSource);
+
+          const handleSync = async (targetDeck) => {
+            if (!syncSource) { toast.warning('Pick a source deck first'); return; }
+            setSyncing(true);
+            try {
+              const res = await api.cloneDeck(syncSource, targetDeck);
+              const trackName = (res.track || '').replace(/\.[^.]+$/, '');
+              toast.success(`🔗 Deck ${syncSource.toUpperCase()} → Deck ${targetDeck.toUpperCase()} synced at ${res.seek_seconds?.toFixed(1)}s  (“${trackName}”)`);
+            } catch (err) {
+              toast.error(`Sync failed: ${err.message}`);
+            } finally {
+              setSyncing(false);
+            }
+          };
+
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', padding: '0.1rem 0' }}>
+              {/* Description */}
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5,
+                padding: '0.55rem 0.75rem', borderRadius: '8px', background: 'rgba(46,213,115,0.05)',
+                border: '1px solid rgba(46,213,115,0.12)' }}>
+                🔗 Pick a <strong style={{ color: '#2ed573' }}>source deck</strong> that’s already playing,
+                then click a target to start the same track at the same minute on that deck.
+              </div>
+
+              {/* Source deck picker */}
+              <div>
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', textTransform: 'uppercase',
+                  letterSpacing: '0.5px', marginBottom: '0.4rem' }}>Source (currently playing)</div>
+                {playingDecks.length === 0 ? (
+                  <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.2)', fontStyle: 'italic', padding: '0.5rem 0' }}>
+                    No deck is currently playing
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                    {playingDecks.map(d => {
+                      const isSelected = syncSource === d;
+                      const trackName  = (decks[d]?.track || '').replace(/\.[^.]+$/, '');
+                      return (
+                        <button key={d} onClick={() => setSyncSource(isSelected ? '' : d)}
+                          title={trackName}
+                          style={{
+                            flex: 1, padding: '0.5rem 0.3rem', borderRadius: '8px', fontFamily: 'inherit',
+                            border: `2px solid ${isSelected ? DECK_COLORS[d] : DECK_COLORS[d] + '40'}`,
+                            background: isSelected ? DECK_COLORS[d] + '25' : 'rgba(255,255,255,0.03)',
+                            color: isSelected ? DECK_COLORS[d] : 'rgba(255,255,255,0.55)',
+                            cursor: 'pointer', fontSize: '0.75rem', fontWeight: '700',
+                            boxShadow: isSelected ? `0 0 10px ${DECK_COLORS[d]}50` : 'none',
+                            transition: 'all 0.15s',
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem',
+                          }}>
+                          <span>{d.toUpperCase()}</span>
+                          <span style={{ fontSize: '0.58rem', fontWeight: 400, color: isSelected ? DECK_COLORS[d] : 'rgba(255,255,255,0.3)',
+                            maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            display: 'block', width: '100%', textAlign: 'center', padding: '0 2px' }}>
+                            {trackName.length > 10 ? trackName.slice(0, 10) + '…' : trackName || '♪'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Target deck buttons */}
+              {syncSource && (
+                <div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', textTransform: 'uppercase',
+                    letterSpacing: '0.5px', marginBottom: '0.4rem' }}>
+                    Sync to → (click to clone Deck {syncSource.toUpperCase()})
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    {targetDecks.map(d => (
+                      <button key={d}
+                        onClick={() => handleSync(d)}
+                        disabled={syncing}
+                        title={`Start ${decks[syncSource]?.track?.replace(/\.[^.]+$/, '')} on Deck ${d.toUpperCase()} at the same position`}
+                        style={{
+                          flex: 1, minWidth: '52px', padding: '0.5rem 0.3rem', borderRadius: '8px', fontFamily: 'inherit',
+                          border: `2px solid ${DECK_COLORS[d]}50`,
+                          background: syncing ? 'rgba(255,255,255,0.03)' : DECK_COLORS[d] + '15',
+                          color: syncing ? 'rgba(255,255,255,0.2)' : DECK_COLORS[d],
+                          cursor: syncing ? 'not-allowed' : 'pointer',
+                          fontSize: '0.75rem', fontWeight: '700', transition: 'all 0.15s',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem',
+                        }}>
+                        <Copy size={11} />
+                        <span>{d.toUpperCase()}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!syncSource && playingDecks.length > 0 && (
+                <div style={{ fontSize: '0.73rem', color: 'rgba(255,255,255,0.2)', textAlign: 'center', paddingBottom: '0.25rem' }}>
+                  ↑ Select a source deck above
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

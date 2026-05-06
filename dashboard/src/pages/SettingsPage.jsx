@@ -150,11 +150,18 @@ export default function SettingsPage() {
     setLdapTlsVerify(settings?.ldap_tls_verify ?? true);
     // Company
     if (settings?.company_name != null) setCompanyName(settings.company_name || '');
-    if (settings?.company_logo) {
-      setCompanyLogoUrl(`${api.baseUrl || ''}/api/settings/company/logo?t=${Date.now()}`);
-    } else {
-      setCompanyLogoUrl(null);
-    }
+    // Only update the logo URL when the logo presence actually changes.
+    // Previously this ran on every settings update and appended a fresh ?t=
+    // timestamp each time, causing a 371 KB fetch every 60 s.
+    // We now use a stable URL; nginx caches it for 5 min regardless.
+    setCompanyLogoUrl(prev => {
+      const shouldShow = Boolean(settings?.company_logo);
+      if (!shouldShow) return null;
+      // Keep whatever URL is already set (avoids re-fetching); only set once
+      // when transitioning from no-logo → logo.
+      if (prev) return prev;
+      return '/api/settings/company/logo';
+    });
   }, [settings]);
 
   // Auto-fetch LDAP info when enabled and section expanded
@@ -205,6 +212,9 @@ export default function SettingsPage() {
         const r = await api.authFetch('/api/settings/company/logo', { method: 'POST', body: fd });
         if (!r.ok) throw new Error('Logo upload failed');
         setCompanyLogoFile(null);
+        // After a successful upload set the stable URL (no ?t= timestamp).
+        // nginx will serve the new file once its 5-min cache entry expires.
+        setCompanyLogoUrl('/api/settings/company/logo');
       }
       // Save company name
       await api.saveSettings({ company_name: companyName });

@@ -69,6 +69,7 @@ class Deck:
 
         self._mic_last_active = 0.0
         self._mic_holdoff     = 0.8
+        self._play_started_at = 0.0  # epoch when current track started (adjusted for seek)
 
         self.track_q = queue.Queue(maxsize=500)
         self.ann_q   = queue.Queue(maxsize=200)
@@ -194,15 +195,18 @@ class Deck:
                     print(f"[Deck {self.name}] Skipping stale announcement_ended (gen {my_generation} != {current_generation})")
             # "jingle" → fires nothing intentionally
 
-    def play(self, filepath, loop: bool = False):
+    def play(self, filepath, loop: bool = False, seek_seconds: float = 0.0):
         self.stop()
         self._stop_requested = False
         with self.lock:
             self.is_playing    = True
             self.is_loop       = loop
             self.current_track = filepath
+            self._play_started_at = time.time() - seek_seconds  # adjust epoch so elapsed stays correct
 
         cmd = ["ffmpeg", "-y"]
+        if seek_seconds > 0:
+            cmd += ["-ss", str(seek_seconds)]  # seek BEFORE input for fast seek
         if loop:
             cmd += ["-stream_loop", "-1"]
         cmd += [
@@ -215,7 +219,7 @@ class Deck:
             args=(self.track_proc, self.track_q, "track"),
             daemon=True,
         ).start()
-        print(f"[Deck {self.name}] Playing: {filepath} (loop={loop})")
+        print(f"[Deck {self.name}] Playing: {filepath} (loop={loop}, seek={seek_seconds:.1f}s)")
 
     def pause(self):
         with self.lock:
@@ -344,6 +348,7 @@ app = FastAPI(lifespan=lifespan)
 class PlayRequest(BaseModel):
     filepath: str
     loop: bool = False
+    seek_seconds: float = 0.0  # start playback at this offset (for deck sync/clone)
 
 class PlayAnnouncementRequest(BaseModel):
     filepath: str
@@ -365,8 +370,21 @@ class MicStreamStopRequest(BaseModel):
 def play_track(deck_id: str, req: PlayRequest):
     if deck_id not in decks:
         raise HTTPException(status_code=404, detail="Deck not found")
-    decks[deck_id].play(req.filepath, loop=req.loop)
+    decks[deck_id].play(req.filepath, loop=req.loop, seek_seconds=req.seek_seconds)
     return {"status": "ok", "deck": deck_id, "filepath": req.filepath, "loop": req.loop}
+
+@app.get("/decks/{deck_id}/position")
+def get_position(deck_id: str):
+    """Return elapsed playback seconds for the current track.
+    Used by the clone/sync feature to seek a second deck to the same position.
+    """
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    d = decks[deck_id]
+    if not d.is_playing or not d.current_track:
+        return {"deck": deck_id, "elapsed": 0.0, "is_playing": False}
+    elapsed = max(0.0, time.time() - d._play_started_at)
+    return {"deck": deck_id, "elapsed": round(elapsed, 2), "is_playing": True, "track": d.current_track}
 
 @app.post("/decks/{deck_id}/pause")
 def pause_track(deck_id: str):
