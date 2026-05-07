@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import Sidebar from './components/Sidebar';
@@ -16,7 +16,7 @@ import LoginPage from './pages/LoginPage';
 import UsersPage from './pages/UsersPage';
 import { useApp } from './context/useApp';
 
-function AppHeader() {
+function AppHeader({ onToggleFullscreen, isFullscreen }) {
   const { wsConnected, currentUser, logout, settings, api } = useApp();
   const stationName = settings?.company_name || 'CocoStation';
   const logoUrl     = settings?.company_logo
@@ -43,6 +43,34 @@ function AppHeader() {
         </h1>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        {/* Fullscreen toggle */}
+        <button
+          onClick={onToggleFullscreen}
+          title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          style={{
+            width: '32px', height: '32px', borderRadius: '8px',
+            border: '1px solid var(--panel-border)',
+            background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)',
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.2s', flexShrink: 0,
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = 'rgba(0,212,255,0.08)';
+            e.currentTarget.style.color = 'var(--accent-blue)';
+            e.currentTarget.style.borderColor = 'rgba(0,212,255,0.3)';
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+            e.currentTarget.style.color = 'var(--text-secondary)';
+            e.currentTarget.style.borderColor = 'var(--panel-border)';
+          }}
+        >
+          {isFullscreen
+            ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
+            : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/></svg>
+          }
+        </button>
+
         {/* Live indicator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{
@@ -117,7 +145,35 @@ function AppHeader() {
 
 function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('sidebar_collapsed') === 'true'; } catch { return false; }
+  });
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  // Persist collapse state
+  const toggleCollapse = useCallback(() => {
+    setSidebarCollapsed(v => {
+      const next = !v;
+      try { localStorage.setItem('sidebar_collapsed', String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  // Fullscreen API
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  }, []);
+
+  useEffect(() => {
+    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  }, []);
 
   return (
     <div className="app-container">
@@ -125,11 +181,19 @@ function AppLayout() {
         {sidebarOpen ? '✕' : '☰'}
       </button>
       <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={closeSidebar} />
-      <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
-        <Sidebar onNavClick={closeSidebar} />
+      <div className={`sidebar${sidebarOpen ? ' open' : ''}${sidebarCollapsed ? ' collapsed' : ''}`}>
+        {/* Collapse toggle — hidden on mobile */}
+        <button
+          className="sidebar-collapse-btn"
+          onClick={toggleCollapse}
+          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {sidebarCollapsed ? '▶' : '◀'}
+        </button>
+        <Sidebar onNavClick={closeSidebar} collapsed={sidebarCollapsed} />
       </div>
       <main className="main-content">
-        <AppHeader />
+        <AppHeader onToggleFullscreen={toggleFullscreen} isFullscreen={isFullscreen} />
         <Routes>
           {/* Mixer — always accessible when logged in */}
           <Route path="/" element={<MixerPage />} />

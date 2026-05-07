@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut, Music2, ListMusic } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
-export default function Sidebar({ onNavClick }) {
+export default function Sidebar({ onNavClick, collapsed }) {
   const { currentUser, logout, hasFeature, isElevated, settings, api } = useApp();
 
   // ── Live company branding from database (same source as AppHeader) ──
@@ -31,15 +31,16 @@ export default function Sidebar({ onNavClick }) {
       minHeight: '100vh',
       display: 'flex',
       flexDirection: 'column',
-      padding: '2rem 1.5rem',
+      padding: collapsed ? '2rem 0.75rem' : '2rem 1.5rem',
       borderRadius: 0,
       border: 'none',
       borderRight: '1px solid var(--panel-border)',
+      overflow: 'hidden',
+      transition: 'padding 0.25s ease',
     }}>
-      {/* ── Company Branding Section — reads live from DB via settings context ── */}
-      <div style={{ marginBottom: '3rem', marginTop: '0.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          {/* Logo: shows saved image if company_logo is set in DB, otherwise initials badge */}
+      {/* ── Company Branding Section ── */}
+      <div style={{ marginBottom: '3rem', marginTop: '0.5rem', display: 'flex', justifyContent: collapsed ? 'center' : 'flex-start' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: collapsed ? 0 : '0.75rem', overflow: 'hidden' }}>
           <div style={{
             width: '40px',
             height: '40px',
@@ -59,16 +60,17 @@ export default function Sidebar({ onNavClick }) {
               : companyName.charAt(0).toUpperCase()
             }
           </div>
-          {/* Company name from DB */}
-          <h2 style={{ fontSize: '1.4rem', fontWeight: '600', letterSpacing: '0.5px', margin: 0 }}>
-            {companyName}
-          </h2>
+          {!collapsed && (
+            <h2 style={{ fontSize: '1.4rem', fontWeight: '600', letterSpacing: '0.5px', margin: 0, whiteSpace: 'nowrap' }}>
+              {companyName}
+            </h2>
+          )}
         </div>
       </div>
       {/* ── End Company Branding ── */}
 
       {/* Role badge */}
-      {currentUser && (
+      {currentUser && !collapsed && (
         <div style={{
           marginBottom: '1.5rem', padding: '0.6rem 0.9rem', borderRadius: '8px',
           background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
@@ -105,8 +107,30 @@ export default function Sidebar({ onNavClick }) {
           </div>
         </div>
       )}
+      {/* Collapsed: avatar only */}
+      {currentUser && collapsed && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.5rem' }}>
+          <div style={{
+            width: '32px', height: '32px', borderRadius: '50%', flexShrink: 0,
+            background: currentUser.is_super_admin ? 'rgba(255,215,0,0.15)' :
+                        currentUser.role === 'admin' ? 'rgba(253,150,68,0.15)' :
+                        'rgba(0,212,255,0.1)',
+            border: `1px solid ${currentUser.is_super_admin ? 'rgba(255,215,0,0.4)' :
+                                  currentUser.role === 'admin' ? 'rgba(253,150,68,0.35)' :
+                                  'rgba(0,212,255,0.25)'}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '0.75rem', fontWeight: '700',
+            color: currentUser.is_super_admin ? '#ffd700' :
+                   currentUser.role === 'admin' ? '#fd9644' :
+                   'var(--accent-blue)',
+            title: currentUser.display_name || currentUser.username,
+          }}>
+            {(currentUser.display_name || currentUser.username).charAt(0).toUpperCase()}
+          </div>
+        </div>
+      )}
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
         {allNavItems.map((item) => {
           if (!item.visible) return null;
           return (
@@ -114,22 +138,27 @@ export default function Sidebar({ onNavClick }) {
               key={item.path}
               to={item.path}
               onClick={onNavClick}
+              title={collapsed ? item.name : undefined}
               style={({ isActive }) => ({
                 display: 'flex',
                 alignItems: 'center',
+                justifyContent: collapsed ? 'center' : 'flex-start',
                 gap: '1rem',
-                padding: '0.85rem 1rem',
+                padding: collapsed ? '0.85rem 0' : '0.85rem 1rem',
                 borderRadius: '8px',
                 textDecoration: 'none',
                 color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
                 backgroundColor: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
-                borderLeft: isActive ? '3px solid var(--accent-blue)' : '3px solid transparent',
+                borderLeft: collapsed ? 'none' : (isActive ? '3px solid var(--accent-blue)' : '3px solid transparent'),
+                borderBottom: collapsed && isActive ? '2px solid var(--accent-blue)' : collapsed ? '2px solid transparent' : 'none',
                 transition: 'all 0.2s ease',
                 fontWeight: isActive ? '500' : '400',
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
               })}
             >
-              {item.icon}
-              {item.name}
+              <span style={{ flexShrink: 0 }}>{item.icon}</span>
+              {!collapsed && item.name}
             </NavLink>
           );
         })}
@@ -138,12 +167,14 @@ export default function Sidebar({ onNavClick }) {
       <div style={{ marginTop: 'auto', paddingTop: '2rem', borderTop: '1px solid var(--panel-border)' }}>
         <button
           onClick={() => { logout(); onNavClick?.(); }}
+          title={collapsed ? 'Logout' : undefined}
           style={{
             display: 'flex',
             alignItems: 'center',
+            justifyContent: collapsed ? 'center' : 'flex-start',
             gap: '1rem',
             width: '100%',
-            padding: '0.85rem 1rem',
+            padding: collapsed ? '0.85rem 0' : '0.85rem 1rem',
             background: 'transparent',
             border: 'none',
             color: 'var(--text-secondary)',
@@ -151,10 +182,12 @@ export default function Sidebar({ onNavClick }) {
             textAlign: 'left',
             fontSize: '1rem',
             fontFamily: 'inherit',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
           }}
         >
           <LogOut size={20} />
-          Logout
+          {!collapsed && 'Logout'}
         </button>
       </div>
     </nav>

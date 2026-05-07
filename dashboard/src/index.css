@@ -12,6 +12,7 @@
   --danger: #ff4757;
   --success: #2ed573;
   --sidebar-width: 260px;
+  --sidebar-collapsed-width: 64px;
 }
 
 * {
@@ -53,6 +54,40 @@ body {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
   flex-shrink: 0;
+  transition: width 0.25s ease, min-width 0.25s ease;
+  position: relative;
+}
+.sidebar.collapsed {
+  width: var(--sidebar-collapsed-width);
+  min-width: var(--sidebar-collapsed-width);
+}
+
+/* Collapse toggle button — sits on the right edge of the sidebar */
+.sidebar-collapse-btn {
+  position: absolute;
+  top: 50%;
+  right: -13px;
+  transform: translateY(-50%);
+  z-index: 100;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--panel-border);
+  background: rgba(25,25,30,0.95);
+  backdrop-filter: blur(8px);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.sidebar-collapse-btn:hover {
+  color: var(--accent-blue);
+  border-color: rgba(0,212,255,0.4);
+  background: rgba(0,212,255,0.08);
 }
 
 /* ── Main content ───────────────────────────────────────── */
@@ -201,6 +236,10 @@ body {
   }
   .sidebar.open {
     transform: translateX(0);
+  }
+  /* Hide collapse button on mobile */
+  .sidebar-collapse-btn {
+    display: none;
   }
 
   /* Main content fills full width */
