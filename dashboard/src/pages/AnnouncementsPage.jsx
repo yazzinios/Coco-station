@@ -14,7 +14,7 @@ function getStreamLinks(deckId) {
   ];
 }
 
-const DECK_IDS = ['deck-a', 'deck-b', 'deck-c', 'deck-d', 'deck-e'];
+const DECK_IDS = ['deck-a', 'deck-b', 'deck-c', 'deck-d', 'deck-e', 'deck-f'];
 
 const TTS_LANGUAGES = [
   { code: 'en', label: '🇺🇸 English',  voice: 'en-US-AriaNeural' },

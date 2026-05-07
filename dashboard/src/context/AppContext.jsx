@@ -118,12 +118,13 @@ const DEFAULT_DECK_CONTROL = {
   c: { view: true, control: false },
   d: { view: true, control: false },
   e: { view: true, control: false },
+  f: { view: true, control: false },
 };
 const DEFAULT_DECK_ACTIONS = [];
 const DEFAULT_PLAYLIST_PERMS = ['playlist.view'];
 
 const DEFAULT_PERMISSIONS = {
-  allowed_decks:  ['a','b','c','d','e'],
+  allowed_decks:  ['a','b','c','d','e','f'],
   deck_control:   DEFAULT_DECK_CONTROL,
   deck_actions:   DEFAULT_DECK_ACTIONS,
   playlist_perms: DEFAULT_PLAYLIST_PERMS,
@@ -150,6 +151,7 @@ export function AppProvider({ children }) {
     c: DEFAULT_DECK('c', 'Karting'),
     d: DEFAULT_DECK('d', 'Deck D'),
     e: DEFAULT_DECK('e', 'Deck E'),
+    f: DEFAULT_DECK('f', 'Deck F'),
   });
   const [library,                   setLibrary]                   = useState([]);
   const [announcements,             setAnnouncements]             = useState([]);

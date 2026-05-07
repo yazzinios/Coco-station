@@ -9,8 +9,8 @@ import {
 import { useApp } from '../context/useApp';
 
 // ── Constants ──────────────────────────────────────────────────────────────
-const DECK_IDS    = ['a', 'b', 'c', 'd', 'e'];
-const DECK_LABELS = { a: 'Deck A', b: 'Deck B', c: 'Deck C', d: 'Deck D', e: 'Deck E' };
+const DECK_IDS    = ['a', 'b', 'c', 'd', 'e', 'f'];
+const DECK_LABELS = { a: 'Deck A', b: 'Deck B', c: 'Deck C', d: 'Deck D', e: 'Deck E', f: 'Deck F' };
 
 const FEATURE_DEFS = [
   { key: 'can_announce', label: 'Announcements', icon: <Mic2   size={13}/>, desc: 'Play & manage announcements' },
@@ -70,7 +70,7 @@ const ACTION_ICONS = {
   'settings.ldap_save':  '🔐',
 };
 
-const DEFAULT_DECK_CONTROL   = { a:{view:true,control:true}, b:{view:true,control:true}, c:{view:true,control:true}, d:{view:true,control:true}, e:{view:true,control:true} };
+const DEFAULT_DECK_CONTROL   = { a:{view:true,control:true}, b:{view:true,control:true}, c:{view:true,control:true}, d:{view:true,control:true}, e:{view:true,control:true}, f:{view:true,control:true} };
 const DEFAULT_DECK_ACTIONS   = ['deck.play','deck.pause','deck.stop','deck.next','deck.previous','deck.volume','deck.crossfader','deck.load_track','deck.load_playlist'];
 const DEFAULT_PLAYLIST_PERMS = ['playlist.view','playlist.load'];
 
@@ -87,7 +87,7 @@ const EMPTY_USER_FORM = { username:'', display_name:'', password:'', role:'opera
 const EMPTY_ROLE_FORM = {
   name:'', display_name:'', description:'', color:'#2563EB',
   default_allowed_decks: DECK_IDS,
-  default_deck_control:   DEFAULT_DECK_CONTROL,
+  default_deck_control:   { a:{view:true,control:true}, b:{view:true,control:true}, c:{view:true,control:true}, d:{view:true,control:true}, e:{view:true,control:true}, f:{view:true,control:true} },
   default_deck_actions: DEFAULT_DECK_ACTIONS,
   default_playlist_perms: DEFAULT_PLAYLIST_PERMS,
   default_can_announce: true, default_can_schedule: true, default_can_library: true,

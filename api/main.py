@@ -85,6 +85,7 @@ DECKS: Dict[str, dict] = {
     "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
     "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
     "e": {"id": "e", "name": "Deck E",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
+    "f": {"id": "f", "name": "Deck F",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
 }
 ANNOUNCEMENTS: List[dict] = []
 SETTINGS: dict = {

@@ -10,6 +10,7 @@ const DECK_COLORS = {
   c: { accent: '#26de81', glow: 'rgba(38,222,129,0.3)'  },
   d: { accent: '#fd9644', glow: 'rgba(253,150,68,0.3)'  },
   e: { accent: '#ff6b9d', glow: 'rgba(255,107,157,0.3)' },
+  f: { accent: '#ffd32a', glow: 'rgba(255,211,42,0.3)'  },
 };
 
 function copyToClipboard(text) {

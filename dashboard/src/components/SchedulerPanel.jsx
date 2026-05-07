@@ -8,6 +8,7 @@ const DECK_OPTIONS = [
   { id: 'c', label: 'C' },
   { id: 'd', label: 'D' },
   { id: 'e', label: 'E' },
+  { id: 'f', label: 'F' },
 ];
 
 export default function SchedulerPanel() {

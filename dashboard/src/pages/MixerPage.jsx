@@ -4,10 +4,10 @@ import DeckPanel from '../components/DeckPanel';
 import OnAirButton from '../components/OnAirButton';
 import { useApp } from '../context/useApp';
 
-const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644', e: '#ff6b9d' };
+const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644', e: '#ff6b9d', f: '#ffd32a' };
 
 /* ─────────────────────── Multi-Deck Broadcast Launcher ─────────────────────── */
-const DECK_IDS = ['a', 'b', 'c', 'd', 'e'];
+const DECK_IDS = ['a', 'b', 'c', 'd', 'e', 'f'];
 
 function BroadcastLauncher() {
   const { playlists, library, decks, toast, api, canControlDeck } = useApp();
@@ -550,13 +550,14 @@ export default function MixerPage() {
     <div>
       <h2 style={{ marginBottom: '1.5rem', fontSize: '1.5rem', fontWeight: '500' }}>Mixer Deck</h2>
 
-      {/* 5 decks */}
+      {/* 6 decks */}
       <div className="deck-grid">
         {canViewDeck('a') && <DeckPanel id="a" />}
         {canViewDeck('b') && <DeckPanel id="b" />}
         {canViewDeck('c') && <DeckPanel id="c" />}
         {canViewDeck('d') && <DeckPanel id="d" />}
         {canViewDeck('e') && <DeckPanel id="e" />}
+        {canViewDeck('f') && <DeckPanel id="f" />}
       </div>
 
       {/* Bottom row: Playlist Launcher + On Air + Music Requests */}

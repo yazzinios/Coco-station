@@ -586,7 +586,7 @@ class Deck:
 
 
 # ── Initialise decks ─────────────────────────────────────────
-decks: dict = {name: Deck(name) for name in ["a", "b", "c", "d", "e"]}
+decks: dict = {name: Deck(name) for name in ["a", "b", "c", "d", "e", "f"]}
 mic_sessions: dict = {}
 
 
@@ -714,7 +714,7 @@ def crossfade_track(deck_id: str, req: CrossfadeRequest):
 @app.post("/mic/stream/start")
 def mic_stream_start(req: MicStreamStartRequest):
     raw_targets = req.targets
-    target_ids  = ["a","b","c","d","e"] if (not raw_targets or "ALL" in raw_targets) else [t.lower() for t in raw_targets]
+    target_ids  = ["a","b","c","d","e","f"] if (not raw_targets or "ALL" in raw_targets) else [t.lower() for t in raw_targets]
     session_id  = str(uuid.uuid4())[:8]
     duck_vol    = max(0, min(100, req.ducking))
 

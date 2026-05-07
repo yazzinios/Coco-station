@@ -73,7 +73,11 @@ const TIMEZONES = [
 export default function SettingsPage() {
   const { decks, toast, api, settings } = useApp();
 
-  const [deckNames,    setDeckNames]    = useState({ a: '', b: '', c: '', d: '', e: '' });
+  const [deckNames,    setDeckNames]    = useState({ a: '', b: '', c: '', d: '', e: '', f: '' });
+
+  // Default colors per deck
+  const DEFAULT_DECK_COLORS = { a: '#00d4ff', b: '#2ed573', c: '#a55eea', d: '#fd9644', e: '#ff4757', f: '#ffd32a' };
+  const [deckColors, setDeckColors] = useState(DEFAULT_DECK_COLORS);
   const [ducking,      setDucking]      = useState(5);
   const [micDucking,   setMicDucking]   = useState(20);
   const [dbMode,       setDbMode]       = useState('local');
@@ -126,8 +130,11 @@ export default function SettingsPage() {
     setDeckNames({
       a: decks.a?.name || 'Deck A', b: decks.b?.name || 'Deck B',
       c: decks.c?.name || 'Deck C', d: decks.d?.name || 'Deck D',
-      e: decks.e?.name || 'Deck E',
+      e: decks.e?.name || 'Deck E', f: decks.f?.name || 'Deck F',
     });
+    // Load persisted deck colors if present
+    const saved = localStorage.getItem('coco_deck_colors');
+    if (saved) { try { setDeckColors(JSON.parse(saved)); } catch(_){} }
   }, [decks]);
 
   useEffect(() => {
@@ -297,6 +304,8 @@ export default function SettingsPage() {
       for (const [id, name] of Object.entries(deckNames)) {
         if (name !== decks[id]?.name) await api.renameDeck(id, name);
       }
+      // Persist deck colors locally
+      localStorage.setItem('coco_deck_colors', JSON.stringify(deckColors));
       await api.saveSettings({
         ducking_percent:     ducking,
         mic_ducking_percent: micDucking,
@@ -790,7 +799,7 @@ export default function SettingsPage() {
         <div className="glass-panel" style={panel}>
           <h3 style={{ marginBottom: '1.1rem', color: 'var(--accent-blue)', fontSize: '1rem' }}>Deck Names</h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            {['a', 'b', 'c', 'd', 'e'].map(id => (
+            {['a', 'b', 'c', 'd', 'e', 'f'].map(id => (
               <div key={id}>
                 <label style={lbl}>Deck {id.toUpperCase()}</label>
                 <input type="text" value={deckNames[id]}
@@ -798,6 +807,59 @@ export default function SettingsPage() {
                   style={inp} placeholder={`Deck ${id.toUpperCase()}`} />
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* Deck Colors */}
+        <div className="glass-panel" style={panel}>
+          <h3 style={{ marginBottom: '0.3rem', color: 'var(--accent-blue)', fontSize: '1rem' }}>🎨 Deck Colors</h3>
+          <p style={{ margin: '0 0 1.2rem 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            Choose an accent color for each deck — used in the mixer UI, indicators, and labels.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+            {['a', 'b', 'c', 'd', 'e', 'f'].map(id => (
+              <div key={id} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <label style={{ ...lbl, marginBottom: 0 }}>Deck {id.toUpperCase()}</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <input
+                    type="color"
+                    value={deckColors[id] || '#00d4ff'}
+                    onChange={e => setDeckColors(prev => ({ ...prev, [id]: e.target.value }))}
+                    style={{
+                      width: '40px', height: '36px', padding: '2px', borderRadius: '7px',
+                      border: '1px solid var(--panel-border)', background: 'rgba(0,0,0,0.3)',
+                      cursor: 'pointer', appearance: 'none', WebkitAppearance: 'none',
+                    }}
+                  />
+                  <div style={{
+                    flex: 1, padding: '0.4rem 0.75rem', borderRadius: '7px',
+                    background: `${deckColors[id] || '#00d4ff'}18`,
+                    border: `1px solid ${deckColors[id] || '#00d4ff'}55`,
+                    color: deckColors[id] || '#00d4ff',
+                    fontSize: '0.82rem', fontWeight: 600, fontFamily: 'monospace',
+                    letterSpacing: '0.5px',
+                  }}>
+                    {deckColors[id] || '#00d4ff'}
+                  </div>
+                  <button
+                    onClick={() => setDeckColors(prev => ({ ...prev, [id]: { a: '#00d4ff', b: '#2ed573', c: '#a55eea', d: '#fd9644', e: '#ff4757', f: '#ffd32a' }[id] }))}
+                    title="Reset to default"
+                    style={{ padding: '0.35rem 0.5rem', borderRadius: '6px', border: '1px solid var(--panel-border)', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.75rem', fontFamily: 'inherit' }}
+                  >
+                    ↺
+                  </button>
+                </div>
+                {/* Live swatch preview */}
+                <div style={{
+                  height: '4px', borderRadius: '2px',
+                  background: `linear-gradient(to right, ${deckColors[id] || '#00d4ff'}, ${deckColors[id] || '#00d4ff'}66)`,
+                  boxShadow: `0 0 8px ${deckColors[id] || '#00d4ff'}55`,
+                }} />
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: '1rem', padding: '0.6rem 0.85rem', borderRadius: '8px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+            💡 Colors are saved locally in the browser. Click <strong style={{ color: 'var(--text-primary)' }}>Save All Settings</strong> below to persist them.
           </div>
         </div>
 
