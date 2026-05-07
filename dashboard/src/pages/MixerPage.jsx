@@ -51,17 +51,25 @@ function BroadcastLauncher() {
   const launchTrack = async (filename) => {
     if (selectedDecks.length === 0) { toast.warning('Select at least one deck'); return; }
     setLaunching(true);
+    // For each selected deck: crossfade if live, plain load if stopped
     const results = await Promise.allSettled(
-      selectedDecks.map(d => api.loadTrack(d, filename))
+      selectedDecks.map(d => {
+        const deck = decks[d];
+        if (deck?.is_playing) return api.loadAndPlay(d, filename);
+        return api.loadTrack(d, filename);
+      })
     );
     setLaunching(false);
     const ok  = results.filter(r => r.status === 'fulfilled').length;
     const err = results.filter(r => r.status === 'rejected').length;
     const name = filename.replace(/\.[^.]+$/, '');
+    const liveDecks = selectedDecks.filter(d => decks[d]?.is_playing);
     if (err === 0)
-      toast.success(`"${name}" → Decks ${selectedDecks.map(d => d.toUpperCase()).join(', ')}`);
+      toast.success(liveDecks.length
+        ? `✨ Crossfading → "${name}" on ${ok} deck(s)`
+        : `"${name}" → Decks ${selectedDecks.map(d => d.toUpperCase()).join(', ')}`);
     else if (ok > 0)
-      toast.warning(`Loaded to ${ok} deck(s), ${err} failed`);
+      toast.warning(`Launched to ${ok} deck(s), ${err} failed`);
     else
       toast.error('Load failed on all decks');
   };

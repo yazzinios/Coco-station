@@ -82,11 +82,26 @@ export default function StatisticsPage() {
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Radio size={16} /> Live Listeners</span>
           </h3>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
-            <div style={{ fontSize: '3.5rem', fontWeight: '800', color: 'var(--accent-blue)' }}>{stats?.current_listeners ?? 0}</div>
+            <div style={{ fontSize: '3.5rem', fontWeight: '800', color: 'var(--accent-blue)', fontVariantNumeric: 'tabular-nums' }}>{stats?.current_listeners ?? 0}</div>
             <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>listeners right now</div>
-            <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'rgba(255,255,255,0.2)' }}>
-              Peak: {stats?.peak_listeners ?? 0}
+            <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'rgba(255,255,255,0.35)' }}>
+              Peak today: <span style={{ color: 'var(--accent-blue)', fontWeight: '600' }}>{stats?.peak_listeners ?? 0}</span>
             </div>
+            {(stats?.current_listeners ?? 0) > 0 && (
+              <div style={{
+                marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.35rem',
+                fontSize: '0.72rem', color: '#2ed573',
+              }}>
+                <span style={{
+                  width: '7px', height: '7px', borderRadius: '50%',
+                  background: '#2ed573',
+                  boxShadow: '0 0 6px #2ed573',
+                  animation: 'livePulse 1.4s ease-in-out infinite',
+                  display: 'inline-block',
+                }} />
+                LIVE
+              </div>
+            )}
           </div>
         </div>
 
@@ -137,3 +152,7 @@ function Library({ size }) {
     </svg>
   );
 }
+
+const _livePulseStyle = document.createElement('style');
+_livePulseStyle.textContent = '@keyframes livePulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.45; transform:scale(1.3); } }';
+document.head.appendChild(_livePulseStyle);

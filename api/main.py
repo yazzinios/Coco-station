@@ -74,15 +74,17 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 ANNOUNCEMENTS_DIR.mkdir(parents=True, exist_ok=True)
 CHIMES_DIR.mkdir(parents=True, exist_ok=True)
 BRANDING_DIR.mkdir(parents=True, exist_ok=True)
-START_TIME    = time.time()
-TRACKS_PLAYED = 0
+START_TIME        = time.time()
+TRACKS_PLAYED     = 0
+CURRENT_LISTENERS = 0
+PEAK_LISTENERS    = 0
 
 DECKS: Dict[str, dict] = {
-    "a": {"id": "a", "name": "Castle",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
-    "b": {"id": "b", "name": "Deck B",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
-    "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
-    "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
-    "e": {"id": "e", "name": "Deck E",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False},
+    "a": {"id": "a", "name": "Castle",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
+    "b": {"id": "b", "name": "Deck B",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
+    "c": {"id": "c", "name": "Karting", "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
+    "d": {"id": "d", "name": "Deck D",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
+    "e": {"id": "e", "name": "Deck E",  "track": None, "volume": 100, "is_playing": False, "is_paused": False, "is_loop": False, "playlist_id": None, "playlist_index": None, "playlist_loop": False, "is_crossfading": False},
 }
 ANNOUNCEMENTS: List[dict] = []
 SETTINGS: dict = {
@@ -276,6 +278,26 @@ async def lifespan(app: FastAPI):
                     break
 
     set_auth_settings_ref(SETTINGS)
+
+    # ── Background listener poller (MediaMTX every 10 s) ──────────────────────
+    async def _poll_listeners():
+        global CURRENT_LISTENERS, PEAK_LISTENERS
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    resp = await c.get(f"{MEDIAMTX_API}/v3/paths/list")
+                    if resp.status_code == 200:
+                        total = 0
+                        for item in resp.json().get("items", []):
+                            readers = item.get("readers", [])
+                            total += len(readers) if isinstance(readers, list) else item.get("readersCount", 0)
+                        CURRENT_LISTENERS = total
+                        if total > PEAK_LISTENERS:
+                            PEAK_LISTENERS = total
+            except Exception:
+                pass
+            await asyncio.sleep(10)
+    asyncio.create_task(_poll_listeners())
 
     yield
     stop_scheduler()
@@ -924,17 +946,30 @@ async def play_deck(deck_id: str, request: Request, _user=Depends(require_permis
     global TRACKS_PLAYED
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not DECKS[deck_id]["track"]: raise HTTPException(status_code=400, detail="No track loaded")
+    filepath   = str(Path("/library") / DECKS[deck_id]["track"])
+    loop       = DECKS[deck_id].get("is_loop", False)
+    is_playing = DECKS[deck_id].get("is_playing", False)
     DECKS[deck_id]["is_playing"] = True; DECKS[deck_id]["is_paused"] = False
     TRACKS_PLAYED += 1
-    filepath = str(Path("/library") / DECKS[deck_id]["track"])
-    loop = DECKS[deck_id].get("is_loop", False)
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": loop})
+            if is_playing:
+                # Deck already has audio running — crossfade into the new track
+                DECKS[deck_id]["is_crossfading"] = True
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/crossfade",
+                             json={"filepath": filepath, "loop": loop})
+                async def _clear_xfade(did=deck_id):
+                    await asyncio.sleep(3.5)
+                    DECKS[did]["is_crossfading"] = False
+                    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+                asyncio.create_task(_clear_xfade())
+            else:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play",
+                             json={"filepath": filepath, "loop": loop})
     except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
-    _audit(request, _user, "deck.play", {"deck": deck_id, "track": DECKS[deck_id].get("track")})
-    return {"status": "ok", "deck": deck_id}
+    _audit(request, _user, "deck.play", {"deck": deck_id, "track": DECKS[deck_id].get("track"), "crossfade": is_playing})
+    return {"status": "ok", "deck": deck_id, "crossfade": is_playing}
 
 @app.post("/api/decks/{deck_id}/pause")
 async def pause_deck(deck_id: str, _user=Depends(require_permission("deck.pause")), _access=Depends(require_deck_access("control"))):
@@ -1260,6 +1295,84 @@ async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, request:
     _audit(request, _user, "deck.load_playlist", {"deck": deck_id, "playlist": playlist["name"], "tracks": len(tracks)})
     return {"status": "ok", "deck": deck_id, "playlist": playlist["name"], "track": tracks[0]}
 
+@app.post("/api/decks/{deck_id}/dead_air")
+async def dead_air(deck_id: str):
+    """
+    Called by the mixer watchdog when a deck has been silent for DEAD_AIR_SECONDS
+    while is_playing=True.  Recovery strategy:
+      1. If a playlist is loaded → advance to the next track (crossfade).
+      2. If a single-track loop → restart the same track.
+      3. Otherwise → mark deck stopped and broadcast so the dashboard alerts.
+    """
+    if deck_id not in DECKS:
+        return {"status": "ignored"}
+
+    print(f"[dead_air] ⚠ Deck {deck_id.upper()} reported dead air — attempting recovery")
+    await manager.broadcast({
+        "type": "NOTIFICATION",
+        "message": f"⚠️ Dead air on Deck {deck_id.upper()} — auto-recovering...",
+        "style": "warning",
+    })
+
+    playlist_state = DECK_PLAYLISTS.get(deck_id)
+
+    # Case 1: active playlist → skip to next track
+    if playlist_state:
+        tracks     = playlist_state.get("tracks", [])
+        next_index = playlist_state["index"] + 1
+        if next_index >= len(tracks):
+            next_index = 0 if playlist_state.get("loop") else None
+        if next_index is not None:
+            playlist_state["index"] = next_index
+            next_track = tracks[next_index]
+            DECKS[deck_id].update({"track": next_track, "is_playing": True, "playlist_index": next_index})
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play",
+                                 json={"filepath": str(Path("/library") / next_track), "loop": False})
+            except Exception as e:
+                print(f"[dead_air] recovery play failed: {e}")
+            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            await manager.broadcast({
+                "type": "NOTIFICATION",
+                "message": f"✅ Deck {deck_id.upper()} recovered → {next_track}",
+                "style": "success",
+            })
+            return {"status": "recovered", "action": "next_track", "track": next_track}
+        else:
+            # Playlist exhausted and no loop — stop cleanly
+            DECK_PLAYLISTS[deck_id] = None
+            DECKS[deck_id].update({"is_playing": False, "playlist_id": None, "playlist_index": None})
+            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            return {"status": "stopped", "action": "playlist_done"}
+
+    # Case 2: single-track loop → restart
+    current_track = DECKS[deck_id].get("track")
+    if current_track and DECKS[deck_id].get("is_loop"):
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play",
+                             json={"filepath": str(Path("/library") / current_track), "loop": True})
+        except Exception as e:
+            print(f"[dead_air] loop restart failed: {e}")
+        await manager.broadcast({
+            "type": "NOTIFICATION",
+            "message": f"✅ Deck {deck_id.upper()} loop restarted → {current_track}",
+            "style": "success",
+        })
+        return {"status": "recovered", "action": "loop_restart", "track": current_track}
+
+    # Case 3: nothing to recover — mark stopped, alert dashboard
+    DECKS[deck_id].update({"is_playing": False, "is_paused": False})
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({
+        "type": "NOTIFICATION",
+        "message": f"🔴 Dead air on Deck {deck_id.upper()} — no recovery source available",
+        "style": "error",
+    })
+    return {"status": "stopped", "action": "no_source"}
+
+
 @app.post("/api/decks/{deck_id}/track_ended")
 async def track_ended(deck_id: str):
     if deck_id not in DECKS: return {"status": "ignored"}
@@ -1277,11 +1390,15 @@ async def track_ended(deck_id: str):
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
             return {"status": "ok", "action": "playlist_done"}
     playlist_state["index"] = next_index; next_track = tracks[next_index]
-    DECKS[deck_id].update({"track": next_track, "is_playing": True, "playlist_index": next_index})
+    DECKS[deck_id].update({"track": next_track, "is_playing": True, "playlist_index": next_index, "is_crossfading": True})
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": str(Path("/library") / next_track), "loop": False})
+            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/crossfade", json={"filepath": str(Path("/library") / next_track), "loop": False})
     except Exception: pass
+    async def _clr1(did=deck_id):
+        await asyncio.sleep(3.5); DECKS[did]["is_crossfading"] = False
+        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    asyncio.create_task(_clr1())
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "action": "next_track", "track": next_track}
 
@@ -1295,7 +1412,17 @@ async def _play_playlist_index(deck_id: str, index: int):
     DECKS[deck_id].update({"track": track, "is_playing": True, "is_paused": False, "playlist_index": index})
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": str(Path("/library") / track), "loop": False})
+            # Use crossfade if deck is currently playing, plain play otherwise
+            deck_is_playing = DECKS[deck_id].get("is_playing", False)
+            if deck_is_playing:
+                DECKS[deck_id]["is_crossfading"] = True
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/crossfade", json={"filepath": str(Path("/library") / track), "loop": False})
+                async def _clr2(did=deck_id):
+                    await asyncio.sleep(3.5); DECKS[did]["is_crossfading"] = False
+                    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+                asyncio.create_task(_clr2())
+            else:
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": str(Path("/library") / track), "loop": False})
     except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id, "track": track, "playlist_index": index}
@@ -1558,7 +1685,7 @@ def get_stats():
     return {"uptime_seconds": uptime, "uptime_display": f"{h:02d}:{m:02d}:{s:02d}",
             "tracks_played": TRACKS_PLAYED, "playing_decks": sum(1 for d in DECKS.values() if d["is_playing"]),
             "library_count": len(list(MEDIA_DIR.glob("*.*"))), "announcements_count": len(ANNOUNCEMENTS),
-            "peak_listeners": 0, "current_listeners": 0}
+            "peak_listeners": PEAK_LISTENERS, "current_listeners": CURRENT_LISTENERS}
 
 # ── Music Requests (public submit) ──────────────────────────
 class MusicRequestSubmit(_PydanticBase):

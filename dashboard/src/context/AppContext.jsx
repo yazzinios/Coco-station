@@ -476,6 +476,21 @@ export function AppProvider({ children }) {
       });
       if (!r.ok) throw new Error(await parseError(r));
     },
+    // Load a track AND immediately play it.
+    // If the deck is already playing, the API will crossfade automatically.
+    // If it's stopped, it will hard-start. Either way one round-trip.
+    loadAndPlay: async (deckId, filename) => {
+      // Step 1: stage the track
+      const loadRes = await authFetch(`/api/decks/${deckId}/load`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: filename }),
+      });
+      if (!loadRes.ok) throw new Error(await parseError(loadRes));
+      // Step 2: play (API auto-selects crossfade vs hard-play)
+      const playRes = await authFetch(`/api/decks/${deckId}/play`, { method: 'POST' });
+      if (!playRes.ok) throw new Error(await parseError(playRes));
+      return playRes.json();
+    },
     unloadTrack: async (deckId) => {
       const r = await authFetch(`/api/decks/${deckId}/unload`, { method: 'POST' });
       if (!r.ok) throw new Error(await parseError(r));

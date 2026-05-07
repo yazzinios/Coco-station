@@ -203,8 +203,14 @@ async def _trigger_music_schedule(s: dict) -> None:
     async def _play_on_deck(filepath: str, loop_: bool) -> None:
         try:
             async with httpx.AsyncClient(timeout=5) as c:
-                await c.post(f"{ffmpeg_url}/decks/{deck_id}/play",
-                             json={"filepath": filepath, "loop": loop_})
+                # Crossfade if deck is already playing, hard-play if starting fresh
+                deck_is_playing = decks.get(deck_id, {}).get("is_playing", False)
+                if deck_is_playing:
+                    await c.post(f"{ffmpeg_url}/decks/{deck_id}/crossfade",
+                                 json={"filepath": filepath, "loop": loop_})
+                else:
+                    await c.post(f"{ffmpeg_url}/decks/{deck_id}/play",
+                                 json={"filepath": filepath, "loop": loop_})
                 await c.post(f"{ffmpeg_url}/decks/{deck_id}/volume/{current_vol}")
         except Exception as e:
             print(f"[scheduler] HTTP error playing {deck_id}: {e}")

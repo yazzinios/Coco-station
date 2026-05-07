@@ -44,11 +44,29 @@ def _notify_announcement_ended(deck_name: str):
     except Exception as e:
         print(f"[deck {deck_name}] announcement_ended notify failed: {e}")
 
+
+def _notify_dead_air(deck_name: str):
+    """HTTP callback to main API when dead-air is detected on a deck."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{API_URL}/api/decks/{deck_name}/dead_air",
+            data=b"", method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+    except Exception as e:
+        print(f"[deck {deck_name}] dead_air notify failed: {e}")
+
 CHUNK_SIZE     = 4096
 SAMPLE_RATE    = 44100
 CHANNELS       = 2
 SAMPWIDTH      = 2  # 16-bit
 CHUNK_DURATION = CHUNK_SIZE / (SAMPLE_RATE * CHANNELS * SAMPWIDTH)  # ~0.0232 s
+
+# Crossfade config
+CROSSFADE_DURATION = float(os.getenv("CROSSFADE_DURATION", "3.0"))  # seconds
+CROSSFADE_CHUNKS   = max(1, round(CROSSFADE_DURATION / CHUNK_DURATION))  # ~129 chunks @ 3 s
 
 
 class Deck:
@@ -75,12 +93,31 @@ class Deck:
         self.ann_q   = queue.Queue(maxsize=200)
         self.mic_q   = queue.Queue(maxsize=100)
 
+        # Crossfade state
+        # _xfade_q   : PCM chunks for the incoming track during crossfade
+        # _xfade_pos : how many chunks have been blended (0 → CROSSFADE_CHUNKS)
+        # _xfade_lock: protects the two fields above
+        self._xfade_q    = queue.Queue(maxsize=600)
+        self._xfade_pos  = 0          # chunks blended so far
+        self._xfade_total= 0          # = CROSSFADE_CHUNKS when active, else 0
+        self._xfade_lock = threading.Lock()
+        self._xfade_proc = None       # ffmpeg process for incoming track
+
+        # Dead-air watchdog
+        # Tracks the last time a non-silent chunk was written to the stream.
+        # The watchdog thread fires _notify_dead_air if silence exceeds the threshold.
+        self._last_audio_at    = time.time()
+        self._dead_air_seconds = float(os.getenv("DEAD_AIR_SECONDS", "15"))
+        self._dead_air_fired   = False   # prevent repeated callbacks until audio resumes
+
         self.stream_proc = None
         self._last_track_chunk = b'\x00' * CHUNK_SIZE
         self._start_master_stream()
 
-        self.mixer_thread = threading.Thread(target=self._mix_loop, daemon=True)
+        self.mixer_thread    = threading.Thread(target=self._mix_loop,    daemon=True)
+        self.watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
         self.mixer_thread.start()
+        self.watchdog_thread.start()
 
     def _start_master_stream(self):
         rtmp_url = f"{RTMP_BASE_URL}/deck-{self.name}"
@@ -93,6 +130,11 @@ class Deck:
             cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         print(f"[Deck {self.name}] Master RTMP stream started → {rtmp_url}")
+
+    @staticmethod
+    def _ease(t: float) -> float:
+        """Smooth S-curve: ease-in/ease-out for crossfade (t in [0, 1])."""
+        return t * t * (3.0 - 2.0 * t)
 
     def _mix_loop(self):
         silence   = b'\x00' * CHUNK_SIZE
@@ -111,6 +153,39 @@ class Deck:
             except queue.Empty:
                 if self.is_playing:
                     track_chunk = self._last_track_chunk
+
+            # ── Crossfade blend ───────────────────────────────────────────
+            with self._xfade_lock:
+                xfade_active = self._xfade_total > 0
+                xfade_pos    = self._xfade_pos
+                xfade_total  = self._xfade_total
+
+            if xfade_active:
+                try:
+                    xfade_chunk = self._xfade_q.get_nowait()
+                except queue.Empty:
+                    xfade_chunk = silence
+
+                # t goes 0 → 1 as the fade progresses
+                t        = self._ease(min(xfade_pos / max(xfade_total, 1), 1.0))
+                fade_out = 1.0 - t   # outgoing track: 1 → 0
+                fade_in  = t         # incoming track: 0 → 1
+
+                try:
+                    out_scaled = audioop.mul(track_chunk, SAMPWIDTH, fade_out) if track_chunk != silence else silence
+                    in_scaled  = audioop.mul(xfade_chunk, SAMPWIDTH, fade_in)  if xfade_chunk != silence else silence
+                    track_chunk = audioop.add(out_scaled, in_scaled, SAMPWIDTH)
+                except Exception:
+                    pass
+
+                with self._xfade_lock:
+                    self._xfade_pos += 1
+                    if self._xfade_pos >= xfade_total:
+                        # Crossfade complete — promote incoming track
+                        self._xfade_total = 0
+                        self._xfade_pos   = 0
+                        self._promote_xfade_track()
+            # ─────────────────────────────────────────────────────────────
 
             ann_chunk = silence
             try:
@@ -149,10 +224,78 @@ class Deck:
             try:
                 if self.stream_proc and self.stream_proc.stdin:
                     self.stream_proc.stdin.write(mixed)
+                    # Update dead-air watchdog: reset timer if this chunk has audio
+                    if mixed != silence:
+                        self._last_audio_at  = time.time()
+                        self._dead_air_fired = False
             except (BrokenPipeError, OSError):
                 print(f"[Deck {self.name}] Broken pipe — restarting RTMP stream")
                 self._start_master_stream()
                 next_tick = time.time()
+
+    def _watchdog_loop(self):
+        """
+        Runs in a daemon thread.
+        Every second, checks whether the deck has been playing silence for
+        longer than _dead_air_seconds.  If so, fires _notify_dead_air once
+        (won't fire again until audio resumes), so the API can auto-recover.
+        """
+        CHECK_INTERVAL = 1.0
+        while True:
+            time.sleep(CHECK_INTERVAL)
+            if not self.is_playing:
+                # Deck intentionally stopped — reset and don't alert
+                self._last_audio_at  = time.time()
+                self._dead_air_fired = False
+                continue
+            silent_for = time.time() - self._last_audio_at
+            if silent_for >= self._dead_air_seconds and not self._dead_air_fired:
+                self._dead_air_fired = True
+                print(f"[Deck {self.name}] ⚠ Dead air detected ({silent_for:.1f}s) — notifying API")
+                threading.Thread(
+                    target=_notify_dead_air, args=(self.name,), daemon=True
+                ).start()
+
+    def _promote_xfade_track(self):
+        """
+        Called by _mix_loop (inside _xfade_lock already released) once the
+        crossfade completes.  Drains the old track_q, swaps in xfade as the
+        new track_q, and updates deck state — all under self.lock.
+        """
+        with self.lock:
+            # Kill old track process
+            old_proc = self.track_proc
+            if old_proc and old_proc.poll() is None:
+                try:
+                    old_proc.terminate()
+                    old_proc.wait(timeout=1)
+                except Exception:
+                    pass
+            self.track_proc = self._xfade_proc
+            self._xfade_proc = None
+
+            # Drain leftover old-track chunks
+            drained = 0
+            while not self.track_q.empty():
+                try:
+                    self.track_q.get_nowait()
+                    drained += 1
+                except Exception:
+                    break
+
+            # Move buffered xfade chunks into track_q
+            moved = 0
+            while not self._xfade_q.empty():
+                try:
+                    chunk = self._xfade_q.get_nowait()
+                    self.track_q.put_nowait(chunk)
+                    moved += 1
+                except Exception:
+                    break
+
+            self._last_track_chunk = b'\x00' * CHUNK_SIZE
+            print(f"[Deck {self.name}] Crossfade complete — promoted new track "
+                  f"(drained {drained} old, moved {moved} new chunks)")
 
     def _reader_thread(self, proc, q, proc_name):
         """
@@ -194,6 +337,85 @@ class Deck:
                 else:
                     print(f"[Deck {self.name}] Skipping stale announcement_ended (gen {my_generation} != {current_generation})")
             # "jingle" → fires nothing intentionally
+
+    def crossfade_to(self, filepath: str, loop: bool = False,
+                      duration: float = CROSSFADE_DURATION):
+        """
+        Smoothly transition from the currently playing track to *filepath*.
+
+        - Starts decoding the new track immediately into _xfade_q.
+        - The _mix_loop blends old → new over *duration* seconds using an
+          S-curve, then calls _promote_xfade_track() to complete the swap.
+        - If no track is currently playing, falls back to a plain play().
+        """
+        if not self.is_playing or not self.current_track:
+            print(f"[Deck {self.name}] crossfade_to: no active track — plain play")
+            self.play(filepath, loop=loop)
+            return
+
+        # Cancel any in-progress crossfade first
+        with self._xfade_lock:
+            if self._xfade_proc and self._xfade_proc.poll() is None:
+                try:
+                    self._xfade_proc.terminate()
+                    self._xfade_proc.wait(timeout=1)
+                except Exception:
+                    pass
+            self._xfade_proc  = None
+            self._xfade_total = 0
+            self._xfade_pos   = 0
+            while not self._xfade_q.empty():
+                try: self._xfade_q.get_nowait()
+                except: pass
+
+        total_chunks = max(1, round(duration / CHUNK_DURATION))
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", filepath,
+            "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1",
+        ]
+        if loop:
+            cmd = ["ffmpeg", "-y", "-stream_loop", "-1",
+                   "-i", filepath,
+                   "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1"]
+
+        xproc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+        with self.lock:
+            self._xfade_proc = xproc
+
+        # Start feeding xfade_q
+        def _xfade_reader():
+            try:
+                while xproc.poll() is None:
+                    chunk = xproc.stdout.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    if len(chunk) < CHUNK_SIZE:
+                        chunk += b'\x00' * (CHUNK_SIZE - len(chunk))
+                    try:
+                        self._xfade_q.put(chunk, timeout=2)
+                    except queue.Full:
+                        pass
+            except Exception:
+                pass
+
+        threading.Thread(target=_xfade_reader, daemon=True).start()
+
+        # Arm the blend — mix_loop picks this up on the next chunk
+        with self._xfade_lock:
+            self._xfade_pos   = 0
+            self._xfade_total = total_chunks
+
+        # Update deck state to reflect incoming track
+        with self.lock:
+            self.current_track    = filepath
+            self.is_loop          = loop
+            self._play_started_at = time.time()
+
+        print(f"[Deck {self.name}] Crossfade → {filepath} "
+              f"(duration={duration:.1f}s, chunks={total_chunks})")
 
     def play(self, filepath, loop: bool = False, seek_seconds: float = 0.0):
         self.stop()
@@ -265,8 +487,44 @@ class Deck:
         with self.lock:
             self.duck_volume = max(0, min(100, vol))
 
+    def cancel_xfade(self):
+        """
+        Abort any in-progress crossfade immediately.
+        Safe to call from any thread.  The outgoing track keeps playing
+        uninterrupted; the incoming track's ffmpeg process is killed.
+        """
+        with self._xfade_lock:
+            if self._xfade_total == 0:
+                return   # nothing active
+            self._xfade_total = 0
+            self._xfade_pos   = 0
+
+        # Kill the incoming decoder outside the lock (terminate can block briefly)
+        proc = None
+        with self.lock:
+            proc = self._xfade_proc
+            self._xfade_proc = None
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=1)
+            except Exception:
+                pass
+
+        # Drain buffered incoming chunks so they don't leak into the next xfade
+        while not self._xfade_q.empty():
+            try: self._xfade_q.get_nowait()
+            except: pass
+
+        print(f"[Deck {self.name}] Crossfade cancelled — outgoing track continues")
+
     def play_announcement(self, filepath, notify: bool = True):
         """Play a jingle or announcement over the deck audio."""
+        # Cancel any crossfade before playing the announcement.
+        # Without this, the xfade blend runs for up to 3s on top of the jingle,
+        # producing corrupted audio at the start of the announcement sequence.
+        self.cancel_xfade()
+
         with self.lock:
             # Stop previous ann_proc
             if self.ann_proc and self.ann_proc.poll() is None:
@@ -354,6 +612,11 @@ class PlayAnnouncementRequest(BaseModel):
     filepath: str
     notify: bool = True
 
+class CrossfadeRequest(BaseModel):
+    filepath: str
+    loop: bool = False
+    duration: float = CROSSFADE_DURATION  # override per-request if needed
+
 class LoopRequest(BaseModel):
     loop: bool = False
 
@@ -431,6 +694,20 @@ def play_announcement(deck_id: str, req: PlayAnnouncementRequest):
         raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].play_announcement(req.filepath, notify=req.notify)
     return {"status": "ok"}
+
+@app.post("/decks/{deck_id}/crossfade")
+def crossfade_track(deck_id: str, req: CrossfadeRequest):
+    """Crossfade from the current track to a new one over req.duration seconds."""
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].crossfade_to(req.filepath, loop=req.loop, duration=req.duration)
+    return {
+        "status": "ok",
+        "deck": deck_id,
+        "filepath": req.filepath,
+        "duration": req.duration,
+        "loop": req.loop,
+    }
 
 
 # ── Mic endpoints ─────────────────────────────────────────────

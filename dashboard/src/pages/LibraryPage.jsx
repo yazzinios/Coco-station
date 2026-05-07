@@ -273,7 +273,12 @@ export default function LibraryPage() {
         if (deck.is_playing || deck.is_paused) await api.stop(deckId);
         await api.unloadTrack(deckId);
         toast.info(`Deck ${deckId.toUpperCase()} unloaded`);
+      } else if (deck?.is_playing) {
+        // Deck is live — crossfade directly into the new track
+        await api.loadAndPlay(deckId, track.filename);
+        toast.success(`✨ Crossfading → "${track.filename.replace(/\.[^.]+$/, '')}" on Deck ${deckId.toUpperCase()}`);
       } else {
+        // Deck is stopped — just stage it, operator decides when to play
         await api.loadTrack(deckId, track.filename);
         toast.success(`"${track.filename.replace(/\.[^.]+$/, '')}" → Deck ${deckId.toUpperCase()}`);
       }

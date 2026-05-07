@@ -1,6 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusic, SkipBack, SkipForward, Lock } from 'lucide-react';
+import { Play, Pause, Square, Volume2, Link, Check, Headphones, Repeat, ListMusic, SkipBack, SkipForward, Lock, Shuffle } from 'lucide-react';
 import { useApp } from '../context/useApp';
+
+const CROSSFADE_DURATION = 3000; // ms — must match ffmpeg-mixer CROSSFADE_DURATION
 
 const DECK_COLORS = {
   a: { accent: '#00d4ff', glow: 'rgba(0,212,255,0.3)'   },
@@ -207,7 +209,30 @@ export default function DeckPanel({ id }) {
   const canPrev    = canControl && (hasPermission ? hasPermission('deck.previous'): true);
   const canVolume  = canControl && (hasPermission ? hasPermission('deck.volume')  : true);
 
-  const deck  = decks[id] || { id, name: `Deck ${id.toUpperCase()}`, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false, playlist_id: null, playlist_index: null, playlist_loop: false };
+  const deck  = decks[id] || { id, name: `Deck ${id.toUpperCase()}`, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false, playlist_id: null, playlist_index: null, playlist_loop: false, is_crossfading: false };
+
+  // ── Crossfade progress animation ────────────────────────────────
+  const [xfadeProgress, setXfadeProgress] = useState(0); // 0→100
+  const xfadeTimer = useRef(null);
+  const xfadeStart = useRef(null);
+
+  useEffect(() => {
+    if (deck.is_crossfading) {
+      xfadeStart.current = performance.now();
+      const tick = () => {
+        const elapsed = performance.now() - xfadeStart.current;
+        const pct = Math.min(100, (elapsed / CROSSFADE_DURATION) * 100);
+        setXfadeProgress(pct);
+        if (pct < 100) xfadeTimer.current = requestAnimationFrame(tick);
+        else setXfadeProgress(0);
+      };
+      xfadeTimer.current = requestAnimationFrame(tick);
+    } else {
+      if (xfadeTimer.current) cancelAnimationFrame(xfadeTimer.current);
+      setXfadeProgress(0);
+    }
+    return () => { if (xfadeTimer.current) cancelAnimationFrame(xfadeTimer.current); };
+  }, [deck.is_crossfading]);
   const activePlaylist = deck.playlist_id ? playlists.find(p => p.id === deck.playlist_id) : null;
   const color = DECK_COLORS[id] || DECK_COLORS.a;
 
@@ -355,6 +380,29 @@ export default function DeckPanel({ id }) {
           background: `radial-gradient(ellipse at top, ${color.glow} 0%, transparent 70%)`,
           opacity: 0.6,
         }} />
+      )}
+
+      {/* Crossfade progress bar */}
+      {deck.is_crossfading && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: '3px',
+          background: 'rgba(255,255,255,0.07)', zIndex: 20, pointerEvents: 'none',
+        }}>
+          <div style={{
+            height: '100%', width: `${xfadeProgress}%`,
+            background: `linear-gradient(to right, ${color.accent}, ${color.accent}99)`,
+            boxShadow: `0 0 6px ${color.accent}`,
+            transition: 'none',
+          }} />
+          <div style={{
+            position: 'absolute', top: '6px', left: '50%', transform: 'translateX(-50%)',
+            fontSize: '0.6rem', color: color.accent, whiteSpace: 'nowrap',
+            textShadow: '0 1px 3px rgba(0,0,0,0.8)', letterSpacing: '0.5px',
+            display: 'flex', alignItems: 'center', gap: '0.3rem',
+          }}>
+            <Shuffle size={9} /> CROSSFADE
+          </div>
+        </div>
       )}
 
       {/* Header */}
