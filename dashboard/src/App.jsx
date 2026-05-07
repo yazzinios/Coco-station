@@ -13,6 +13,7 @@ import SchedulesPage from './pages/SchedulesPage';
 import RequestPage from './pages/RequestPage';
 import RequestsManagementPage from './pages/RequestsManagementPage';
 import LoginPage from './pages/LoginPage';
+import DJPage from './pages/DJPage';
 import UsersPage from './pages/UsersPage';
 import { useApp } from './context/useApp';
 
@@ -197,6 +198,7 @@ function AppLayout() {
         <Routes>
           {/* Mixer — always accessible when logged in */}
           <Route path="/" element={<MixerPage />} />
+          <Route path="/dj" element={<DJPage />} />
 
           {/* Feature-gated pages — URL-level protection */}
           <Route path="/library" element={

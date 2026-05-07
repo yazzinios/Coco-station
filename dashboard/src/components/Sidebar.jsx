@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut, Music2, ListMusic } from 'lucide-react';
+import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut, Music2, ListMusic, Disc3 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 export default function Sidebar({ onNavClick, collapsed }) {
@@ -15,6 +15,7 @@ export default function Sidebar({ onNavClick, collapsed }) {
   // Build nav items with permission checks
   const allNavItems = [
     { name: 'Mixer',         path: '/',              icon: <Sliders size={20} />,    visible: true },
+    { name: 'DJ Controller',  path: '/dj',            icon: <Disc3 size={20} />,      visible: true },
     { name: 'Library',       path: '/library',       icon: <FolderOpen size={20} />, visible: hasFeature('can_library') },
     { name: 'Announcements', path: '/announcements', icon: <Mic2 size={20} />,       visible: hasFeature('can_announce') },
     { name: 'Schedules',     path: '/schedules',     icon: <Calendar size={20} />,   visible: hasFeature('can_schedule') },

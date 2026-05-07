@@ -99,6 +99,13 @@ body {
   overflow-x: hidden;
 }
 
+/* ── DJ Controller responsive grid ────────────────────── */
+@media (max-width: 1100px) {
+  .dj-page-inner [style*="grid-template-columns: 1fr auto 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 /* ── Mixer deck grid ────────────────────────────────────── */
 .deck-grid {
   display: grid;
