@@ -371,6 +371,7 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
             "display_name": display_name,
             "email":        email,
             "role":         role,
+            "is_super_admin": role == "super_admin",
             "source":       "ldap",
         }
 

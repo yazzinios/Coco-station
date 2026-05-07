@@ -112,7 +112,9 @@ export default function LoginPage({ onLogin }) {
   const [companyName, setCompanyName] = useState('');
   const [methodsLoaded, setMethodsLoaded] = useState(false);
 
-  // Detect available login methods
+  const [logoUrl, setLogoUrl] = useState(null);
+
+  // Detect available login methods + check for company logo
   useEffect(() => {
     fetch('/api/auth/methods')
       .then(r => r.ok ? r.json() : null)
@@ -129,6 +131,11 @@ export default function LoginPage({ onLogin }) {
       })
       .catch(() => {})
       .finally(() => setMethodsLoaded(true));
+
+    // Check if a company logo has been uploaded
+    fetch('/api/settings/company/logo', { method: 'HEAD' })
+      .then(r => { if (r.ok) setLogoUrl('/api/settings/company/logo?t=' + Date.now()); })
+      .catch(() => {});
   }, []);
 
   // Restore remembered username
@@ -210,13 +217,17 @@ export default function LoginPage({ onLogin }) {
             {/* Logo */}
             <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
               <div style={{
-                width: '56px', height: '56px', borderRadius: '14px', margin: '0 auto 1rem',
-                background: 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,212,255,0.05))',
-                border: '1px solid rgba(0,212,255,0.3)',
+                width: '64px', height: '64px', borderRadius: '14px', margin: '0 auto 1rem',
+                background: logoUrl ? 'transparent' : 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,212,255,0.05))',
+                border: logoUrl ? 'none' : '1px solid rgba(0,212,255,0.3)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: '0 0 24px rgba(0,212,255,0.15)',
+                boxShadow: logoUrl ? 'none' : '0 0 24px rgba(0,212,255,0.15)',
+                overflow: 'hidden',
               }}>
-                <span style={{ fontSize: '1.6rem' }}>📻</span>
+                {logoUrl
+                  ? <img src={logoUrl} alt="logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                  : <span style={{ fontSize: '1.6rem' }}>📻</span>
+                }
               </div>
               <h1 style={{ fontSize: '1.6rem', fontWeight: '700', marginBottom: '0.3rem', color: '#fff' }}>
                 {companyName || 'CocoStation'}

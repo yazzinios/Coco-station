@@ -342,7 +342,8 @@ LOGO_MIME_MAP = {
 
 
 @app.get("/api/settings/company/logo")
-async def get_company_logo():
+@app.head("/api/settings/company/logo")
+async def get_company_logo(request: Request = None):
     """Serve the company logo. Reads base64 data-URI from DB and streams it as an image.
     No auth required — used directly as <img src=...>.
     """
@@ -354,6 +355,9 @@ async def get_company_logo():
         logo_mime = branding.get("logo_mime") or "image/png"
         if not logo_data:
             raise HTTPException(status_code=404, detail="No company logo uploaded")
+        # HEAD request — return headers only, no body
+        if request and request.method == "HEAD":
+            return Response(status_code=200, media_type=logo_mime)
         # logo_data is stored as  "data:image/png;base64,XXXX"
         if "," in logo_data:
             raw_b64 = logo_data.split(",", 1)[1]
