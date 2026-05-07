@@ -1005,8 +1005,7 @@ class DeckCloneRequest(_PydanticBase):
 
 @app.post("/api/decks/clone")
 async def clone_deck(req: DeckCloneRequest, request: Request,
-                     _user=Depends(require_permission("deck.play")),
-                     _access=Depends(require_deck_access("control"))):
+                     _user=Depends(require_permission("deck.play"))):
     """Start the same track on target_deck at the exact same playback position as source_deck.
     Both decks end up playing in sync (within ~1 second of network + ffmpeg seek latency).
     """
@@ -1014,6 +1013,14 @@ async def clone_deck(req: DeckCloneRequest, request: Request,
     if src not in DECKS: raise HTTPException(status_code=404, detail=f"Source deck '{src}' not found")
     if tgt not in DECKS: raise HTTPException(status_code=404, detail=f"Target deck '{tgt}' not found")
     if src == tgt: raise HTTPException(status_code=400, detail="Source and target deck must be different")
+    # Manual deck control check (require_deck_access can't be used here — no deck_id path param)
+    if not (_user.get("role") == "admin" or _user.get("is_super_admin")):
+        from db_client import db as _db
+        _perms = _db.get_permissions(_user["sub"])
+        _dc = _perms.get("deck_control") or {}
+        for _did in (src, tgt):
+            if not _dc.get(_did, {}).get("control", False):
+                raise HTTPException(status_code=403, detail=f"No control access for Deck {_did.upper()}")
 
     src_state = DECKS[src]
     if not src_state.get("is_playing") or not src_state.get("track"):
