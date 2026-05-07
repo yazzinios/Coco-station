@@ -217,16 +217,19 @@ export default function LoginPage({ onLogin }) {
             {/* Logo */}
             <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
               <div style={{
-                width: '64px', height: '64px', borderRadius: '14px', margin: '0 auto 1rem',
+                width: logoUrl ? '120px' : '80px',
+                height: logoUrl ? '120px' : '80px',
+                borderRadius: logoUrl ? '20px' : '18px',
+                margin: '0 auto 1rem',
                 background: logoUrl ? 'transparent' : 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,212,255,0.05))',
                 border: logoUrl ? 'none' : '1px solid rgba(0,212,255,0.3)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: logoUrl ? 'none' : '0 0 24px rgba(0,212,255,0.15)',
+                boxShadow: logoUrl ? 'none' : '0 0 32px rgba(0,212,255,0.15)',
                 overflow: 'hidden',
               }}>
                 {logoUrl
                   ? <img src={logoUrl} alt="logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                  : <span style={{ fontSize: '1.6rem' }}>📻</span>
+                  : <span style={{ fontSize: '2.2rem' }}>📻</span>
                 }
               </div>
               <h1 style={{ fontSize: '1.6rem', fontWeight: '700', marginBottom: '0.3rem', color: '#fff' }}>
