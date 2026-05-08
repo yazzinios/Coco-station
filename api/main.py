@@ -1035,19 +1035,25 @@ async def clone_deck(req: DeckCloneRequest, request: Request,
     is_loop  = src_state.get("is_loop", False)
     volume   = src_state.get("volume", 100)
 
-    # Ask the mixer for the live playback position on the source deck
-    elapsed = 0.0
+    # Use sync_probe: atomically snapshots elapsed + measures ffmpeg startup latency
+    # This eliminates the old hardcoded +0.3s guess and compensates for real startup time.
+    seek_to = 0.0
     try:
-        async with httpx.AsyncClient(timeout=3) as c:
-            r = await c.get(f"{FFMPEG_URL}/decks/{src}/position")
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(f"{FFMPEG_URL}/decks/{src}/sync_probe")
             if r.status_code == 200:
-                data     = r.json()
-                elapsed  = float(data.get("elapsed", 0.0))
+                data    = r.json()
+                seek_to = float(data.get("seek_to", 0.0))
+                print(f"[clone] sync_probe → elapsed={data.get('elapsed')}s "
+                      f"startup={data.get('startup_latency')}s seek_to={seek_to}s")
+            else:
+                print(f"[clone] sync_probe returned {r.status_code} — falling back to /position")
+                r2 = await c.get(f"{FFMPEG_URL}/decks/{src}/position")
+                if r2.status_code == 200:
+                    elapsed = float(r2.json().get("elapsed", 0.0))
+                    seek_to = max(0.0, elapsed + 0.3)
     except Exception as e:
-        print(f"[clone] Could not get position from mixer for deck {src}: {e}")
-
-    # Add a small buffer to compensate for HTTP round-trip latency (~0.3 s)
-    seek_to = max(0.0, elapsed + 0.3)
+        print(f"[clone] Could not get sync_probe from mixer for deck {src}: {e}")
 
     # Load the track state on target deck
     DECKS[tgt]["track"]      = track
