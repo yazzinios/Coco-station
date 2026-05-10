@@ -664,22 +664,37 @@ function PioneerController({ session }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   DENON SC6000 CONTROLLER
+   DENON MCX8000 CONTROLLER
 ══════════════════════════════════════════════════════════════════════════ */
 function DenonController({ session }) {
+  /* ── State ── */
   const [decks, setDecks] = useState({
-    L: { playing:true,  bpm:124.0, pitch:0.5, volume:0.82, eq:{ hi:0.72, mid:0.62, lo:0.68 }, gain:0.74, track:'Electric Blue', artist:'NEON SIGNAL', elapsed:92, progress:0.23, hc:[true,true,false,false,false,false,false,false], layer:'A', loop:false },
-    R: { playing:false, bpm:130.5, pitch:0.5, volume:0.75, eq:{ hi:0.70, mid:0.60, lo:0.72 }, gain:0.70, track:'Quantum Drive', artist:'AXIS', elapsed:31, progress:0.07, hc:[false,true,false,false,false,false,false,false], layer:'A', loop:false },
+    L: { playing:true,  bpm:128.0, pitch:0.5, volume:0.82, eq:{ hi:0.72, mid:0.62, lo:0.68 }, gain:0.74, track:'Midnight & Mirrors', artist:'CØVR', elapsed:308, progress:0.38, hc:Array(16).fill(false).map((_,i)=>i<2), layer:'A', loop:false },
+    R: { playing:false, bpm:128.0, pitch:0.5, volume:0.75, eq:{ hi:0.70, mid:0.60, lo:0.72 }, gain:0.70, track:'Elektrik Soundsystem', artist:'AXIS', elapsed:436, progress:0.52, hc:Array(16).fill(false).map((_,i)=>i===1), layer:'A', loop:false },
   });
   const [xfader,    setXfader]    = useState(0.5);
   const [masterVol, setMasterVol] = useState(0.80);
+  const [boothVol,  setBoothVol]  = useState(0.65);
   const [mic,       setMic]       = useState(false);
-  const [fxOn, setFxOn] = useState({ sweep:false, filter:true, flanger:false, delay:false });
+  const [fxOn, setFxOn] = useState({ echo:true, phaser:false, noise:false, filter:true });
+  const [micOn, setMicOn] = useState(false);
+
+  /* ── Canvas refs ── */
+  const jogLRef = useRef(null); const jogRRef = useRef(null);
+  const wvLRef  = useRef(null); const wvRRef  = useRef(null);
+  const vuRefs  = useRef([]);
+  const masterVURef = useRef(null);
+  const animRef = useRef(null);
+  const frameRef = useRef(0);
+  const jogAngle = useRef({ L:0, R:0 });
+  const waveOff  = useRef({ L:0, R:20 });
+  const vuLevels = useRef([0.7,0.75,0.4,0.3]);
 
   const D  = s => decks[s];
   const sD = (s, p) => setDecks(d => ({ ...d, [s]: typeof p === 'function' ? p(d[s]) : { ...d[s], ...p } }));
-  const c  = '#3a8fff';
+  const c  = '#1aafff';
 
+  /* ── Timer ── */
   useEffect(() => {
     const id = setInterval(() => setDecks(d => {
       const u = {};
@@ -689,172 +704,463 @@ function DenonController({ session }) {
     return () => clearInterval(id);
   }, []);
 
-  const DB = ({ label, active, onClick, ac, w=32, h=22 }) => (
+  /* ── Canvas helpers ── */
+  const drawJog = useCallback((canvas, angle, playing) => {
+    if (!canvas) return;
+    const W = 160, H = 160, cx = W/2, cy = H/2;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,W,H);
+    // Outer ring
+    ctx.beginPath(); ctx.arc(cx,cy,78,0,Math.PI*2);
+    ctx.fillStyle='#0d0d0d'; ctx.fill();
+    ctx.strokeStyle= playing ? c : '#1a2a3a';
+    ctx.lineWidth=2;
+    if (playing) { ctx.shadowBlur=14; ctx.shadowColor=c; }
+    ctx.stroke(); ctx.shadowBlur=0;
+    // LED ring dots
+    for (let i=0;i<40;i++) {
+      const a=(i/40)*Math.PI*2+angle*0.25;
+      const lx=cx+74*Math.cos(a), ly=cy+74*Math.sin(a);
+      const bright=(Math.sin(a*4+angle)+1)*0.5;
+      ctx.beginPath(); ctx.arc(lx,ly,1.4,0,Math.PI*2);
+      ctx.fillStyle=playing?`rgba(17,175,255,${0.25+bright*0.75})`:`rgba(30,60,90,0.5)`;
+      ctx.fill();
+    }
+    // Platter
+    ctx.beginPath(); ctx.arc(cx,cy,66,0,Math.PI*2);
+    const pg=ctx.createRadialGradient(cx-12,cy-12,3,cx,cy,66);
+    pg.addColorStop(0,'#222'); pg.addColorStop(1,'#0a0a0a');
+    ctx.fillStyle=pg; ctx.fill();
+    // Spinning grooves
+    ctx.save(); ctx.translate(cx,cy); ctx.rotate(angle);
+    for (let i=0;i<28;i++) {
+      const a=(i/28)*Math.PI*2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a)*18,Math.sin(a)*18);
+      ctx.lineTo(Math.cos(a)*62,Math.sin(a)*62);
+      ctx.strokeStyle='rgba(255,255,255,0.035)'; ctx.lineWidth=0.6; ctx.stroke();
+    }
+    for (let i=0;i<12;i++) {
+      const a=(i/12)*Math.PI*2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a)*56,Math.sin(a)*56);
+      ctx.lineTo(Math.cos(a)*63,Math.sin(a)*63);
+      ctx.strokeStyle='rgba(255,255,255,0.22)'; ctx.lineWidth=1.2; ctx.stroke();
+    }
+    // Hub
+    ctx.beginPath(); ctx.arc(0,0,20,0,Math.PI*2);
+    const hg=ctx.createRadialGradient(-4,-4,1,0,0,20);
+    hg.addColorStop(0,'#282828'); hg.addColorStop(1,'#0a0a0a');
+    ctx.fillStyle=hg; ctx.fill();
+    ctx.strokeStyle='#333'; ctx.lineWidth=0.5; ctx.stroke();
+    // Marker
+    ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(0,-16);
+    ctx.strokeStyle=playing?c:'rgba(255,255,255,0.18)';
+    ctx.lineWidth=2.5; ctx.lineCap='round';
+    if (playing){ctx.shadowBlur=8;ctx.shadowColor=c;}
+    ctx.stroke(); ctx.shadowBlur=0;
+    ctx.restore();
+  }, [c]);
+
+  const drawWaveform = useCallback((canvas, offset, playing) => {
+    if (!canvas) return;
+    const W=canvas.offsetWidth||280, H=32;
+    if (canvas.width!==W) canvas.width=W;
+    const ctx=canvas.getContext('2d');
+    ctx.fillStyle='#060a10'; ctx.fillRect(0,0,W,H);
+    const bars=Math.floor(W/3);
+    for (let i=0;i<bars;i++){
+      const x=i*3;
+      const s=(i+offset)*0.28;
+      const amp=Math.abs(Math.sin(s)*10+Math.sin(s*0.5)*6+Math.sin(s*2.3)*3);
+      const pct=i/bars;
+      ctx.fillStyle=pct<0.46?'#1a2535':pct<0.52?c:c+'55';
+      ctx.fillRect(x,H/2-amp,2,amp*2);
+    }
+    ctx.fillStyle=playing?'rgba(255,255,255,0.9)':'rgba(100,120,150,0.5)';
+    ctx.fillRect(W*0.47,0,1.5,H);
+  }, [c]);
+
+  const drawVU = useCallback((canvas, level) => {
+    if (!canvas) return;
+    const W=canvas.width, H=canvas.height, segs=12, segH=(H-segs)/segs;
+    const ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,W,H);
+    for (let i=0;i<segs;i++){
+      const y=H-(i+1)*(segH+1);
+      const col=i/segs>0.83?'#f00':i/segs>0.67?'#fa0':'#0f0';
+      ctx.fillStyle=(i/segs)<level?col:col+'18';
+      ctx.fillRect(1,y,W-2,segH);
+    }
+  }, []);
+
+  const drawMasterVU = useCallback((canvas, level) => {
+    if (!canvas) return;
+    const W=canvas.width, H=canvas.height, segs=14, segH=(H-segs)/segs;
+    const ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,W,H);
+    for (let ch=0;ch<2;ch++){
+      const lv=level+(ch===0?0.06:-0.04)+Math.sin(Date.now()*0.003+ch)*0.07;
+      for (let i=0;i<segs;i++){
+        const y=H-(i+1)*(segH+1);
+        const col=i/segs>0.86?'#f00':i/segs>0.71?'#fa0':'#0f0';
+        ctx.fillStyle=(i/segs)<lv?col:col+'18';
+        ctx.fillRect(ch*(W/2)+1,y,W/2-2,segH);
+      }
+    }
+  }, []);
+
+  /* ── Animation loop ── */
+  useEffect(() => {
+    let playing = { L: true, R: false };
+    // keep a ref-based snapshot to avoid stale closure
+    const getPlaying = () => playing;
+    const unsubPlaying = () => {};
+
+    const loop = () => {
+      frameRef.current++;
+      const dk = { L: null, R: null }; // will read from DOM state via refs
+
+      // Jog angles — read playing from refs we set below
+      if (jogLRef.current) {
+        jogAngle.current.L += playingRef.current.L ? 0.045 : 0.005;
+        drawJog(jogLRef.current, jogAngle.current.L, playingRef.current.L);
+      }
+      if (jogRRef.current) {
+        jogAngle.current.R += playingRef.current.R ? 0.045 : 0.005;
+        drawJog(jogRRef.current, jogAngle.current.R, playingRef.current.R);
+      }
+      // Waveforms
+      if (playingRef.current.L) waveOff.current.L += 0.55;
+      if (playingRef.current.R) waveOff.current.R += 0.55;
+      if (wvLRef.current) drawWaveform(wvLRef.current, waveOff.current.L, playingRef.current.L);
+      if (wvRRef.current) drawWaveform(wvRRef.current, waveOff.current.R, playingRef.current.R);
+      // Channel VUs
+      for (let ch=0;ch<4;ch++) {
+        const base = ch<2?(playingRef.current.L?0.66:0.05):(playingRef.current.R?0.62:0.05);
+        vuLevels.current[ch]=clamp(base+Math.sin(Date.now()*0.006+ch*1.4)*0.17+Math.random()*0.05,0,1);
+        if (vuRefs.current[ch]) drawVU(vuRefs.current[ch], vuLevels.current[ch]);
+      }
+      // Master VU
+      const mLv=playingRef.current.L||playingRef.current.R?0.72+Math.sin(Date.now()*0.004)*0.12:0.05;
+      if (masterVURef.current) drawMasterVU(masterVURef.current, mLv);
+
+      animRef.current = requestAnimationFrame(loop);
+    };
+    animRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animRef.current);
+  }, [drawJog, drawWaveform, drawVU, drawMasterVU]);
+
+  /* ── playing ref (so animation loop stays current) ── */
+  const playingRef = useRef({ L:true, R:false });
+  useEffect(() => {
+    playingRef.current = { L: decks.L.playing, R: decks.R.playing };
+  }, [decks.L.playing, decks.R.playing]);
+
+  /* ── Sub-buttons ── */
+  const DB = ({ label, active, onClick, ac, w=34, h=20 }) => (
     <button className="dBtn" onClick={onClick} style={{
-      width:w, height:h, borderRadius:5, cursor:'pointer', fontSize:8, fontFamily:'var(--dj-mono)',
-      border:`1px solid ${active?(ac||c):'#1c2030'}`, background:active?`${ac||c}20`:'#0a0d16',
-      color:active?(ac||c):'#2a3558', boxShadow:active?`0 0 10px ${ac||c}50,inset 0 0 8px ${ac||c}10`:'inset 0 1px 0 rgba(255,255,255,0.03)',
-      letterSpacing:0.5,
+      width:w, height:h, borderRadius:4, cursor:'pointer', fontSize:7, fontFamily:'var(--dj-mono)',
+      border:`1px solid ${active?(ac||c):'#1c2232'}`, background:active?`${ac||c}22`:'#080b14',
+      color:active?(ac||c):'#2a3558', boxShadow:active?`0 0 8px ${ac||c}55`:'none', letterSpacing:0.5,
     }}>{label}</button>
   );
 
-  const dur = 420;
+  /* ── Pad colors (16 pads like real MCX8000) ── */
+  const PAD_COLS = [
+    '#e040fb','#ab47bc','#7c4dff','#3d5afe',
+    '#00b0ff','#00e5ff','#1de9b6','#00e676',
+    '#c6ff00','#ffea00','#ff6d00','#ff1744',
+    '#f06292','#ff8a65','#a5d6a7','#80cbc4'
+  ];
 
+  /* ── Single deck panel ── */
   const renderDeck = s => {
-    const dk = D(s); const remain = dur - dk.elapsed;
+    const dk = D(s); const dur = 600; const remain = dur - dk.elapsed;
+    const isL = s === 'L';
     return (
-      <div style={{ flex:1, display:'flex', flexDirection:'column', gap:6 }}>
-        <div style={{ background:'#080c14', borderRadius:10, padding:'10px', border:`2px solid ${c}33`, boxShadow:`0 0 20px ${c}15,inset 0 0 30px rgba(0,0,0,0.5)` }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:6 }}>
-            <div>
-              <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:2 }}>
-                <div style={{ width:5, height:5, borderRadius:'50%', background:dk.playing?c:'#1c2030', boxShadow:dk.playing?`0 0 6px ${c}`:'none', animation:dk.playing?'djBlink 1.1s infinite':'none' }}/>
-                <span style={{ fontFamily:'var(--dj-mono)', fontSize:7, color:c, letterSpacing:2 }}>SC6000 · DECK {s} · LAYER {dk.layer}</span>
-              </div>
-              <div style={{ fontSize:13, fontWeight:700, color:'#cdd2e0', maxWidth:170, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', letterSpacing:0.5 }}>{dk.track}</div>
-              <div style={{ fontSize:9, color:'#2a3558', marginTop:1 }}>{dk.artist}</div>
+      <div style={{ flex:1, display:'flex', flexDirection:'column', gap:5, minWidth:0 }}>
+
+        {/* ── Screen ── */}
+        <div style={{ background:'#020609', borderRadius:7, padding:'7px 9px', border:`2px solid ${c}55`, boxShadow:`0 0 18px ${c}22,inset 0 0 25px rgba(0,0,0,0.7)` }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:3 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+              <div style={{ width:5, height:5, borderRadius:'50%', background:dk.playing?c:'#1a2535', boxShadow:dk.playing?`0 0 5px ${c}`:'none', animation:dk.playing?'djBlink 1.1s infinite':'none' }}/>
+              <span style={{ fontFamily:'var(--dj-mono)', fontSize:7, color:c, letterSpacing:2 }}>MCX8000 · DECK {s}</span>
             </div>
-            <div style={{ textAlign:'right' }}>
-              <div style={{ fontSize:20, fontWeight:700, fontFamily:'var(--dj-orb)', color:c, lineHeight:1 }}>{dk.bpm.toFixed(1)}</div>
-              <div style={{ fontSize:7, color:'#2a3558', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>BPM</div>
-              <div style={{ display:'flex', gap:3, marginTop:2, justifyContent:'flex-end' }}>
-                {['A','B'].map(l=>(
-                  <button key={l} className="dBtn" onClick={()=>sD(s,{layer:l})} style={{ width:16, height:14, borderRadius:3, fontSize:7, fontFamily:'var(--dj-mono)', cursor:'pointer', border:`1px solid ${dk.layer===l?c:'#1c2030'}`, background:dk.layer===l?`${c}25`:'transparent', color:dk.layer===l?c:'#2a3558' }}>{l}</button>
-                ))}
-              </div>
+            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+              <span style={{ fontFamily:'var(--dj-mono)', fontSize:7, color:'#3a6' }}>+4.9%</span>
+              <span style={{ fontFamily:'var(--dj-orb)', fontSize:15, fontWeight:700, color:c, letterSpacing:1 }}>{dk.bpm.toFixed(1)}</span>
             </div>
           </div>
-          <div style={{ display:'flex', gap:5, marginBottom:6 }}>
-            {[['ELAPSED',fmt(dk.elapsed),c],['REMAIN',`-${fmt(Math.max(0,remain))}`,'#2a3558']].map(([l,v,col])=>(
-              <div key={l} style={{ flex:1, background:'rgba(0,0,0,0.4)', borderRadius:4, padding:'2px 7px', border:'1px solid #12162a' }}>
-                <div style={{ fontSize:13, fontFamily:'var(--dj-mono)', color:col, fontWeight:700, lineHeight:1 }}>{v}</div>
-                <div style={{ fontSize:6, color:'#1c2a40', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>{l}</div>
-              </div>
+          <div style={{ fontSize:11, fontWeight:700, color:'#d8e0f0', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:1 }}>{dk.track}</div>
+          <div style={{ fontSize:8, color:'#2a3558', marginBottom:4 }}>{dk.artist}</div>
+          <div style={{ display:'flex', gap:5, marginBottom:5 }}>
+            <div style={{ flex:1, background:'rgba(0,0,0,0.4)', borderRadius:3, padding:'2px 6px', border:'1px solid #101828' }}>
+              <div style={{ fontSize:12, fontFamily:'var(--dj-mono)', color:c, fontWeight:700, lineHeight:1 }}>{fmt(dk.elapsed)}</div>
+              <div style={{ fontSize:5, color:'#1c2a40', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>ELAPSED</div>
+            </div>
+            <div style={{ flex:1, background:'rgba(0,0,0,0.4)', borderRadius:3, padding:'2px 6px', border:'1px solid #101828' }}>
+              <div style={{ fontSize:12, fontFamily:'var(--dj-mono)', color:'#2a3558', fontWeight:700, lineHeight:1 }}>-{fmt(Math.max(0,remain))}</div>
+              <div style={{ fontSize:5, color:'#1c2a40', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>REMAIN</div>
+            </div>
+          </div>
+          <div style={{ background:'#020508', borderRadius:3, padding:'2px 3px', border:'1px solid #0a1020' }}>
+            <canvas ref={s==='L'?wvLRef:wvRRef} style={{ width:'100%', height:32, display:'block' }}/>
+          </div>
+          <div style={{ display:'flex', gap:3, marginTop:4 }}>
+            {['ECHO','PHASER','NOISE'].map((f,i)=>(
+              <button key={f} className="dBtn" onClick={()=>setFxOn(x=>({...x,[f.toLowerCase()]:!x[f.toLowerCase()]}))}
+                style={{ padding:'2px 5px', borderRadius:2, fontSize:6, fontFamily:'var(--dj-mono)', cursor:'pointer',
+                  border:`1px solid ${fxOn[f.toLowerCase()]?'#fa0':'#1a2535'}`,
+                  background:fxOn[f.toLowerCase()]?'rgba(255,170,0,0.15)':'transparent',
+                  color:fxOn[f.toLowerCase()]?'#fa0':'#1a2535' }}>{f}</button>
             ))}
-            <div style={{ display:'flex', flexDirection:'column', gap:2, alignItems:'flex-end', justifyContent:'center' }}>
-              <div style={{ fontSize:8, fontFamily:'var(--dj-mono)', color:c, textAlign:'right' }}>{(dk.progress*100).toFixed(1)}%</div>
-              <div style={{ width:60, height:4, background:'#0c1020', borderRadius:2, overflow:'hidden' }}>
-                <div style={{ height:'100%', width:`${dk.progress*100}%`, background:`linear-gradient(90deg,${c}88,${c})`, borderRadius:2 }}/>
-              </div>
+            <div style={{ flex:1 }}/>
+            <span style={{ fontSize:6, color:'#1a2535', fontFamily:'var(--dj-mono)' }}>{isL?'1/2':'1/8'}</span>
+          </div>
+        </div>
+
+        {/* ── FX Section ── */}
+        <div style={{ background:'#07090f', borderRadius:6, padding:'5px 7px', border:'1px solid #1a1e2e', display:'flex', gap:5, alignItems:'center' }}>
+          <span style={{ fontFamily:'var(--dj-orb)', fontSize:7, color:c, letterSpacing:1 }}>FX {isL?1:2}</span>
+          {[0.6,0.4,0.7].map((v,i)=>(
+            <Knob key={i} size={24} value={v} onChange={()=>{}} color='#fa0'/>
+          ))}
+          <Knob size={20} value={0.5} onChange={()=>{}} color='#fa0' label="BEATS"/>
+          <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+            <div style={{ display:'flex', gap:2 }}>
+              {['ON','ON','ON'].map((l,i)=>(
+                <button key={i} className="dBtn" style={{ width:22, height:13, borderRadius:2, fontSize:6, fontFamily:'var(--dj-mono)', cursor:'pointer', border:'1px solid #1a6a1a', background:'rgba(0,180,0,0.1)', color:'#0c0' }}>{l}</button>
+              ))}
+            </div>
+            <div style={{ display:'flex', gap:2 }}>
+              {['SEL','SEL','TAP'].map((l,i)=>(
+                <button key={i} className="dBtn" style={{ width:22, height:13, borderRadius:2, fontSize:6, fontFamily:'var(--dj-mono)', cursor:'pointer', border:'1px solid #1a1e2e', background:'#070a12', color:'#2a3558' }}>{l}</button>
+              ))}
             </div>
           </div>
-          <div style={{ background:'rgba(0,0,0,0.5)', borderRadius:5, padding:'3px 5px', border:'1px solid #0e1428', marginBottom:5 }}>
-            <MiniWave color={c} progress={dk.progress} seed={s==='L'?1.3:2.1}/>
-          </div>
-          <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-            <button className="dBtn" onClick={()=>sD(s,{playing:!dk.playing})} style={{ width:38, height:30, borderRadius:7, cursor:'pointer', fontSize:13, border:`2px solid ${dk.playing?c:'#1c2030'}`, background:dk.playing?`${c}20`:'#0a0d16', color:dk.playing?c:'#2a3558', boxShadow:dk.playing?`0 0 15px ${c}55`:'none', transition:'all 0.2s' }}>{dk.playing?'⏸':'▶'}</button>
-            <DB label="CUE"/><DB label="SYNC" ac="#1ed760"/><DB label="LOOP" active={dk.loop} onClick={()=>sD(s,{loop:!dk.loop})} ac="#e8a020"/><DB label="SLIP" ac="#a855f7"/>
-            <div style={{ flex:1 }}/><VUMeter color={c} playing={dk.playing} height={28} bars={5}/>
-          </div>
         </div>
-        <div style={{ background:'#080c14', borderRadius:8, padding:'6px', border:`1px solid ${c}22` }}>
-          <div style={{ fontSize:6, color:'#1c2a40', fontFamily:'var(--dj-mono)', letterSpacing:2, marginBottom:4 }}>PERFORMANCE PADS</div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:3 }}>
-            {HC.map((col,i)=>(
-              <button key={i} className="dBtn" onClick={()=>sD(s,dk=>{const h=[...dk.hc];h[i]=!h[i];return{hc:h};})} style={{ height:26, borderRadius:5, cursor:'pointer', fontSize:8, fontFamily:'var(--dj-mono)', border:`2px solid ${dk.hc[i]?col:'#1c2030'}`, background:dk.hc[i]?`${col}25`:'#0a0d16', color:dk.hc[i]?col:'#1c2a40', boxShadow:dk.hc[i]?`0 0 8px ${col}66,inset 0 0 10px ${col}11`:'none' }}>{s}{i+1}</button>
-            ))}
+
+        {/* ── Jog wheel + pitch ── */}
+        <div style={{ background:'#07090f', borderRadius:8, padding:'8px', border:`1px solid ${c}22`, display:'flex', alignItems:'center', justifyContent:'center', gap:10 }}>
+          {isL && <PitchSlider value={dk.pitch} onChange={v=>sD(s,{pitch:v})} color={c} height={150}/>}
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:4 }}>
+            <span style={{ fontSize:6, color:'#1a2535', fontFamily:'var(--dj-mono)', letterSpacing:2 }}>NEEDLE DROP</span>
+            <div style={{ position:'relative', width:160, height:160, flexShrink:0 }}>
+              <div style={{ position:'absolute', inset:-4, borderRadius:'50%', pointerEvents:'none', transition:'box-shadow 0.4s',
+                boxShadow:dk.playing?`0 0 22px ${c}66,0 0 50px ${c}28`:`0 0 8px ${c}18` }}/>
+              <canvas ref={s==='L'?jogLRef:jogRRef} width={160} height={160}
+                style={{ borderRadius:'50%', cursor:'grab', display:'block' }}/>
+            </div>
           </div>
-          <div style={{ display:'flex', gap:2, marginTop:5, alignItems:'center' }}>
-            <span style={{ fontSize:6, color:'#1c2a40', fontFamily:'var(--dj-mono)', letterSpacing:1, marginRight:2 }}>LOOP</span>
-            {['¼','½','1','2','4','8','16','32'].map(x=><button key={x} className="dBtn" style={{ flex:1, height:16, borderRadius:2, fontSize:6, fontFamily:'var(--dj-mono)', cursor:'pointer', border:'1px solid #1c2030', background:'#090c18', color:'#2a3558' }}>{x}</button>)}
-          </div>
+          {!isL && <PitchSlider value={dk.pitch} onChange={v=>sD(s,{pitch:v})} color={c} height={150}/>}
+          <VUMeter color={c} playing={dk.playing} height={150} bars={6}/>
         </div>
-        <div style={{ background:'#080c14', borderRadius:10, padding:'10px', border:`1px solid ${c}22`, display:'flex', alignItems:'center', justifyContent:'center', gap:10 }}>
-          {s==='L' && <PitchSlider value={dk.pitch} onChange={v=>sD(s,{pitch:v})} color={c} height={140}/>}
-          <JogWheel playing={dk.playing} color={c} size={152} label={s} bpm={dk.bpm}/>
-          {s==='R' && <PitchSlider value={dk.pitch} onChange={v=>sD(s,{pitch:v})} color={c} height={140}/>}
-          <VUMeter color={c} playing={dk.playing} height={140} bars={6}/>
+
+        {/* ── Transport controls ── */}
+        <div style={{ display:'flex', gap:4, alignItems:'center', background:'#07090f', borderRadius:6, padding:'5px 7px', border:'1px solid #1a1e2e' }}>
+          <button className="dBtn" onClick={()=>sD(s,{playing:!dk.playing})} style={{ width:36, height:28, borderRadius:5, cursor:'pointer', fontSize:13, border:`2px solid ${dk.playing?c:'#1c2030'}`, background:dk.playing?`${c}22`:'#080b14', color:dk.playing?c:'#2a3558', boxShadow:dk.playing?`0 0 14px ${c}55`:'none', transition:'all 0.2s' }}>{dk.playing?'⏸':'▶'}</button>
+          <DB label="CUE" ac={c}/>
+          <DB label="SYNC" ac="#1ed760"/>
+          <DB label="LOOP" active={dk.loop} onClick={()=>sD(s,{loop:!dk.loop})} ac="#e8a020"/>
+          <DB label="SLIP" ac="#a855f7"/>
+          <div style={{ flex:1 }}/>
+          <VUMeter color={c} playing={dk.playing} height={26} bars={4}/>
         </div>
+
+        {/* ── Loop size ── */}
+        <div style={{ display:'flex', gap:2, alignItems:'center', background:'#07090f', borderRadius:5, padding:'3px 6px', border:'1px solid #1a1e2e' }}>
+          <span style={{ fontSize:6, color:'#1c2a40', fontFamily:'var(--dj-mono)', letterSpacing:1, marginRight:2 }}>LOOP</span>
+          {['¼','½','1','2','4','8','16','32'].map(x=>(
+            <button key={x} className="dBtn" style={{ flex:1, height:14, borderRadius:2, fontSize:5, fontFamily:'var(--dj-mono)', cursor:'pointer', border:'1px solid #1a1e2e', background:'#060810', color:'#2a3558' }}>{x}</button>
+          ))}
+        </div>
+
+        {/* ── Mode labels ── */}
+        <div style={{ display:'flex', justifyContent:'space-around', fontSize:6, fontFamily:'var(--dj-mono)' }}>
+          <span style={{ color:'#555' }}>CUE LOOP</span>
+          <span style={{ color:'#0c0' }}>ROLL</span>
+          <span style={{ color:'#a6f' }}>SLICER</span>
+          <span style={{ color:'#fa0' }}>SAMPLER</span>
+        </div>
+
+        {/* ── 16 Performance pads ── */}
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:3 }}>
+          {PAD_COLS.map((col,i)=>(
+            <button key={i} className="dBtn"
+              onClick={()=>sD(s,dk=>{const h=[...dk.hc];h[i]=!h[i];return{hc:h};})}
+              style={{ height:26, borderRadius:4, cursor:'pointer', border:`2px solid ${dk.hc[i]?col:col+'30'}`,
+                background:dk.hc[i]?`${col}30`:`${col}08`,
+                boxShadow:dk.hc[i]?`0 0 10px ${col}77,inset 0 0 8px ${col}22`:'none',
+                transition:'all 0.08s' }}/>
+          ))}
+        </div>
+
+        {/* ── CUE + Play bottom ── */}
+        <div style={{ display:'flex', gap:4 }}>
+          <button className="dBtn" style={{ flex:1, height:24, borderRadius:5, cursor:'pointer', fontFamily:'var(--dj-mono)', fontSize:9, letterSpacing:1, border:`2px solid ${c}88`, background:`${c}11`, color:c }}>CUE</button>
+          <button className="dBtn" onClick={()=>sD(s,{playing:!dk.playing})} style={{ flex:1, height:24, borderRadius:5, cursor:'pointer', fontSize:14, border:`2px solid ${dk.playing?'#0c0':'#1c3c1c'}`, background:dk.playing?'rgba(0,200,0,0.12)':'#060c06', color:dk.playing?'#0c0':'#1c3c1c' }}>⏯</button>
+        </div>
+
+        {/* ── Deck select ── */}
+        <div style={{ display:'flex', gap:3, justifyContent:'center' }}>
+          {(isL?['DECK 1','DECK 3']:['DECK 2','DECK 4']).map((l,i)=>(
+            <button key={l} className="dBtn" style={{ padding:'2px 8px', borderRadius:3, fontSize:6, fontFamily:'var(--dj-mono)', cursor:'pointer',
+              border:`1px solid ${(isL?i===0:i===1)?c:'#1a1e2e'}`,
+              background:(isL?i===0:i===1)?`${c}18`:'#070a12',
+              color:(isL?i===0:i===1)?c:'#2a3558' }}>{l}</button>
+          ))}
+        </div>
+
       </div>
     );
   };
 
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', animation:'djReveal 0.6s cubic-bezier(0.16,1,0.3,1) forwards' }}>
-      <div style={{ background:'#08111e', borderBottom:`1px solid ${c}22`, padding:'6px 16px', display:'flex', alignItems:'center', gap:12, flexShrink:0 }}>
-        <div style={{ fontFamily:'var(--dj-orb)', fontSize:14, fontWeight:900, color:c, letterSpacing:2 }}>DENON DJ</div>
-        <div style={{ fontFamily:'var(--dj-mono)', fontSize:9, color:'#2a3558', letterSpacing:1 }}>SC6000 PRIME</div>
+
+      {/* ── Top bar ── */}
+      <div style={{ background:'#06080f', borderBottom:`1px solid ${c}33`, padding:'5px 14px', display:'flex', alignItems:'center', gap:12, flexShrink:0 }}>
+        <div style={{ fontFamily:'var(--dj-orb)', fontSize:14, fontWeight:900, color:c, letterSpacing:3 }}>DENON DJ</div>
+        <div style={{ fontFamily:'var(--dj-orb)', fontSize:9, color:'#1a2a40', letterSpacing:2 }}>MCX8000</div>
+        <div style={{ fontFamily:'var(--dj-mono)', fontSize:7, color:'#1af', letterSpacing:2, border:'1px solid #1af4', padding:'1px 5px', borderRadius:2 }}>● SERATO DJ</div>
         <div style={{ width:1, height:28, background:`${c}22` }}/>
-        {/* DJ name badge */}
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <div style={{ width:28, height:28, borderRadius:'50%', background:`linear-gradient(135deg,${c},#1a5fdf)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:900, color:'#fff', fontFamily:'var(--dj-orb)' }}>
+          <div style={{ width:28, height:28, borderRadius:'50%', background:`linear-gradient(135deg,${c},#0a50c0)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:900, color:'#fff', fontFamily:'var(--dj-orb)' }}>
             {session.djName.replace(/^DJ\s*/i,'')[0]?.toUpperCase()}
           </div>
           <div>
-            <div style={{ fontFamily:'var(--dj-orb)', fontSize:12, fontWeight:700, color:'#cdd2e0', letterSpacing:1, lineHeight:1 }}>{session.djName}</div>
-            <div style={{ fontSize:7, color:c, fontFamily:'var(--dj-mono)', letterSpacing:1, marginTop:1 }}>DENON SESSION</div>
+            <div style={{ fontFamily:'var(--dj-orb)', fontSize:12, fontWeight:700, color:'#d0d8f0', letterSpacing:1, lineHeight:1 }}>{session.djName}</div>
+            <div style={{ fontSize:7, color:c, fontFamily:'var(--dj-mono)', letterSpacing:1, marginTop:1 }}>MCX8000 SESSION</div>
           </div>
         </div>
         <div style={{ width:1, height:28, background:`${c}22` }}/>
         <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-          <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--dj-green)', boxShadow:'0 0 5px var(--dj-green)', animation:'djBlink 2s infinite' }}/>
-          <span style={{ fontSize:9, fontFamily:'var(--dj-mono)', color:'var(--dj-green)' }}>{session.audioSrc}</span>
+          <div style={{ width:6, height:6, borderRadius:'50%', background:'#1ed760', boxShadow:'0 0 5px #1ed760', animation:'djBlink 2s infinite' }}/>
+          <span style={{ fontSize:9, fontFamily:'var(--dj-mono)', color:'#1ed760' }}>{session.audioSrc}</span>
         </div>
         <div style={{ flex:1 }}/>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
-            <span style={{ fontSize:6, color:'#2a3558', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>MASTER</span>
-            <HorizFader value={masterVol} onChange={setMasterVol} color={c} width={90}/>
+            <span style={{ fontSize:6, color:'#1a2a40', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>MASTER</span>
+            <HorizFader value={masterVol} onChange={setMasterVol} color={c} width={80}/>
           </div>
-          <VUMeter color={c} playing height={28} bars={6}/>
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
+            <span style={{ fontSize:6, color:'#1a2a40', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>BOOTH</span>
+            <HorizFader value={boothVol} onChange={setBoothVol} color={c} width={80}/>
+          </div>
+          <canvas ref={masterVURef} width={28} height={28} style={{ display:'block' }}/>
         </div>
         <div style={{ width:1, height:28, background:`${c}22` }}/>
-        <button onClick={() => window.location.reload()} style={{ padding:'4px 12px', borderRadius:6, cursor:'pointer', fontFamily:'var(--dj-mono)', fontSize:8, letterSpacing:1, border:`1px solid ${c}33`, background:'transparent', color:'#3a4060' }}>✕ EXIT</button>
+        <button onClick={()=>window.location.reload()} style={{ padding:'4px 12px', borderRadius:6, cursor:'pointer', fontFamily:'var(--dj-mono)', fontSize:8, letterSpacing:1, border:`1px solid ${c}33`, background:'transparent', color:'#3a4060' }}>✕ EXIT</button>
       </div>
 
+      {/* ── Main layout: Deck L | Mixer | Deck R ── */}
       <div style={{ flex:1, display:'flex', overflow:'hidden', minHeight:0 }}>
-        <div style={{ flex:1, padding:'8px 6px 8px 8px', overflow:'auto', display:'flex', flexDirection:'column', gap:5 }}>{renderDeck('L')}</div>
 
-        {/* X1850 Prime mixer */}
-        <div style={{ width:195, flexShrink:0, background:'#060910', borderLeft:`1px solid ${c}22`, borderRight:`1px solid ${c}22`, padding:'8px', display:'flex', flexDirection:'column', gap:5, overflow:'auto' }}>
-          <div style={{ textAlign:'center', fontFamily:'var(--dj-orb)', fontSize:7, color:'#2a3558', letterSpacing:2, marginBottom:2 }}>X1850 · PRIME</div>
-          <div style={{ background:'#0a0e1a', borderRadius:7, padding:'6px', border:`1px solid ${c}22` }}>
-            <div style={{ fontSize:6, color:'#2a3558', fontFamily:'var(--dj-mono)', letterSpacing:2, marginBottom:5, textAlign:'center' }}>SWEEP FX</div>
-            <div style={{ display:'flex', gap:3, flexWrap:'wrap', justifyContent:'center' }}>
-              {[{id:'sweep',l:'SWEEP',col:'#3a8fff'},{id:'filter',l:'FILTER',col:'#a855f7'},{id:'flanger',l:'FLNG',col:'#e8a020'},{id:'delay',l:'DELAY',col:'#1ed760'}].map(f=>(
-                <button key={f.id} className="dBtn" onClick={()=>setFxOn(x=>({...x,[f.id]:!x[f.id]}))} style={{ padding:'3px 7px', borderRadius:4, cursor:'pointer', fontSize:7, fontFamily:'var(--dj-mono)', border:`1px solid ${fxOn[f.id]?f.col+'55':'#1c2030'}`, background:fxOn[f.id]?`${f.col}18`:'#0a0d16', color:fxOn[f.id]?f.col:'#2a3558', boxShadow:fxOn[f.id]?`0 0 8px ${f.col}44`:'none' }}>{f.l}</button>
-              ))}
-            </div>
-            <div style={{ display:'flex', justifyContent:'center', marginTop:6 }}>
-              <Knob size={34} value={0.5} onChange={()=>{}} color={c} label="DEPTH"/>
-            </div>
+        {/* Left deck */}
+        <div style={{ flex:1, padding:'8px 6px 8px 8px', overflow:'auto', display:'flex', flexDirection:'column', gap:5 }}>
+          {renderDeck('L')}
+        </div>
+
+        {/* Center Mixer (MCX8000 4-channel) */}
+        <div style={{ width:210, flexShrink:0, background:'#050710', borderLeft:`1px solid ${c}22`, borderRight:`1px solid ${c}22`, padding:'8px', display:'flex', flexDirection:'column', gap:5, overflow:'auto' }}>
+
+          <div style={{ textAlign:'center', fontFamily:'var(--dj-orb)', fontSize:7, color:'#1a2a40', letterSpacing:2, marginBottom:2 }}>MCX8000 · 4CH MIXER</div>
+
+          {/* MIC section */}
+          <div style={{ background:'#07090f', borderRadius:6, padding:'5px', border:'1px solid #1a1e2e', display:'flex', gap:5, alignItems:'center' }}>
+            <span style={{ fontSize:6, color:'#444', fontFamily:'var(--dj-mono)' }}>MIC</span>
+            <Knob size={22} value={0.55} onChange={()=>{}} color='#f44' label="LVL"/>
+            <Knob size={20} value={0.3}  onChange={()=>{}} color='#f44' label="ECHO"/>
+            <canvas ref={el=>vuRefs.current[4]=el} width={6} height={28} style={{ display:'block' }}/>
+            <button className="dBtn" onClick={()=>setMicOn(m=>!m)} style={{ flex:1, height:20, borderRadius:4, cursor:'pointer', fontSize:7, fontFamily:'var(--dj-mono)',
+              border:`1px solid ${micOn?'#f00':'#2a1010'}`, background:micOn?'rgba(255,0,0,0.15)':'#080b14',
+              color:micOn?'#f44':'#2a1515', boxShadow:micOn?'0 0 8px rgba(255,0,0,0.5)':'none' }}>MIC {micOn?'ON':'OFF'}</button>
           </div>
-          <div style={{ display:'flex', gap:6, justifyContent:'center' }}>
-            {['L','R'].map(s=>(
-              <div key={s} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:4 }}>
-                <span style={{ fontSize:7, color:c, fontFamily:'var(--dj-mono)', letterSpacing:1 }}>CH.{s}</span>
-                <Knob size={30} value={D(s).gain} onChange={v=>sD(s,{gain:v})} color={c} label="GAIN"/>
-                <Knob size={28} value={D(s).eq.hi}  onChange={v=>sD(s,dk=>({...dk,eq:{...dk.eq,hi:v}}))}  color="#e03c3c" label="HI"  centerZero/>
-                <Knob size={28} value={D(s).eq.mid} onChange={v=>sD(s,dk=>({...dk,eq:{...dk.eq,mid:v}}))} color="#e8a020" label="MID" centerZero/>
-                <Knob size={28} value={D(s).eq.lo}  onChange={v=>sD(s,dk=>({...dk,eq:{...dk.eq,lo:v}}))}  color={c}       label="LO"  centerZero/>
-                <VUMeter color={c} playing={D(s).playing} height={50} bars={4}/>
-                <VertFader value={D(s).volume} onChange={v=>sD(s,{volume:v})} color={c} height={88}/>
+
+          {/* 4 channel strips */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:4 }}>
+            {[{ch:'3',col:'#fa0'},{ch:'1',col:c},{ch:'2',col:'#0f0'},{ch:'4',col:'#a6f'}].map((ch,i)=>(
+              <div key={i} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
+                <span style={{ fontSize:7, color:ch.col, fontFamily:'var(--dj-mono)', letterSpacing:0.5 }}>{ch.ch}</span>
+                <Knob size={18} value={[0.65,0.55,0.6,0.7][i]} onChange={()=>{}} color='#f44' label="HI"/>
+                <Knob size={18} value={[0.55,0.5,0.62,0.58][i]} onChange={()=>{}} color='#fa0' label="MID"/>
+                <Knob size={18} value={[0.6,0.68,0.55,0.52][i]} onChange={()=>{}} color={c} label="LO"/>
+                <Knob size={16} value={[0.7,0.72,0.45,0.35][i]} onChange={()=>{}} color='#0f0' label="LVL"/>
+                <Knob size={16} value={0.5} onChange={()=>{}} color='#a6f' label="FLT"/>
+                <canvas ref={el=>vuRefs.current[i]=el} width={8} height={42} style={{ display:'block' }}/>
+                <VertFader
+                  value={i<2?D('L').volume:D('R').volume}
+                  onChange={v=>sD(i<2?'L':'R',{volume:v})}
+                  color={ch.col} height={70}/>
+                <div style={{ width:28, height:12, background:'#060810', border:`1px solid ${ch.col}44`, borderRadius:2,
+                  display:'flex', alignItems:'center', justifyContent:'center', fontSize:6, color:ch.col, fontFamily:'var(--dj-mono)', cursor:'pointer' }}>CUE</div>
               </div>
             ))}
           </div>
-          <div>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-              <span style={{ fontSize:6, color:c, fontFamily:'var(--dj-mono)' }}>L</span>
-              <span style={{ fontSize:6, color:'#2a3558', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>X-FADER</span>
-              <span style={{ fontSize:6, color:c, fontFamily:'var(--dj-mono)' }}>R</span>
+
+          {/* Crossfader */}
+          <div style={{ marginTop:3 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+              <span style={{ fontSize:6, color:c, fontFamily:'var(--dj-mono)' }}>A</span>
+              <span style={{ fontSize:6, color:'#1a2a40', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>X-FADER</span>
+              <span style={{ fontSize:6, color:c, fontFamily:'var(--dj-mono)' }}>B</span>
             </div>
-            <HorizFader value={xfader} onChange={setXfader} color={c} width={163}/>
+            <HorizFader value={xfader} onChange={setXfader} color={c} width={188}/>
           </div>
-          <button className="dBtn" onClick={()=>setMic(m=>!m)} style={{ height:26, borderRadius:6, cursor:'pointer', fontSize:9, fontFamily:'var(--dj-mono)', border:`1px solid ${mic?'#e03c3c':'#1c2030'}`, background:mic?'rgba(224,60,60,0.12)':'#0a0d16', color:mic?'#e03c3c':'#2a3558', boxShadow:mic?'0 0 10px rgba(224,60,60,0.4)':'none' }}>🎙 MICROPHONE {mic?'ON':'OFF'}</button>
-          <div style={{ display:'flex', gap:1, alignItems:'flex-end', height:24, overflow:'hidden' }}>
-            {Array.from({length:28}).map((_,i)=>(
-              <div key={i} style={{ flex:1, height:'100%', background:'rgba(255,255,255,0.03)', borderRadius:1, display:'flex', alignItems:'flex-end', overflow:'hidden' }}>
+
+          {/* Phones + master knobs */}
+          <div style={{ display:'flex', gap:5, justifyContent:'center', marginTop:3 }}>
+            <Knob size={28} value={masterVol} onChange={setMasterVol} color='#0f0' label="MASTER"/>
+            <Knob size={28} value={boothVol}  onChange={setBoothVol}  color='#0f0' label="BOOTH"/>
+            <Knob size={24} value={0.7}        onChange={()=>{}}        color='#fff' label="PHONES"/>
+          </div>
+
+          {/* FX send rows */}
+          <div style={{ background:'#07090f', borderRadius:5, padding:'4px', border:'1px solid #1a1e2e' }}>
+            <div style={{ fontSize:6, color:'#1a2a40', fontFamily:'var(--dj-mono)', letterSpacing:2, textAlign:'center', marginBottom:4 }}>SWEEP FX</div>
+            <div style={{ display:'flex', gap:2, flexWrap:'wrap', justifyContent:'center' }}>
+              {[{id:'echo',l:'ECHO',col:c},{id:'filter',l:'FILTER',col:'#a6f'},{id:'phaser',l:'PHASER',col:'#fa0'},{id:'noise',l:'NOISE',col:'#f44'}].map(f=>(
+                <button key={f.id} className="dBtn" onClick={()=>setFxOn(x=>({...x,[f.id]:!x[f.id]}))}
+                  style={{ padding:'3px 6px', borderRadius:3, cursor:'pointer', fontSize:6, fontFamily:'var(--dj-mono)',
+                    border:`1px solid ${fxOn[f.id]?f.col+'66':'#1a1e2e'}`,
+                    background:fxOn[f.id]?`${f.col}18`:'#060810',
+                    color:fxOn[f.id]?f.col:'#2a3558', boxShadow:fxOn[f.id]?`0 0 6px ${f.col}44`:'none' }}>{f.l}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Mic on / talk over */}
+          <div style={{ display:'flex', gap:3 }}>
+            <button className="dBtn" onClick={()=>setMicOn(m=>!m)} style={{ flex:1, height:22, borderRadius:4, cursor:'pointer', fontSize:8, fontFamily:'var(--dj-mono)', letterSpacing:0.5,
+              border:`1px solid ${micOn?'#f00':'#2a1010'}`, background:micOn?'rgba(255,0,0,0.12)':'#080b14',
+              color:micOn?'#f55':'#2a1515', boxShadow:micOn?'0 0 8px rgba(255,0,0,0.4)':'none' }}>🎙 MIC ON</button>
+            <button className="dBtn" style={{ flex:1, height:22, borderRadius:4, cursor:'pointer', fontSize:8, fontFamily:'var(--dj-mono)', border:'1px solid #1a1e2e', background:'#060810', color:'#2a3558' }}>TALK OVER</button>
+          </div>
+
+          {/* Spectrum bar */}
+          <div style={{ display:'flex', gap:1, alignItems:'flex-end', height:22, overflow:'hidden' }}>
+            {Array.from({length:30}).map((_,i)=>(
+              <div key={i} style={{ flex:1, height:'100%', background:'rgba(255,255,255,0.025)', borderRadius:1, display:'flex', alignItems:'flex-end', overflow:'hidden' }}>
                 <div className={`dj-sp${i%8}`} style={{ width:'100%', background:c, borderRadius:1, animationDelay:`${i*0.05}s` }}/>
               </div>
             ))}
           </div>
-          <div style={{ background:'#0a0e1a', borderRadius:6, padding:'5px', border:`1px solid ${c}22`, textAlign:'center' }}>
-            <div style={{ fontFamily:'var(--dj-orb)', fontSize:16, color:c, fontWeight:700 }}>{D('L').bpm.toFixed(1)}</div>
-            <div style={{ fontSize:6, color:'#2a3558', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>MASTER BPM</div>
+
+          {/* BPM display */}
+          <div style={{ background:'#060910', borderRadius:5, padding:'4px', border:`1px solid ${c}22`, textAlign:'center' }}>
+            <div style={{ fontFamily:'var(--dj-orb)', fontSize:18, color:c, fontWeight:700, lineHeight:1 }}>{D('L').bpm.toFixed(1)}</div>
+            <div style={{ fontSize:6, color:'#1a2a40', fontFamily:'var(--dj-mono)', letterSpacing:1 }}>MASTER BPM</div>
           </div>
         </div>
 
-        <div style={{ flex:1, padding:'8px 8px 8px 6px', overflow:'auto', display:'flex', flexDirection:'column', gap:5 }}>{renderDeck('R')}</div>
+        {/* Right deck */}
+        <div style={{ flex:1, padding:'8px 8px 8px 6px', overflow:'auto', display:'flex', flexDirection:'column', gap:5 }}>
+          {renderDeck('R')}
+        </div>
+
       </div>
     </div>
   );
