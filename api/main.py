@@ -43,6 +43,7 @@ from schemas import (
     MusicScheduleCreateRequest, MusicSchedule,
     RecurringSchedule, RecurringScheduleCreateRequest,
     RecurringMixerSchedule, RecurringMixerScheduleCreateRequest,
+    PlaylistBroadcastRequest, SyncAllRequest,
 )
 from tts import generate_tts
 import announcement_engine as ann_engine
@@ -1074,6 +1075,223 @@ async def clone_deck(req: DeckCloneRequest, request: Request,
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     _audit(request, _user, "deck.clone", {"source": src, "target": tgt, "track": track, "seek": seek_to})
     return {"status": "ok", "source": src, "target": tgt, "track": track, "seek_seconds": seek_to}
+
+
+# ═══════════════════════════════════════════════════════════
+#  OPTION 1 — Broadcast same playlist to multiple decks
+#  POST /api/decks/playlist/broadcast
+#
+#  Loads the same playlist on every requested deck and fires
+#  all play() calls in a single asyncio.gather so they start
+#  within the same event-loop tick (~0 ms apart).
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/api/decks/playlist/broadcast")
+async def playlist_broadcast(
+    req: PlaylistBroadcastRequest,
+    request: Request,
+    _user=Depends(require_permission("deck.load_playlist")),
+):
+    """
+    Load the same playlist on all requested decks and start them
+    simultaneously (single asyncio.gather — no sequential delays).
+    """
+    playlist = PLAYLISTS.get(req.playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    deck_ids = [d.lower() for d in req.deck_ids if d.lower() in DECKS]
+    if not deck_ids:
+        raise HTTPException(status_code=400, detail="No valid deck IDs provided")
+
+    tracks = [t for t in playlist["tracks"] if (MEDIA_DIR / t).exists()]
+    if not tracks:
+        raise HTTPException(status_code=400, detail="No valid tracks in playlist")
+
+    first_track = tracks[0]
+    filepath    = str(Path("/library") / first_track)
+
+    # ── 1. Stop any currently playing decks (sequentially is fine — cheap) ──
+    async with httpx.AsyncClient(timeout=5) as c:
+        stop_tasks = [
+            c.post(f"{FFMPEG_URL}/decks/{did}/stop")
+            for did in deck_ids
+            if DECKS[did].get("is_playing") or DECKS[did].get("is_paused")
+        ]
+        if stop_tasks:
+            await asyncio.gather(*stop_tasks, return_exceptions=True)
+
+    # ── 2. Update in-memory state for all decks ──────────────────────────────
+    for did in deck_ids:
+        DECK_PLAYLISTS[did] = {
+            "playlist_id": req.playlist_id,
+            "tracks": tracks,
+            "index": 0,
+            "loop": req.loop,
+        }
+        DECKS[did].update({
+            "track":          first_track,
+            "is_playing":     True,
+            "is_paused":      False,
+            "is_loop":        False,
+            "playlist_id":    req.playlist_id,
+            "playlist_index": 0,
+            "playlist_loop":  req.loop,
+        })
+
+    # ── 3. Fire all play() calls in ONE gather — simultaneous start ──────────
+    async with httpx.AsyncClient(timeout=5) as c:
+        play_tasks = [
+            c.post(
+                f"{FFMPEG_URL}/decks/{did}/play",
+                json={"filepath": filepath, "loop": False, "seek_seconds": 0.0},
+            )
+            for did in deck_ids
+        ]
+        results = await asyncio.gather(*play_tasks, return_exceptions=True)
+
+    errors = [
+        {"deck": did, "error": str(err)}
+        for did, err in zip(deck_ids, results)
+        if isinstance(err, Exception)
+    ]
+
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    _audit(request, _user, "deck.playlist_broadcast",
+           {"playlist": playlist["name"], "decks": deck_ids, "tracks": len(tracks)})
+
+    return {
+        "status":      "ok" if not errors else "partial",
+        "playlist":    playlist["name"],
+        "decks":       deck_ids,
+        "first_track": first_track,
+        "track_count": len(tracks),
+        "errors":      errors,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+#  OPTION 2 — Sync all target decks to a running master deck
+#  POST /api/decks/sync-all
+#
+#  1. sync_probe the source deck  →  get elapsed + startup latency
+#  2. compute seek_to = elapsed + startup_latency
+#  3. fire all target play() calls in ONE gather with that seek
+#
+#  Result: every target deck jumps to the exact same audio
+#  position as the source and plays in lockstep.
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/api/decks/sync-all")
+async def sync_all_to_source(
+    req: SyncAllRequest,
+    request: Request,
+    _user=Depends(require_permission("deck.play")),
+):
+    """
+    Sync all target decks to the exact playback position of the source deck.
+    Source must already be playing.  All targets start in parallel.
+    """
+    src = req.source_deck.lower()
+    if src not in DECKS:
+        raise HTTPException(status_code=404, detail=f"Source deck '{src}' not found")
+    if not DECKS[src].get("is_playing") or not DECKS[src].get("track"):
+        raise HTTPException(status_code=400, detail=f"Deck {src.upper()} is not currently playing")
+
+    target_ids = [d.lower() for d in req.target_decks if d.lower() in DECKS and d.lower() != src]
+    if not target_ids:
+        raise HTTPException(status_code=400, detail="No valid target decks provided")
+
+    track   = DECKS[src]["track"]
+    is_loop = DECKS[src].get("is_loop", False)
+    volume  = DECKS[src].get("volume", 100)
+
+    # ── 1. Single sync_probe call on the source ──────────────────────────────
+    seek_to        = 0.0
+    startup_latency = 0.0
+    elapsed        = 0.0
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(f"{FFMPEG_URL}/decks/{src}/sync_probe")
+            if r.status_code == 200:
+                data           = r.json()
+                seek_to        = float(data.get("seek_to", 0.0))
+                elapsed        = float(data.get("elapsed", 0.0))
+                startup_latency = float(data.get("startup_latency", 0.0))
+                print(
+                    f"[sync-all] source={src} elapsed={elapsed:.3f}s "
+                    f"startup={startup_latency:.3f}s seek_to={seek_to:.3f}s "
+                    f"targets={target_ids}"
+                )
+            else:
+                # Fallback: /position + hardcoded latency estimate
+                r2 = await c.get(f"{FFMPEG_URL}/decks/{src}/position")
+                if r2.status_code == 200:
+                    elapsed = float(r2.json().get("elapsed", 0.0))
+                    seek_to = max(0.0, elapsed + 0.3)
+    except Exception as e:
+        print(f"[sync-all] sync_probe failed for deck {src}: {e}")
+
+    filepath = str(Path("/library") / track)
+
+    # ── 2. Update in-memory state for every target deck ──────────────────────
+    for did in target_ids:
+        DECKS[did].update({
+            "track":      track,
+            "is_playing": True,
+            "is_paused":  False,
+            "is_loop":    is_loop,
+            "volume":     volume,
+        })
+        # If source is running a playlist, mirror that playlist state too
+        src_pl = DECK_PLAYLISTS.get(src)
+        if src_pl:
+            DECK_PLAYLISTS[did] = {
+                "playlist_id": src_pl["playlist_id"],
+                "tracks":      src_pl["tracks"],
+                "index":       src_pl["index"],
+                "loop":        src_pl["loop"],
+            }
+            DECKS[did].update({
+                "playlist_id":    src_pl["playlist_id"],
+                "playlist_index": src_pl["index"],
+                "playlist_loop":  src_pl["loop"],
+            })
+
+    # ── 3. Fire play + volume for every target in ONE gather ─────────────────
+    async with httpx.AsyncClient(timeout=5) as c:
+        tasks = []
+        for did in target_ids:
+            tasks.append(
+                c.post(
+                    f"{FFMPEG_URL}/decks/{did}/play",
+                    json={"filepath": filepath, "loop": is_loop, "seek_seconds": seek_to},
+                )
+            )
+            tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{volume}"))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    errors = [
+        {"error": str(r)}
+        for r in results
+        if isinstance(r, Exception)
+    ]
+
+    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    _audit(request, _user, "deck.sync_all",
+           {"source": src, "targets": target_ids, "track": track, "seek": seek_to})
+
+    return {
+        "status":       "ok" if not errors else "partial",
+        "source":       src,
+        "targets":      target_ids,
+        "track":        track,
+        "seek_seconds": round(seek_to, 3),
+        "elapsed":      round(elapsed, 3),
+        "startup_comp": round(startup_latency, 3),
+        "errors":       errors,
+    }
+
 
 @app.post("/api/decks/{deck_id}/loop")
 async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(require_deck_access("control"))):

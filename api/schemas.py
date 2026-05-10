@@ -145,6 +145,20 @@ class RecurringMixerScheduleCreateRequest(BaseModel):
     multi_tracks: List[str] = []
     enabled: bool = True
 
+# ── Multi-deck sync schemas ─────────────────────────────────────────────────
+
+class PlaylistBroadcastRequest(BaseModel):
+    """Option 1 — load the same playlist on ALL (or selected) decks simultaneously."""
+    playlist_id: str
+    deck_ids: List[str] = ["a", "b", "c", "d", "e", "f"]   # defaults to all 6
+    loop: bool = False
+
+class SyncAllRequest(BaseModel):
+    """Option 2 — sync all (or selected) target decks to a running master deck."""
+    source_deck: str                                          # e.g. "a"
+    target_decks: List[str] = ["b", "c", "d", "e", "f"]     # decks to align to source
+
+
 class RecurringMixerSchedule(BaseModel):
     id: str
     name: str
