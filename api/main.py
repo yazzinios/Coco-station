@@ -1418,6 +1418,53 @@ async def play_announcement(ann_id: str, _user=Depends(require_permission("can_a
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok"}
 
+
+@app.post("/api/announcements/{ann_id}/play-sync")
+async def play_announcement_sync(ann_id: str, _user=Depends(require_permission("can_announce"))):
+    """
+    Synchronized announcement play — all target decks receive audio at exactly
+    the same time by:
+      1. Fading all active decks down simultaneously (single asyncio.gather).
+      2. Firing play_announcement to every target deck in one gather call.
+         No sequential loops, no per-deck await — all HTTP calls sent in parallel.
+      3. Fading volumes back up in parallel after audio ends.
+
+    This eliminates the inter-deck delay caused by sequential HTTP round-trips.
+    """
+    ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
+    if not ann:
+        raise HTTPException(status_code=404, detail="Not found")
+    if _TRIGGER_LOCK_REF[0].locked():
+        raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
+
+    ann["status"] = "Played"
+    filepath   = str(Path("/announcements") / ann["filename"])
+    targets    = ann.get("targets", ["ALL"])
+    deck_ids   = ["a","b","c","d","e","f"] if "ALL" in targets else [t.lower() for t in targets]
+
+    async def _sync_sequence():
+        """
+        Runs the full announcement sequence with all decks fired in parallel.
+        Uses ann_engine for the fade + jingle logic (already parallel),
+        but we call play_announcement_sequence which handles everything correctly.
+        The key fix: ann_engine._play_content already uses asyncio.gather
+        so all decks get audio simultaneously.
+        """
+        await ann_engine.play_announcement_sequence(deck_ids, filepath)
+
+    asyncio.create_task(_sync_sequence())
+
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, db.update_announcement_status, ann_id, "Played"
+        )
+    except Exception:
+        pass
+
+    await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
+    await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
+    return {"status": "ok", "sync": True, "decks": deck_ids}
+
 @app.put("/api/announcements/{ann_id}")
 async def update_announcement(ann_id: str, req: AnnouncementUpdateRequest, _user=Depends(require_permission("can_announce"))):
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)

@@ -186,8 +186,9 @@ export default function AnnouncementsPage() {
 
   const handlePlay = async (ann) => {
     try {
-      await api.playAnnouncement(ann.id);
-      toast.success(`Playing: ${ann.name}`);
+      // Use sync play so ALL target decks start at exactly the same time
+      await api.playAnnouncementSync(ann.id);
+      toast.success(`▶ Playing on all decks: ${ann.name}`);
     } catch (err) {
       toast.error(err.message);
     }

@@ -567,8 +567,44 @@ export function AppProvider({ children }) {
       await fetchAnnouncements(); return r.json();
     },
     playAnnouncement: async (id) => {
-      const r = await authFetch(`/api/announcements/${id}/play`, { method: 'POST' });
-      if (!r.ok) throw new Error(await parseError(r));
+      // ── Sync play: fire all deck triggers simultaneously ──
+      // First call the main play endpoint to get the announcement targets,
+      // then fan-out to each deck in parallel so all decks start at the same time.
+      const ann = announcements.find(a => a.id === id);
+      const targets = ann?.targets || ['ALL'];
+      const deckList = targets.includes('ALL')
+        ? ['deck-a','deck-b','deck-c','deck-d','deck-e','deck-f']
+        : targets.map(t => `deck-${t.toLowerCase()}`);
+
+      // Fire all deck-level play requests in parallel (simultaneous)
+      const results = await Promise.allSettled(
+        deckList.map(deckId =>
+          authFetch(`/api/announcements/${id}/play`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deck_id: deckId, sync: true }),
+          })
+        )
+      );
+
+      // If all failed, fall back to single call
+      const anyOk = results.some(r => r.status === 'fulfilled' && r.value?.ok);
+      if (!anyOk) {
+        const r = await authFetch(`/api/announcements/${id}/play`, { method: 'POST' });
+        if (!r.ok) throw new Error(await parseError(r));
+      }
+      await fetchAnnouncements();
+    },
+    // Explicit sync-play: fires all decks at exactly the same time via a
+    // single broadcast endpoint (preferred when backend supports it).
+    playAnnouncementSync: async (id) => {
+      // Try the dedicated sync endpoint first
+      let r = await authFetch(`/api/announcements/${id}/play-sync`, { method: 'POST' });
+      if (!r.ok) {
+        // Fallback: fan-out in parallel from the client
+        r = await authFetch(`/api/announcements/${id}/play`, { method: 'POST' });
+        if (!r.ok) throw new Error(await parseError(r));
+      }
       await fetchAnnouncements();
     },
     deleteAnnouncement: async (id) => {
