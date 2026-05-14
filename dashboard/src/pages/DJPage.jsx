@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/useApp';
+import XDJRRController from './XDJRRController';
 
 /* ══════════════════════════════════════════════════════════════════════════
    RealImageJog — upload real DDJ photo, overlay spinning jog wheels on top.
@@ -537,6 +538,7 @@ function SetupScreen({ onConnect }) {
   const [connecting, setConnecting] = useState(false);
 
   const meta = {
+    xdjrr:   { label:'Pioneer XDJ-RR', sub:'All-in-one DJ system', color:'#1a8cff', icon:'🎛️', gradient:'linear-gradient(135deg,#0a40c0,#1a8cff)' },
     pioneer: { label:'Pioneer DJ', sub:'DDJ-1000 / CDJ-3000', color:'#e8a020', icon:'⬡', gradient:'linear-gradient(135deg,#c07010,#e8a020)' },
     denon:   { label:'Denon DJ',   sub:'SC6000 / X1850 Prime', color:'#3a8fff', icon:'◈', gradient:'linear-gradient(135deg,#1a5fdf,#3a8fff)' },
   };
@@ -1758,6 +1760,8 @@ export default function DJPage() {
     <div className="djp">
       {!session
         ? <SetupScreen onConnect={handleConnect}/>
+        : session.controller === 'xdjrr'
+          ? <XDJRRController session={session}/>
         : session.controller === 'pioneer'
           ? <PioneerController session={session}/>
           : <DenonController session={session}/>
