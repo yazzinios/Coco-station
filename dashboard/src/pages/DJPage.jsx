@@ -1,6 +1,230 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/useApp';
 
+/* ══════════════════════════════════════════════════════════════════════════
+   RealImageJog — upload real DDJ photo, overlay spinning jog wheels on top.
+   Props: playing {L,R}  onToggle(side)
+   Edit mode: 🟠 drag center = move  🔵 drag right edge = resize
+══════════════════════════════════════════════════════════════════════════ */
+function RealImageJog({ playing, onToggle }) {
+  const canvasRef = useRef(null);
+  const imgRef    = useRef(null);
+  const animRef   = useRef(null);
+  const anglesRef = useRef({ L: 0, R: 0 });
+  const dragRef   = useRef(null);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [editMode,  setEditMode]  = useState(false);
+
+  const wheelsRef = useRef({
+    L: { xFrac: 0.205, yFrac: 0.47, rFrac: 0.148 },
+    R: { xFrac: 0.795, yFrac: 0.47, rFrac: 0.148 },
+  });
+  const pxRef = useRef({ L:{cx:0,cy:0,r:0}, R:{cx:0,cy:0,r:0} });
+
+  const updatePx = useCallback(() => {
+    const img = imgRef.current; if (!img) return;
+    for (const s of ['L','R']) {
+      const w = wheelsRef.current[s];
+      pxRef.current[s] = {
+        cx: img.naturalWidth  * w.xFrac,
+        cy: img.naturalHeight * w.yFrac,
+        r:  Math.min(img.naturalWidth, img.naturalHeight) * w.rFrac,
+      };
+    }
+  }, []);
+
+  const drawFrame = useCallback(() => {
+    const canvas = canvasRef.current; const img = imgRef.current;
+    if (!canvas || !img || !imgLoaded) return;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    for (const s of ['L','R']) {
+      const { cx, cy, r } = pxRef.current[s];
+      const angle = anglesRef.current[s];
+      const isPlaying = playing[s];
+      ctx.save(); ctx.translate(cx, cy);
+      ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.clip();
+      ctx.fillStyle = 'rgba(0,0,0,0.48)'; ctx.fill();
+      ctx.rotate(angle);
+      for (let i=0;i<36;i++) {
+        const a=i*Math.PI*2/36;
+        ctx.strokeStyle = i%3===0?'rgba(255,255,255,0.78)':'rgba(255,255,255,0.2)';
+        ctx.lineWidth   = i%3===0?Math.max(1.5,r*0.013):Math.max(0.7,r*0.007);
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a)*r*0.82,Math.sin(a)*r*0.82);
+        ctx.lineTo(Math.cos(a)*r*0.97,Math.sin(a)*r*0.97);
+        ctx.stroke();
+      }
+      for (let ri=0.55;ri<0.82;ri+=0.09) {
+        ctx.beginPath(); ctx.arc(0,0,r*ri,0,Math.PI*2);
+        ctx.strokeStyle='rgba(255,255,255,0.045)'; ctx.lineWidth=0.5; ctx.stroke();
+      }
+      ctx.restore();
+      ctx.save(); ctx.translate(cx,cy);
+      ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2);
+      ctx.strokeStyle=isPlaying?'rgba(232,160,32,0.9)':'rgba(70,70,70,0.45)';
+      ctx.lineWidth=Math.max(2,r*0.026);
+      if(isPlaying){ctx.shadowBlur=18;ctx.shadowColor='#e8a020';}
+      ctx.stroke(); ctx.shadowBlur=0;
+      const sr=r*0.37;
+      ctx.beginPath(); ctx.arc(0,0,sr,0,Math.PI*2);
+      ctx.fillStyle='rgba(4,12,24,0.82)'; ctx.fill();
+      ctx.strokeStyle=isPlaying?'rgba(91,155,213,0.9)':'rgba(40,40,60,0.7)';
+      ctx.lineWidth=Math.max(1,r*0.015); ctx.stroke();
+      if(isPlaying){
+        const prog=(anglesRef.current[s]%(Math.PI*2))/(Math.PI*2);
+        ctx.beginPath(); ctx.arc(0,0,sr+r*0.055,-Math.PI/2,-Math.PI/2+prog*Math.PI*2);
+        ctx.strokeStyle='rgba(232,160,32,0.9)'; ctx.lineWidth=Math.max(1.5,r*0.022); ctx.stroke();
+      }
+      const fs=Math.max(8,r*0.1);
+      ctx.textAlign='center';
+      ctx.fillStyle=isPlaying?'#5b9bd5':'#555'; ctx.font=`bold ${fs*0.65}px monospace`; ctx.fillText('BPM',0,-fs*0.8);
+      ctx.fillStyle='#fff'; ctx.font=`bold ${fs}px monospace`; ctx.fillText('128.0',0,fs*0.2);
+      ctx.fillStyle=isPlaying?'#e8a020':'#333'; ctx.font=`${fs*0.6}px monospace`; ctx.fillText('DECK '+(s==='L'?'1':'2'),0,fs*1.1);
+      ctx.beginPath(); ctx.arc(0,0,r*0.045,0,Math.PI*2); ctx.fillStyle='#1a1a1a'; ctx.fill();
+      ctx.restore();
+      if(editMode){
+        ctx.save(); ctx.translate(cx,cy);
+        ctx.beginPath(); ctx.arc(0,0,r*0.1,0,Math.PI*2);
+        ctx.fillStyle='rgba(232,92,0,0.88)'; ctx.fill();
+        ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.stroke();
+        ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=`bold ${Math.max(8,r*0.09)}px sans-serif`; ctx.fillText('\u2725',0,0);
+        ctx.textBaseline='alphabetic'; ctx.restore();
+        const hx=cx+r,hy=cy,hr=Math.max(7,r*0.09);
+        ctx.beginPath(); ctx.arc(hx,hy,hr,0,Math.PI*2);
+        ctx.fillStyle='rgba(59,130,246,0.88)'; ctx.fill();
+        ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.stroke();
+        ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=`bold ${Math.max(7,r*0.08)}px sans-serif`; ctx.fillText('\u2194',hx,hy);
+        ctx.textBaseline='alphabetic';
+      }
+    }
+  }, [imgLoaded, editMode, playing]);
+
+  useEffect(() => {
+    const loop = () => {
+      if(playing.L) anglesRef.current.L += 0.038;
+      if(playing.R) anglesRef.current.R += 0.038;
+      drawFrame();
+      animRef.current = requestAnimationFrame(loop);
+    };
+    animRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animRef.current);
+  }, [playing, drawFrame]);
+
+  const toCanvas = (e) => {
+    const canvas=canvasRef.current; if(!canvas) return{x:0,y:0};
+    const rect=canvas.getBoundingClientRect();
+    const touch=e.touches?e.touches[0]:e;
+    const img=imgRef.current;
+    return{ x:(touch.clientX-rect.left)*(img.naturalWidth/rect.width), y:(touch.clientY-rect.top)*(img.naturalHeight/rect.height) };
+  };
+
+  const onDown = (e) => {
+    const{x,y}=toCanvas(e);
+    for(const s of['L','R']){
+      const{cx,cy,r}=pxRef.current[s];
+      if(editMode){
+        if(Math.hypot(x-(cx+r),y-cy)<Math.max(10,r*0.12)){dragRef.current={s,type:'resize',startX:x,startY:y,startR:r};return;}
+        if(Math.hypot(x-cx,y-cy)<r*0.15){dragRef.current={s,type:'move',startX:x,startY:y,startCx:cx,startCy:cy};return;}
+      }else{
+        if(Math.hypot(x-cx,y-cy)<r){onToggle(s);return;}
+      }
+    }
+  };
+
+  useEffect(()=>{
+    const onMove=(e)=>{
+      if(!dragRef.current||!imgRef.current||!canvasRef.current) return;
+      const rect=canvasRef.current.getBoundingClientRect();
+      const touch=e.touches?e.touches[0]:e;
+      const img=imgRef.current;
+      const x=(touch.clientX-rect.left)*(img.naturalWidth/rect.width);
+      const y=(touch.clientY-rect.top)*(img.naturalHeight/rect.height);
+      const{s,type}=dragRef.current;
+      if(type==='move'){
+        const nx=dragRef.current.startCx+(x-dragRef.current.startX);
+        const ny=dragRef.current.startCy+(y-dragRef.current.startY);
+        pxRef.current[s].cx=nx; pxRef.current[s].cy=ny;
+        wheelsRef.current[s].xFrac=nx/img.naturalWidth;
+        wheelsRef.current[s].yFrac=ny/img.naturalHeight;
+      }else{
+        const nr=Math.max(20,Math.hypot(x-pxRef.current[s].cx,y-pxRef.current[s].cy));
+        pxRef.current[s].r=nr;
+        wheelsRef.current[s].rFrac=nr/Math.min(img.naturalWidth,img.naturalHeight);
+      }
+    };
+    const onUp=()=>{dragRef.current=null;};
+    window.addEventListener('mousemove',onMove);
+    window.addEventListener('mouseup',onUp);
+    window.addEventListener('touchmove',onMove,{passive:false});
+    window.addEventListener('touchend',onUp);
+    return()=>{
+      window.removeEventListener('mousemove',onMove);
+      window.removeEventListener('mouseup',onUp);
+      window.removeEventListener('touchmove',onMove);
+      window.removeEventListener('touchend',onUp);
+    };
+  },[]);
+
+  const loadFile=(file)=>{
+    if(!file||!file.type.startsWith('image/')) return;
+    const url=URL.createObjectURL(file);
+    const image=new window.Image();
+    image.onload=()=>{
+      imgRef.current=image;
+      const canvas=canvasRef.current;
+      if(canvas){canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;}
+      updatePx(); setImgLoaded(true);
+    };
+    image.src=url;
+  };
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'center',width:'100%'}}>
+      {!imgLoaded?(
+        <label style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+          width:'100%',minHeight:140,borderRadius:10,cursor:'pointer',
+          border:'2px dashed #2a2a3a',background:'#080a12',color:'#555',fontSize:12,gap:6}}>
+          <span style={{fontSize:26}}>🎛️</span>
+          <span>Drop your DDJ photo here or click to browse</span>
+          <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>loadFile(e.target.files[0])}/>
+        </label>
+      ):(
+        <>
+          <canvas ref={canvasRef}
+            style={{width:'100%',borderRadius:8,cursor:editMode?'crosshair':'pointer'}}
+            onMouseDown={onDown}
+            onTouchStart={e=>{e.preventDefault();onDown(e);}}
+            onDragOver={e=>e.preventDefault()}
+            onDrop={e=>{e.preventDefault();loadFile(e.dataTransfer.files[0]);}}
+          />
+          <div style={{display:'flex',gap:6,justifyContent:'center',flexWrap:'wrap'}}>
+            <button onClick={()=>setEditMode(m=>!m)} style={{padding:'3px 10px',borderRadius:5,cursor:'pointer',
+              fontSize:9,fontFamily:'var(--dj-mono)',letterSpacing:1,
+              border:`1px solid ${editMode?'#3cb04a':'#2a2a3a'}`,
+              background:editMode?'rgba(60,176,74,0.14)':'#0c0e16',
+              color:editMode?'#3cb04a':'#555'}}>
+              {editMode?'✅ Done':'✏️ Adjust Wheels'}
+            </button>
+            <label style={{padding:'3px 10px',borderRadius:5,cursor:'pointer',fontSize:9,
+              fontFamily:'var(--dj-mono)',letterSpacing:1,border:'1px solid #2a2a3a',background:'#0c0e16',color:'#555'}}>
+              🔄 Change Image
+              <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>loadFile(e.target.files[0])}/>
+            </label>
+          </div>
+          {editMode&&(
+            <div style={{fontSize:8,color:'#444',fontFamily:'var(--dj-mono)',textAlign:'center'}}>
+              🟠 Drag center to move &nbsp;·&nbsp; 🔵 Drag right edge to resize
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    DJPage — CocoStation DJ Booth
    Flow: Setup (DJ name + controller + audio) → Animated reveal → Controller
@@ -758,25 +982,27 @@ function PioneerController({ session }) {
           <PB label="QUANTIZE" ac='#1ed760' w={46} h={18}/>
         </div>
 
-        {/* ── jog wheel + pitch ── */}
-        <div style={{ background:'#06080f',borderRadius:8,padding:'8px',border:`1px solid ${c}22`,display:'flex',alignItems:'center',justifyContent:'center',gap:8 }}>
-          {isL && <PitchSlider value={dk.pitch} onChange={v=>sD(s,{pitch:v})} color={c} height={170}/>}
-          <div style={{ display:'flex',flexDirection:'column',alignItems:'center',gap:3 }}>
-            <div style={{ position:'relative',width:190,height:190,flexShrink:0 }}>
-              <div style={{ position:'absolute',inset:-5,borderRadius:'50%',pointerEvents:'none',transition:'box-shadow 0.4s',
-                boxShadow:dk.playing?`0 0 28px ${c}55,0 0 60px ${c}22`:`0 0 8px ${c}11` }}/>
-              <canvas ref={s==='L'?jogLRef:jogRRef} width={190} height={190} style={{ borderRadius:'50%',cursor:'grab',display:'block' }}/>
-            </div>
-            {/* JOG controls below */}
-            <div style={{ display:'flex',gap:3 }}>
-              <PB label="JOG" w={28} h={16} fontSize={6}/>
-              <PB label="VINYL" active w={32} h={16} fontSize={6} ac={c}/>
-              <PB label="BEAT SYNC" active={dk.playing} ac='#1ed760' w={46} h={16} fontSize={6}/>
+        {/* ── jog wheel: real image overlay (shared, rendered once on Left deck) ── */}
+        {isL && (
+          <div style={{ background:'#06080f',borderRadius:8,padding:'8px',border:`1px solid ${c}22` }}>
+            <RealImageJog
+              playing={{ L: decks.L.playing, R: decks.R.playing }}
+              onToggle={side => sD(side, dk2 => ({ playing: !dk2.playing }))}
+            />
+            <div style={{ display:'flex',gap:8,justifyContent:'center',alignItems:'center',marginTop:6 }}>
+              <PitchSlider value={decks.L.pitch} onChange={v=>sD('L',{pitch:v})} color={c} height={80}/>
+              <VUMeter color={c} playing={decks.L.playing} height={80} bars={5}/>
+              <div style={{ display:'flex',flexDirection:'column',gap:3,alignItems:'center' }}>
+                <PB label="JOG" w={34} h={16} fontSize={6}/>
+                <PB label="VINYL" active w={36} h={16} fontSize={6} ac={c}/>
+                <PB label="SYNC" active={decks.L.playing||decks.R.playing} ac='#1ed760' w={36} h={16} fontSize={6}/>
+              </div>
+              <VUMeter color={c} playing={decks.R.playing} height={80} bars={5}/>
+              <PitchSlider value={decks.R.pitch} onChange={v=>sD('R',{pitch:v})} color={c} height={80}/>
             </div>
           </div>
-          {!isL && <PitchSlider value={dk.pitch} onChange={v=>sD(s,{pitch:v})} color={c} height={170}/>}
-          <VUMeter color={c} playing={dk.playing} height={170} bars={6}/>
-        </div>
+        )}
+        {!isL && null}
 
         {/* ── transport + loop size ── */}
         <div style={{ display:'flex',gap:3,alignItems:'center',background:'#08090f',borderRadius:5,padding:'4px 6px',border:'1px solid #1a1e28' }}>
