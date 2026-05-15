@@ -312,8 +312,17 @@ export default function XDJRRController({ session }) {
                   background: active ? '#1a8cff' : '#0a0d12',
                   border: `2px solid ${active ? '#1a8cff' : '#1a8cff44'}`,
                   boxShadow: active ? '0 0 12px #1a8cff88' : 'none',
-                  transition: 'all 0.1s'
-                }}/>
+                  transition: 'all 0.1s',
+                  color: active ? '#fff' : '#1a8cff',
+                  fontSize: 14,
+                  fontWeight: 800,
+                  fontFamily: 'var(--dj-sans)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  {String.fromCharCode(65 + i)}
+                </button>
               ))}
             </div>
           </div>
@@ -333,8 +342,8 @@ export default function XDJRRController({ session }) {
         
         <div style={{ flex:1, display:'flex', alignItems:'center' }}>
           <div style={{ display:'flex', flexDirection:'column' }}>
-            <span style={{ fontSize:14, fontWeight:900, color:'#fff', letterSpacing:2 }}>Pioneer DJ</span>
-            <span style={{ fontSize:10, color:'#888', letterSpacing:1 }}>ALL-IN-ONE DJ SYSTEM XDJ-RR</span>
+            <span style={{ fontSize:28, fontWeight:900, color:'#fff', letterSpacing:2 }}>Pioneer DJ</span>
+            <span style={{ fontSize:16, color:'#888', letterSpacing:1 }}>ALL-IN-ONE DJ SYSTEM XDJ-RR</span>
           </div>
         </div>
 

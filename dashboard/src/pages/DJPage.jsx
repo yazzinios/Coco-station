@@ -1039,7 +1039,16 @@ function PioneerController({ session }) {
                 border:`2px solid ${dk.hc[i]?col:col+'28'}`,
                 background:dk.hc[i]?`${col}28`:`${col}06`,
                 boxShadow:dk.hc[i]?`0 0 10px ${col}66,inset 0 0 8px ${col}18`:'none',
-                transition:'all 0.08s' }}/>
+                transition:'all 0.08s',
+                color: dk.hc[i] ? '#fff' : col,
+                fontSize: 10,
+                fontWeight: 'bold',
+                fontFamily: 'var(--dj-sans)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center' }}>
+              {String.fromCharCode(65 + i)}
+            </button>
           ))}
         </div>
 
@@ -1575,7 +1584,16 @@ function DenonController({ session }) {
               style={{ height:26, borderRadius:4, cursor:'pointer', border:`2px solid ${dk.hc[i]?col:col+'30'}`,
                 background:dk.hc[i]?`${col}30`:`${col}08`,
                 boxShadow:dk.hc[i]?`0 0 10px ${col}77,inset 0 0 8px ${col}22`:'none',
-                transition:'all 0.08s' }}/>
+                transition:'all 0.08s',
+                color: dk.hc[i] ? '#fff' : col,
+                fontSize: 10,
+                fontWeight: 'bold',
+                fontFamily: 'var(--dj-sans)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center' }}>
+              {String.fromCharCode(65 + i)}
+            </button>
           ))}
         </div>
 
