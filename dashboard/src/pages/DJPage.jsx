@@ -538,7 +538,7 @@ function SetupScreen({ onConnect }) {
   const [connecting, setConnecting] = useState(false);
 
   const meta = {
-    xdjrr:   { label:'Pioneer XDJ-RR', sub:'All-in-one DJ system', color:'#1a8cff', icon:'🎛️', gradient:'linear-gradient(135deg,#0a40c0,#1a8cff)' },
+    xdjrr:   { label:'Pioneer DJ', sub:'ALL-IN-ONE DJ SYSTEM XDJ-RR', color:'#1a8cff', icon:'🎛️', gradient:'linear-gradient(135deg,#0a40c0,#1a8cff)' },
     pioneer: { label:'Pioneer DJ', sub:'DDJ-1000 / CDJ-3000', color:'#e8a020', icon:'⬡', gradient:'linear-gradient(135deg,#c07010,#e8a020)' },
     denon:   { label:'Denon DJ',   sub:'SC6000 / X1850 Prime', color:'#3a8fff', icon:'◈', gradient:'linear-gradient(135deg,#1a5fdf,#3a8fff)' },
   };
@@ -565,38 +565,7 @@ function SetupScreen({ onConnect }) {
 
       <div style={{ width:500, animation:'djFadeIn 0.55s ease forwards', position:'relative', zIndex:2 }}>
 
-        {/* ── DJ Name Hero ─────────────────────────────────────── */}
-        <div style={{ textAlign:'center', marginBottom:30 }}>
-          <div style={{ fontFamily:'var(--dj-mono)', fontSize:9, letterSpacing:6, color:'var(--dj-muted)', marginBottom:10 }}>COCOSTATION · DJ BOOTH</div>
-
-          <div style={{
-            fontFamily:'var(--dj-orb)', fontWeight:900, lineHeight:1,
-            animation:'djNameIn 0.7s cubic-bezier(0.16,1,0.3,1) forwards',
-          }}>
-            <span style={{ fontSize:13, color:'var(--dj-muted)', letterSpacing:4 }}>WELCOME,</span>
-            <br/>
-            <span style={{ display:'inline-flex', alignItems:'baseline', gap:14, marginTop:6 }}>
-              <span style={{
-                fontSize:34, letterSpacing:3,
-                background: m.gradient,
-                WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent',
-                backgroundClip:'text',
-              }}>DJ</span>
-              <span style={{
-                fontSize:34, letterSpacing:3,
-                background: m.gradient,
-                WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent',
-                backgroundClip:'text',
-              }}>{fullName.replace(/^DJ\s*/i, '')}</span>
-            </span>
-          </div>
-
-          <div style={{ marginTop:10, display:'flex', justifyContent:'center', gap:6, alignItems:'center' }}>
-            {[...Array(3)].map((_,i) => (
-              <div key={i} style={{ width:4, height:4, borderRadius:'50%', background:m.color, opacity: i===1?1:0.35, animation:'djBlink 1.8s infinite', animationDelay:`${i*0.3}s` }}/>
-            ))}
-          </div>
-        </div>
+        {/* ── DJ Name Hero Removed ─────────────────────────────────────── */}
 
         {/* ── Card ─────────────────────────────────────────────── */}
         <div style={{
