@@ -65,13 +65,14 @@ const MIXER_DEFAULT = {
   target_id: '',
   deck_ids: ['a'],
   start_time: '09:00',
+  stop_time: '',
   active_days: [0, 1, 2, 3, 4, 5, 6],
   excluded_days: [],
   fade_in: 3,
   fade_out: 3,
   volume: 80,
   loop: true,
-  jingle_start: null,   // auto-filled from library[0], not shown in UI
+  jingle_start: null,
   jingle_end: null,
   multi_tracks: [],
   enabled: true,
@@ -292,15 +293,25 @@ function MixerSchedules() {
                 )}
               </div>
 
-              <div>
-                <label style={labelStyle}>Start Time</label>
-                <input type="time" value={form.start_time} required
-                  onChange={e => setForm({ ...form, start_time: e.target.value })}
-                  style={{ ...inputStyle, colorScheme: 'dark' }} />
-                <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                  Music plays until the track / playlist ends naturally.
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>Start Time</label>
+                  <input type="time" value={form.start_time} required
+                    onChange={e => setForm({ ...form, start_time: e.target.value })}
+                    style={{ ...inputStyle, colorScheme: 'dark' }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>Stop Time <span style={{ color: 'var(--text-secondary)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+                  <input type="time" value={form.stop_time || ''}
+                    onChange={e => setForm({ ...form, stop_time: e.target.value || '' })}
+                    style={{ ...inputStyle, colorScheme: 'dark' }} />
                 </div>
               </div>
+              {!form.stop_time && (
+                <div style={{ marginTop: '-0.5rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                  Music plays until the track / playlist ends naturally.
+                </div>
+              )}
             </div>
 
             {/* Col 2 */}
@@ -440,7 +451,9 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
             {s.type === 'playlist' ? <ListMusic size={13} /> : s.type === 'multi_track' ? <Play size={13} /> : <Music size={13} />} {s.name}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Clock size={11} /> {s.start_time}</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+              <Clock size={11} /> {s.start_time}{s.stop_time ? ` — ${s.stop_time}` : ''}
+            </span>
             <span style={{ color: 'var(--accent-blue)', fontWeight: '600' }}>
               {(s.deck_ids ?? (s.deck_id ? [s.deck_id] : [])).map(d => `Deck ${d.toUpperCase()}`).join(' + ')}
             </span>
@@ -492,8 +505,10 @@ const ANN_DEFAULT = {
   fade_duration: 5,
   music_volume: 10,
   target_decks: ['a'],
-  jingle_start: null,   // auto-filled from library[0], not shown in UI
+  jingle_start: null,
   jingle_end: null,
+  repeat_count: 1,        // how many times to play the announcement
+  repeat_interval: 0,    // minutes between repeats (0 = no repeat)
   enabled: true,
 };
 
@@ -527,6 +542,8 @@ function AnnSchedules() {
   const startEdit = (s) => {
     setForm({
       ...ANN_DEFAULT, ...s,
+      repeat_count:    s.repeat_count    ?? 1,
+      repeat_interval: s.repeat_interval ?? 0,
       jingle_start: s.jingle_start || library[0]?.filename || null,
       jingle_end:   s.jingle_end   || library[0]?.filename || null,
     });
@@ -588,7 +605,7 @@ function AnnSchedules() {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
         <h3 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Mic size={16} /> Mic & Announcement Schedules
+          <Radio size={16} /> Announcement Schedules
         </h3>
         {!isAdding && (
           <button onClick={() => setIsAdding(true)} style={{
@@ -618,45 +635,86 @@ function AnnSchedules() {
               </div>
 
               <div>
-                <label style={labelStyle}>Source Type</label>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  {[
-                    { val: 'Announcement', icon: <Radio size={12} />, txt: 'Announcement' },
-                    { val: 'Microphone',   icon: <Mic size={12} />,   txt: 'Microphone' },
-                  ].map(o => (
-                    <button key={o.val} type="button"
-                      onClick={() => setForm({ ...form, type: o.val, announcement_id: '' })}
-                      style={{ ...tabBtn(form.type === o.val), fontSize: '0.8rem', padding: '0.45rem 0.5rem' }}>
-                      {o.icon} {o.txt}
-                    </button>
-                  ))}
-                </div>
+                <label style={labelStyle}>Select Announcement</label>
+                <select value={form.announcement_id} required
+                  onChange={e => setForm({ ...form, announcement_id: e.target.value })}
+                  style={{ ...inputStyle, cursor: 'pointer' }}>
+                  <option value="">— Choose from library —</option>
+                  {announcements.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                {announcements.length === 0 && (
+                  <div style={{ marginTop: '0.3rem', fontSize: '0.72rem', color: '#ff4757', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <TriangleAlert size={11} /> No announcements in library yet
+                  </div>
+                )}
               </div>
-
-              {form.type === 'Announcement' && (
-                <div>
-                  <label style={labelStyle}>Select Announcement</label>
-                  <select value={form.announcement_id} required
-                    onChange={e => setForm({ ...form, announcement_id: e.target.value })}
-                    style={{ ...inputStyle, cursor: 'pointer' }}>
-                    <option value="">— Choose from library —</option>
-                    {announcements.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </select>
-                  {announcements.length === 0 && (
-                    <div style={{ marginTop: '0.3rem', fontSize: '0.72rem', color: '#ff4757', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                      <TriangleAlert size={11} /> No announcements in library yet
-                    </div>
-                  )}
-                </div>
-              )}
 
               <div>
                 <label style={labelStyle}>Start Time</label>
                 <input type="time" value={form.start_time} required
                   onChange={e => setForm({ ...form, start_time: e.target.value })}
                   style={{ ...inputStyle, colorScheme: 'dark' }} />
+              </div>
+
+              {/* Repeat Count */}
+              <div>
+                <label style={labelStyle}>Repeat Count</label>
+                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  {[1, 2, 3, 4, 5, 10].map(n => (
+                    <button key={n} type="button"
+                      onClick={() => setForm({ ...form, repeat_count: n })}
+                      style={{
+                        padding: '0.35rem 0.7rem', borderRadius: '6px', border: 'none',
+                        fontSize: '0.8rem', fontWeight: '600', cursor: 'pointer',
+                        background: form.repeat_count === n ? 'rgba(0,212,255,0.2)' : 'rgba(255,255,255,0.05)',
+                        color: form.repeat_count === n ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                        outline: form.repeat_count === n ? '1px solid rgba(0,212,255,0.4)' : '1px solid transparent',
+                      }}>
+                      ×{n}
+                    </button>
+                  ))}
+                  <input
+                    type="number" min="1" max="99"
+                    value={form.repeat_count}
+                    onChange={e => setForm({ ...form, repeat_count: Math.max(1, parseInt(e.target.value) || 1) })}
+                    style={{ ...inputStyle, width: '64px', textAlign: 'center', padding: '0.35rem 0.5rem' }}
+                    title="Custom repeat count"
+                  />
+                </div>
                 <div style={{ marginTop: '0.3rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                  Announcement plays until it ends, then music restores.
+                  Play the announcement {form.repeat_count === 1 ? 'once' : `${form.repeat_count} times`}.
+                </div>
+              </div>
+
+              {/* Repeat Interval */}
+              <div>
+                <label style={labelStyle}>Repeat Every</label>
+                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+                  {[0, 5, 10, 15, 20, 30, 60].map(m => (
+                    <button key={m} type="button"
+                      onClick={() => setForm({ ...form, repeat_interval: m })}
+                      style={{
+                        padding: '0.35rem 0.6rem', borderRadius: '6px', border: 'none',
+                        fontSize: '0.77rem', fontWeight: '600', cursor: 'pointer',
+                        background: form.repeat_interval === m ? 'rgba(0,212,255,0.2)' : 'rgba(255,255,255,0.05)',
+                        color: form.repeat_interval === m ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                        outline: form.repeat_interval === m ? '1px solid rgba(0,212,255,0.4)' : '1px solid transparent',
+                      }}>
+                      {m === 0 ? 'Off' : `${m}m`}
+                    </button>
+                  ))}
+                  <input
+                    type="number" min="0" max="1440"
+                    value={form.repeat_interval}
+                    onChange={e => setForm({ ...form, repeat_interval: Math.max(0, parseInt(e.target.value) || 0) })}
+                    style={{ ...inputStyle, width: '64px', textAlign: 'center', padding: '0.35rem 0.5rem' }}
+                    title="Custom interval (minutes)"
+                  />
+                </div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                  {form.repeat_interval === 0
+                    ? 'No automatic repeat.'
+                    : `Plays again every ${form.repeat_interval} min after the first trigger.`}
                 </div>
               </div>
 
@@ -765,7 +823,7 @@ function AnnSchedules() {
       )}
 
       {recurringSchedules.length === 0 ? (
-        <EmptyState icon={<Mic size={40} />} title="No mic / announcement schedules" sub="Automate announcements and microphone activation." onAdd={() => setIsAdding(true)} show={!isAdding} />
+        <EmptyState icon={<Radio size={40} />} title="No announcement schedules" sub="Automate announcements with repeat and interval controls." onAdd={() => setIsAdding(true)} show={!isAdding} />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1rem' }}>
           {recurringSchedules.map(s => (
@@ -788,7 +846,7 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
         <div>
           <div style={{ fontWeight: '600', fontSize: '0.95rem', marginBottom: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            {s.type === 'Announcement' ? <Radio size={13} /> : <Mic size={13} />} {s.name}
+            <Radio size={13} /> {s.name}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Clock size={11} /> {s.start_time}
@@ -817,6 +875,8 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
         <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
           <StatChip icon={<Volume2 size={10} />} val={`Music ${s.music_volume}%`} />
           <StatChip icon={<Settings2 size={10} />} val={`Fade ${s.fade_duration}s`} />
+          {(s.repeat_count > 1) && <StatChip icon={null} val={`×${s.repeat_count}`} color="var(--accent-blue)" />}
+          {(s.repeat_interval > 0) && <StatChip icon={<Clock size={10} />} val={`every ${s.repeat_interval}m`} color="#fd9644" />}
           {s.jingle_start && <StatChip icon={<Music2 size={10} />} val="Intro ♪" color="#a55eea" />}
           {s.jingle_end   && <StatChip icon={<Music2 size={10} />} val="Outro ♪" color="#a55eea" />}
         </div>
@@ -902,8 +962,8 @@ function EmptyState({ icon, title, sub, onAdd, show }) {
    PAGE ROOT
 ════════════════════════════════════════════════════════════ */
 const TABS = [
-  { id: 'mixer', label: 'Mixer Deck',          icon: <Music size={16} /> },
-  { id: 'ann',   label: 'Mic & Announcements', icon: <Mic   size={16} /> },
+  { id: 'mixer', label: 'Mixer Deck',    icon: <Music  size={16} /> },
+  { id: 'ann',   label: 'Announcements', icon: <Radio  size={16} /> },
 ];
 
 export default function SchedulesPage() {

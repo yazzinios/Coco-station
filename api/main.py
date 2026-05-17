@@ -125,7 +125,7 @@ _DUCK_CURRENT_TYPE_REF: List[Optional[str]] = [None]
 _TRIGGER_LOCK_REF: List[asyncio.Lock] = [asyncio.Lock()]
 _ANNOUNCEMENT_EVENTS: Dict[str, asyncio.Event] = {}
 PLAYLISTS: Dict[str, dict] = {}
-DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None, "e": None}
+DECK_PLAYLISTS: Dict[str, Optional[dict]] = {"a": None, "b": None, "c": None, "d": None, "e": None, "f": None}
 MUSIC_SCHEDULES: List[dict] = []
 RECURRING_SCHEDULES: List[dict] = []
 RECURRING_MIXER_SCHEDULES: List[dict] = []
@@ -646,9 +646,8 @@ async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int
         for _ in range(steps):
             current += delta
             vol = max(0, min(100, round(current)))
-            # Non-blocking volume updates for intermediate steps to reduce total fade latency
-            for did in deck_ids:
-                asyncio.create_task(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}"))
+            tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}") for did in deck_ids]
+            await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.sleep(delay)
         # Final step ensures precision
         tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}") for did in deck_ids]
@@ -847,7 +846,7 @@ async def mic_audio_ws(websocket: WebSocket):
                             if session_id: await close_ffmpeg_stream(session_id); session_id = None
                             await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
                             if was_active:
-                                deck_ids = ["a","b","c","d","e"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+                                deck_ids = ["a","b","c","d","e","f"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
                                 asyncio.create_task(fade_restore_after_mic(deck_ids))
                     except json.JSONDecodeError: pass
                 elif "bytes" in msg and msg["bytes"] and session_id:
@@ -863,7 +862,7 @@ async def mic_audio_ws(websocket: WebSocket):
             prev_targets = list(MIC_STATE.get("targets", []))
             MIC_STATE["active"] = False; MIC_STATE["targets"] = []
             await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
-            deck_ids = ["a","b","c","d","e"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+            deck_ids = ["a","b","c","d","e","f"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
             asyncio.create_task(fade_restore_after_mic(deck_ids))
 
 # ── Library ─────────────────────────────────────────────────
@@ -1326,7 +1325,7 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(requir
 async def mic_on(req: MicControlRequest, _user=Depends(require_permission("can_announce"))):
     if _TRIGGER_LOCK_REF[0].locked():
         raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
-    deck_ids = ["a","b","c","d","e"] if "ALL" in req.targets else [t.lower() for t in req.targets]
+    deck_ids = ["a","b","c","d","e","f"] if "ALL" in req.targets else [t.lower() for t in req.targets]
     await fade_and_enable_mic(deck_ids)
     MIC_STATE["active"] = True; MIC_STATE["targets"] = req.targets
     await manager.broadcast({"type": "MIC_STATUS", "active": True, "targets": req.targets})
@@ -1340,7 +1339,7 @@ async def mic_off(_user=Depends(require_permission("can_announce"))):
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/mic/off")
     except Exception: pass
     await manager.broadcast({"type": "MIC_STATUS", "active": False, "targets": []})
-    deck_ids = ["a","b","c","d","e"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
+    deck_ids = ["a","b","c","d","e","f"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
     asyncio.create_task(fade_restore_after_mic(deck_ids))
     return {"status": "ok"}
 
@@ -1389,8 +1388,9 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
     content = await file.read()
     await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
     ann_id = str(uuid.uuid4())
+    norm_targets = targets.split(",") if isinstance(targets, str) else list(targets)
     ann = {"id": ann_id, "name": name or safe_name, "type": "MP3", "filename": safe_name,
-           "targets": targets.split(",") if isinstance(targets, str) else targets,
+           "targets": norm_targets,
            "status": "Scheduled" if scheduled_at else "Ready",
            "scheduled_at": scheduled_at, "created_at": datetime.now().isoformat()}
     try:
@@ -1409,7 +1409,7 @@ async def play_announcement(ann_id: str, _user=Depends(require_permission("can_a
         raise HTTPException(status_code=409, detail="Another trigger is active — please wait")
     ann["status"] = "Played"
     filepath = str(Path("/announcements") / ann["filename"])
-    deck_ids = ["a","b","c","d","e"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
+    deck_ids = ["a","b","c","d","e","f"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
     asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
     try:
         await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
@@ -1516,7 +1516,7 @@ async def get_listeners():
     except Exception as e:
         print(f"[listeners] Failed to query mediamtx: {e}")
     decks_summary = {}; total = 0
-    for deck_id in ["deck-a", "deck-b", "deck-c", "deck-d", "deck-e"]:
+    for deck_id in ["deck-a", "deck-b", "deck-c", "deck-d", "deck-e", "deck-f"]:
         count = sum(info["listeners"] for name, info in result.items() if name.startswith(deck_id))
         decks_summary[deck_id] = count; total += count
     return {"total": total, "decks": decks_summary, "paths": result}
@@ -1691,12 +1691,12 @@ async def _play_playlist_index(deck_id: str, index: int):
     tracks = playlist_state.get("tracks", [])
     if not tracks: raise HTTPException(status_code=400, detail="Playlist is empty")
     index = max(0, min(len(tracks) - 1, index))
+    deck_is_playing = DECKS[deck_id].get("is_playing", False)  # capture BEFORE update
     playlist_state["index"] = index; track = tracks[index]
     DECKS[deck_id].update({"track": track, "is_playing": True, "is_paused": False, "playlist_index": index})
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            # Use crossfade if deck is currently playing, plain play otherwise
-            deck_is_playing = DECKS[deck_id].get("is_playing", False)
+            # Use crossfade if deck was playing before we updated state, plain play otherwise
             if deck_is_playing:
                 DECKS[deck_id]["is_crossfading"] = True
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/crossfade", json={"filepath": str(Path("/library") / track), "loop": False})
@@ -2021,7 +2021,7 @@ async def dismiss_music_request(request_id: str, _user=Depends(require_permissio
     global MUSIC_REQUESTS
     req = next((r for r in MUSIC_REQUESTS if r["id"] == request_id), None)
     if req: req["status"] = "dismissed"
-    MUSIC_REQUESTS = [r for r in MUSIC_REQUESTS if r["status"] == "pending"]
+    MUSIC_REQUESTS = [r for r in MUSIC_REQUESTS if r["status"] in ("pending", "accepted")]
     await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
     return {"status": "ok"}
 
@@ -2151,7 +2151,7 @@ async def delete_user(user_id: str, request: Request, _user: dict = Depends(veri
 # ── Permissions ─────────────────────────────────────────────
 
 class PermissionsRequest(_PydanticBase):
-    allowed_decks:  List[str]            = ["a","b","c","d","e"]
+    allowed_decks:  List[str]            = ["a","b","c","d","e","f"]
     deck_control:   Optional[dict]       = None
     deck_actions:   Optional[List[str]]  = None
     playlist_perms: Optional[List[str]]  = None

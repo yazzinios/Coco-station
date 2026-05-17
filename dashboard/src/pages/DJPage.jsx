@@ -8,7 +8,7 @@ import defaultDDJ from '../assets/ddj800.png';
    Props: playing {L,R}  onToggle(side)
    Edit mode: 🟠 drag center = move  🔵 drag right edge = resize
 ══════════════════════════════════════════════════════════════════════════ */
-function RealImageJog({ playing, onToggle }) {
+function RealImageJog({ decks, playing, onToggle }) {
   const canvasRef = useRef(null);
   const imgRef    = useRef(null);
   const animRef   = useRef(null);
@@ -56,18 +56,135 @@ function RealImageJog({ playing, onToggle }) {
     const canvas = canvasRef.current; const img = imgRef.current;
     if (!canvas || !img || !imgLoaded) return;
     const ctx = canvas.getContext('2d');
+    
+    // Draw base controller image
     ctx.drawImage(img, 0, 0);
+    
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const isPlayingL = playing.L;
+    const isPlayingR = playing.R;
+    
+    // --- 1. Dynamic Center Channel VU Meters ---
+    const vuYStart = H * 0.28;
+    const vuYEnd = H * 0.48;
+    const vuHeight = vuYEnd - vuYStart;
+    const numLeds = 12;
+    const ledGap = 2;
+    const ledHeight = (vuHeight - (numLeds - 1) * ledGap) / numLeds;
+    
+    const drawChannelVU = (x, level) => {
+      const activeLeds = Math.round(level * numLeds);
+      for (let i = 0; i < numLeds; i++) {
+        const y = vuYEnd - i * (ledHeight + ledGap);
+        const isActive = i < activeLeds;
+        let ledColor = 'rgba(0, 200, 0, 0.15)'; // dim green
+        if (i >= numLeds - 2) ledColor = isActive ? '#ff3b30' : 'rgba(255, 59, 48, 0.15)'; // red
+        else if (i >= numLeds - 4) ledColor = isActive ? '#ffcc00' : 'rgba(255, 204, 0, 0.15)'; // orange
+        else ledColor = isActive ? '#34c759' : 'rgba(52, 199, 89, 0.15)'; // green
+        
+        ctx.fillStyle = ledColor;
+        if (isActive) {
+          ctx.save();
+          ctx.shadowBlur = 8;
+          ctx.shadowColor = ledColor;
+        }
+        ctx.fillRect(x - 2, y, 5, ledHeight);
+        if (isActive) ctx.restore();
+      }
+    };
+    
+    // Animate dynamic VU levels
+    const levelL = isPlayingL ? (0.6 + Math.sin(Date.now() * 0.015) * 0.35 + Math.random() * 0.05) : 0.05;
+    const levelR = isPlayingR ? (0.6 + Math.sin(Date.now() * 0.013 + 1) * 0.35 + Math.random() * 0.05) : 0.05;
+    drawChannelVU(W * 0.482, Math.max(0, Math.min(1, levelL)));
+    drawChannelVU(W * 0.518, Math.max(0, Math.min(1, levelR)));
+    
+    // --- 2. Overlay glowing active buttons (Play/Pause and Cue) ---
+    const drawButtonGlow = (x, y, radius, color, shadowColor, isActive) => {
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = isActive ? color : 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = isActive ? 3 : 1;
+      if (isActive) {
+        ctx.save();
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = shadowColor;
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.stroke();
+      }
+    };
+    
+    // Left Deck Buttons
+    const lPlayX = W * 0.098, lPlayY = H * 0.88, btnRadius = W * 0.022;
+    const lCueX = W * 0.098, lCueY = H * 0.77;
+    drawButtonGlow(lPlayX, lPlayY, btnRadius, '#34c759', '#34c759', isPlayingL);
+    drawButtonGlow(lCueX, lCueY, btnRadius, '#ff9500', '#ff9500', !isPlayingL);
+    
+    // Right Deck Buttons
+    const rPlayX = W * 0.702, rPlayY = H * 0.88;
+    const rCueX = W * 0.702, rCueY = H * 0.77;
+    drawButtonGlow(rPlayX, rPlayY, btnRadius, '#34c759', '#34c759', isPlayingR);
+    drawButtonGlow(rCueX, rCueY, btnRadius, '#ff9500', '#ff9500', !isPlayingR);
+
+    // --- 3. Colored Performance Pads ---
+    const padW = W * 0.038, padH = H * 0.046;
+    const padGapX = W * 0.005, padGapY = H * 0.008;
+    const padColors = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#5856d6', '#ff2d55', '#ffffff'];
+    
+    const drawPads = (startX, startY, isPlaying, hcState) => {
+      for (let r = 0; r < 2; r++) {
+        for (let c = 0; c < 4; c++) {
+          const idx = r * 4 + c;
+          const px = startX + c * (padW + padGapX);
+          const py = startY + r * (padH + padGapY);
+          const isPressed = hcState && hcState[idx];
+          const baseColor = padColors[idx % padColors.length];
+          
+          let padAlpha = isPressed ? 0.8 : (isPlaying ? 0.3 + Math.sin(Date.now() * 0.008 + idx) * 0.1 : 0.12);
+          ctx.fillStyle = baseColor;
+          ctx.globalAlpha = padAlpha;
+          
+          ctx.save();
+          if (isPressed || isPlaying) {
+            ctx.shadowBlur = isPressed ? 18 : 8;
+            ctx.shadowColor = baseColor;
+          }
+          ctx.beginPath();
+          ctx.roundRect(px, py, padW, padH, 3);
+          ctx.fill();
+          ctx.restore();
+          ctx.globalAlpha = 1.0;
+        }
+      }
+    };
+    
+    // Left Pads: xFrac from 0.082 to 0.26
+    const lPadsX = W * 0.082, lPadsY = H * 0.81;
+    drawPads(lPadsX, lPadsY, isPlayingL, decks?.L?.hc);
+    
+    // Right Pads: xFrac from 0.738 to 0.916
+    const rPadsX = W * 0.738, rPadsY = H * 0.81;
+    drawPads(rPadsX, rPadsY, isPlayingR, decks?.R?.hc);
+    
+    // --- 4. Main Jog Wheels ---
     for (const s of ['L','R']) {
       const { cx, cy, r } = pxRef.current[s];
       const angle = anglesRef.current[s];
       const isPlaying = playing[s];
+      const dkState = decks ? decks[s] : { bpm: 128.0 };
+      
       ctx.save(); ctx.translate(cx, cy);
       ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.clip();
-      ctx.fillStyle = 'rgba(0,0,0,0.48)'; ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,0.58)'; ctx.fill();
       ctx.rotate(angle);
+      
+      // Draw grooves
       for (let i=0;i<36;i++) {
         const a=i*Math.PI*2/36;
-        ctx.strokeStyle = i%3===0?'rgba(255,255,255,0.78)':'rgba(255,255,255,0.2)';
+        ctx.strokeStyle = i%3===0?'rgba(255,255,255,0.78)':'rgba(255,255,255,0.18)';
         ctx.lineWidth   = i%3===0?Math.max(1.5,r*0.013):Math.max(0.7,r*0.007);
         ctx.beginPath();
         ctx.moveTo(Math.cos(a)*r*0.82,Math.sin(a)*r*0.82);
@@ -79,29 +196,36 @@ function RealImageJog({ playing, onToggle }) {
         ctx.strokeStyle='rgba(255,255,255,0.045)'; ctx.lineWidth=0.5; ctx.stroke();
       }
       ctx.restore();
+      
+      // Outer ring glow
       ctx.save(); ctx.translate(cx,cy);
       ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2);
       ctx.strokeStyle=isPlaying?'rgba(232,160,32,0.9)':'rgba(70,70,70,0.45)';
       ctx.lineWidth=Math.max(2,r*0.026);
       if(isPlaying){ctx.shadowBlur=18;ctx.shadowColor='#e8a020';}
       ctx.stroke(); ctx.shadowBlur=0;
+      
+      // Center display hub
       const sr=r*0.37;
       ctx.beginPath(); ctx.arc(0,0,sr,0,Math.PI*2);
-      ctx.fillStyle='rgba(4,12,24,0.82)'; ctx.fill();
+      ctx.fillStyle='rgba(4,12,24,0.92)'; ctx.fill();
       ctx.strokeStyle=isPlaying?'rgba(91,155,213,0.9)':'rgba(40,40,60,0.7)';
       ctx.lineWidth=Math.max(1,r*0.015); ctx.stroke();
+      
       if(isPlaying){
         const prog=(anglesRef.current[s]%(Math.PI*2))/(Math.PI*2);
         ctx.beginPath(); ctx.arc(0,0,sr+r*0.055,-Math.PI/2,-Math.PI/2+prog*Math.PI*2);
         ctx.strokeStyle='rgba(232,160,32,0.9)'; ctx.lineWidth=Math.max(1.5,r*0.022); ctx.stroke();
       }
+      
       const fs=Math.max(8,r*0.1);
       ctx.textAlign='center';
       ctx.fillStyle=isPlaying?'#5b9bd5':'#555'; ctx.font=`bold ${fs*0.65}px monospace`; ctx.fillText('BPM',0,-fs*0.8);
-      ctx.fillStyle='#fff'; ctx.font=`bold ${fs}px monospace`; ctx.fillText('128.0',0,fs*0.2);
+      ctx.fillStyle='#fff'; ctx.font=`bold ${fs}px monospace`; ctx.fillText(dkState.bpm.toFixed(1),0,fs*0.2);
       ctx.fillStyle=isPlaying?'#e8a020':'#333'; ctx.font=`${fs*0.6}px monospace`; ctx.fillText('DECK '+(s==='L'?'1':'2'),0,fs*1.1);
       ctx.beginPath(); ctx.arc(0,0,r*0.045,0,Math.PI*2); ctx.fillStyle='#1a1a1a'; ctx.fill();
       ctx.restore();
+      
       if(editMode){
         ctx.save(); ctx.translate(cx,cy);
         ctx.beginPath(); ctx.arc(0,0,r*0.1,0,Math.PI*2);
@@ -119,7 +243,7 @@ function RealImageJog({ playing, onToggle }) {
         ctx.textBaseline='alphabetic';
       }
     }
-  }, [imgLoaded, editMode, playing]);
+  }, [imgLoaded, editMode, playing, decks]);
 
   useEffect(() => {
     const loop = () => {
@@ -975,6 +1099,7 @@ function PioneerController({ session }) {
         {isL && (
           <div style={{ background:'#06080f',borderRadius:8,padding:'8px',border:`1px solid ${c}22` }}>
             <RealImageJog
+              decks={decks}
               playing={{ L: decks.L.playing, R: decks.R.playing }}
               onToggle={side => sD(side, dk2 => ({ playing: !dk2.playing }))}
             />

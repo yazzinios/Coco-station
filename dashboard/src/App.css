@@ -40,3 +40,8 @@
 .read-the-docs {
   color: #888;
 }
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.45; transform: scale(1.3); }
+}

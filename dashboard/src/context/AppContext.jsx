@@ -204,7 +204,7 @@ export function AppProvider({ children }) {
   // ── Toast helpers ───────────────────────────────────────────
   const addToast = useCallback((message, type = 'info') => {
     const id = ++toastId.current;
-    setToasts(prev => [...prev.slice(-4), { id, message, type }]);
+    setToasts(prev => [...prev.slice(-3), { id, message, type }]);
   }, []);
   const removeToast = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), []);
 
@@ -271,7 +271,7 @@ export function AppProvider({ children }) {
     const cfg = dc[deckId.toLowerCase()];
     if (cfg !== undefined) return cfg.view !== false;
     // fallback: old allowed_decks
-    return (p.allowed_decks || ['a','b','c','d','e']).includes(deckId.toLowerCase());
+    return (p.allowed_decks || ['a','b','c','d','e','f']).includes(deckId.toLowerCase());
   }, [currentUser, isElevated, userPermissions]);
 
   /**
@@ -286,7 +286,7 @@ export function AppProvider({ children }) {
     const cfg = dc[deckId.toLowerCase()];
     if (cfg !== undefined) return cfg.control === true;
     // fallback: old allowed_decks = full control
-    return (p.allowed_decks || ['a','b','c','d','e']).includes(deckId.toLowerCase());
+    return (p.allowed_decks || ['a','b','c','d','e','f']).includes(deckId.toLowerCase());
   }, [currentUser, isElevated, userPermissions]);
 
   /**
@@ -567,30 +567,12 @@ export function AppProvider({ children }) {
       await fetchAnnouncements(); return r.json();
     },
     playAnnouncement: async (id) => {
-      // ── Sync play: fire all deck triggers simultaneously ──
-      // First call the main play endpoint to get the announcement targets,
-      // then fan-out to each deck in parallel so all decks start at the same time.
-      const ann = announcements.find(a => a.id === id);
-      const targets = ann?.targets || ['ALL'];
-      const deckList = targets.includes('ALL')
-        ? ['deck-a','deck-b','deck-c','deck-d','deck-e','deck-f']
-        : targets.map(t => `deck-${t.toLowerCase()}`);
-
-      // Fire all deck-level play requests in parallel (simultaneous)
-      const results = await Promise.allSettled(
-        deckList.map(deckId =>
-          authFetch(`/api/announcements/${id}/play`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deck_id: deckId, sync: true }),
-          })
-        )
-      );
-
-      // If all failed, fall back to single call
-      const anyOk = results.some(r => r.status === 'fulfilled' && r.value?.ok);
-      if (!anyOk) {
-        const r = await authFetch(`/api/announcements/${id}/play`, { method: 'POST' });
+      // Always use the dedicated sync endpoint — it handles all decks in parallel server-side.
+      // The old client-side fan-out fired multiple conflicting sequences simultaneously.
+      let r = await authFetch(`/api/announcements/${id}/play-sync`, { method: 'POST' });
+      if (!r.ok) {
+        // Fallback to single async play
+        r = await authFetch(`/api/announcements/${id}/play`, { method: 'POST' });
         if (!r.ok) throw new Error(await parseError(r));
       }
       await fetchAnnouncements();

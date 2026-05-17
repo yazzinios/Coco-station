@@ -1,14 +1,26 @@
 import { useState, useEffect, useMemo } from 'react';
 import { BarChart2, Clock, Music, Radio, Layers } from 'lucide-react';
+import { useApp } from '../context/useApp';
+
+// Inline Library icon (not in lucide)
+function Library({ size }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+    </svg>
+  );
+}
 
 export default function StatisticsPage() {
+  const { authFetch } = useApp();
   const [stats, setStats] = useState(null);
   const [nowTs, setNowTs] = useState(0);
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const res = await fetch('/api/stats');
+        const res = await authFetch('/api/stats');
         if (res.ok) setStats(await res.json());
       } catch {
         // Keep stale stats when fetch fails.
@@ -43,7 +55,7 @@ export default function StatisticsPage() {
   const statCards = stats ? [
     { label: 'Total Uptime',       value: formatUptime(stats.uptime_seconds), icon: <Clock size={22} />, color: '#00d4ff' },
     { label: 'Tracks Played',      value: stats.tracks_played ?? 0,           icon: <Music size={22} />, color: '#26de81' },
-    { label: 'Active Decks',       value: `${stats.playing_decks ?? 0} / 5`,  icon: <Layers size={22} />, color: '#a55eea' },
+    { label: 'Active Decks',       value: `${stats.playing_decks ?? 0} / 6`,  icon: <Layers size={22} />, color: '#a55eea' },
     { label: 'Library Tracks',     value: stats.library_count ?? 0,           icon: <Library size={22} />, color: '#fd9644' },
   ] : [];
 
@@ -143,16 +155,5 @@ export default function StatisticsPage() {
   );
 }
 
-// Inline icon since lucide doesn't have 'Library'
-function Library({ size }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
-      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
-    </svg>
-  );
-}
-
-const _livePulseStyle = document.createElement('style');
-_livePulseStyle.textContent = '@keyframes livePulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.45; transform:scale(1.3); } }';
-document.head.appendChild(_livePulseStyle);
+// Live-pulse keyframe injected once at module level via a style element in App.css
+// (moved out of component render to avoid duplicate injection across re-renders)

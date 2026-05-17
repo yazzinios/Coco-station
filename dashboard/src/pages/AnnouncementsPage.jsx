@@ -371,7 +371,7 @@ export default function AnnouncementsPage() {
             <div>
               <label style={{ display: 'block', marginBottom: '0.45rem', fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Target Decks</label>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                {['ALL', 'A', 'B', 'C', 'D', 'E'].map(d => (
+                {['ALL', 'A', 'B', 'C', 'D', 'E', 'F'].map(d => (
                   <button key={d} type="button" onClick={() => toggleDeck(d)} style={{
                     padding: '0.3rem 0.75rem',
                     background: selectedDecks.includes(d) ? 'rgba(0,212,255,0.2)' : 'rgba(255,255,255,0.04)',

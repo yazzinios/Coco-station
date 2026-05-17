@@ -75,7 +75,7 @@ class PlaylistLoadRequest(BaseModel):
 
 class MusicScheduleCreateRequest(BaseModel):
     name: str
-    deck_id: str                  # 'a' | 'b' | 'c' | 'd'
+    deck_id: str                  # 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
     type: str                     # 'track' | 'playlist'
     target_id: str                # filename or playlist UUID
     scheduled_at: str             # ISO datetime string
@@ -94,18 +94,19 @@ class MusicSchedule(BaseModel):
 
 class RecurringScheduleCreateRequest(BaseModel):
     name: str
-    type: str             # 'Announcement' | 'Microphone'
+    type: str             # 'Announcement'
     announcement_id: Optional[str] = None
     start_time: str       # "HH:MM"
-    # stop_time removed: announcement/mic runs until it ends naturally
     active_days: List[int] # [0, 1, 2, 3, 4, 5, 6]
     excluded_days: List[str] = []  # ["YYYY-MM-DD", ...]
     fade_duration: int = 5
     music_volume: int = 10
     target_decks: List[str]
-    jingle_start: Optional[str] = None  # library filename (always used)
-    jingle_end: Optional[str] = None    # library filename (always used)
+    jingle_start: Optional[str] = None
+    jingle_end: Optional[str] = None
     multi_tracks: List[str] = []
+    repeat_count: int = 1           # how many times to play the announcement
+    repeat_interval: int = 0        # minutes between repeats (0 = no repeat)
     enabled: bool = True
 
 class RecurringSchedule(BaseModel):
@@ -114,7 +115,6 @@ class RecurringSchedule(BaseModel):
     type: str
     announcement_id: Optional[str] = None
     start_time: str
-    # stop_time removed
     active_days: List[int]
     excluded_days: List[str] = []
     fade_duration: int = 5
@@ -122,6 +122,8 @@ class RecurringSchedule(BaseModel):
     target_decks: List[str]
     jingle_start: Optional[str] = None
     jingle_end: Optional[str] = None
+    repeat_count: int = 1
+    repeat_interval: int = 0
     enabled: bool = True
     last_run_date: Optional[str] = None
     created_at: Optional[str] = None
@@ -131,17 +133,17 @@ class RecurringMixerScheduleCreateRequest(BaseModel):
     name: str
     type: str             # 'track' | 'playlist'
     target_id: str        # filename or playlist UUID
-    deck_ids: List[str]   # ['a', 'b', ...] — one or more decks to play on simultaneously
+    deck_ids: List[str]   # ['a', 'b', ...]
     start_time: str       # "HH:MM"
-    # stop_time removed: music plays until track/playlist ends naturally
+    stop_time: Optional[str] = None  # "HH:MM" — if set, stops music at this time
     active_days: List[int]
     excluded_days: List[str] = []
     fade_in: int = 3
     fade_out: int = 3
     volume: int = 80
     loop: bool = True
-    jingle_start: Optional[str] = None  # library filename (always used)
-    jingle_end: Optional[str] = None    # library filename (always used)
+    jingle_start: Optional[str] = None
+    jingle_end: Optional[str] = None
     multi_tracks: List[str] = []
     enabled: bool = True
 
