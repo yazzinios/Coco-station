@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/useApp';
 import XDJRRController from './XDJRRController';
+import defaultDDJ from '../assets/ddj800.png';
 
 /* ══════════════════════════════════════════════════════════════════════════
    RealImageJog — upload real DDJ photo, overlay spinning jog wheels on top.
@@ -17,9 +18,26 @@ function RealImageJog({ playing, onToggle }) {
   const [editMode,  setEditMode]  = useState(false);
 
   const wheelsRef = useRef({
-    L: { xFrac: 0.205, yFrac: 0.47, rFrac: 0.148 },
-    R: { xFrac: 0.795, yFrac: 0.47, rFrac: 0.148 },
+    L: { xFrac: 0.198, yFrac: 0.485, rFrac: 0.155 },
+    R: { xFrac: 0.802, yFrac: 0.485, rFrac: 0.155 },
   });
+
+  useEffect(() => {
+    if (defaultDDJ) {
+      const image = new window.Image();
+      image.onload = () => {
+        imgRef.current = image;
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+        }
+        updatePx();
+        setImgLoaded(true);
+      };
+      image.src = defaultDDJ;
+    }
+  }, [updatePx]);
   const pxRef = useRef({ L:{cx:0,cy:0,r:0}, R:{cx:0,cy:0,r:0} });
 
   const updatePx = useCallback(() => {
