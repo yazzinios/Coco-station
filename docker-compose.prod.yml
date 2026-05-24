@@ -12,9 +12,8 @@ services:
       - "8889:8889"
       - "8189:8189/udp"
       - "9997:9997"
-    configs:
-      - source: mediamtx_config
-        target: /mediamtx.yml
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.2
@@ -110,9 +109,6 @@ services:
       cocostation-net:
         ipv4_address: 10.20.0.6
 
-configs:
-  mediamtx_config:
-    file: ./mediamtx/mediamtx.yml
 
 networks:
   cocostation-net:
