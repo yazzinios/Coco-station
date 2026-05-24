@@ -87,8 +87,9 @@ export default function StatisticsPage() {
         ))}
       </div>
 
-      {/* Charts placeholder */}
+      {/* Charts */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+        {/* Live Listeners */}
         <div className="glass-panel" style={{ height: '280px', display: 'flex', flexDirection: 'column' }}>
           <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Radio size={16} /> Live Listeners</span>
@@ -117,6 +118,55 @@ export default function StatisticsPage() {
           </div>
         </div>
 
+        {/* Per-Deck Listener Breakdown */}
+        <div className="glass-panel" style={{ height: '280px', display: 'flex', flexDirection: 'column' }}>
+          <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><BarChart2 size={16} /> Listeners by Deck</span>
+          </h3>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '0.55rem' }}>
+            {['a','b','c','d','e','f'].map(deck => {
+              const key     = `deck-${deck}`;
+              const count   = stats?.decks_summary?.[key] ?? 0;
+              const total   = stats?.current_listeners ?? 0;
+              const pct     = total > 0 ? Math.round((count / total) * 100) : 0;
+              const isLive  = count > 0;
+              const COLORS  = { a: '#00d4ff', b: '#26de81', c: '#fd9644', d: '#a55eea', e: '#ff6b81', f: '#45aaf2' };
+              const color   = COLORS[deck];
+              return (
+                <div key={deck} style={{ display: 'grid', gridTemplateColumns: '22px 1fr 36px', alignItems: 'center', gap: '0.6rem' }}>
+                  {/* Deck label */}
+                  <span style={{
+                    fontSize: '0.72rem', fontWeight: '700', color: isLive ? color : 'rgba(255,255,255,0.2)',
+                    width: '20px', textAlign: 'center',
+                  }}>{ deck.toUpperCase() }</span>
+                  {/* Bar */}
+                  <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%', borderRadius: '4px',
+                      width: `${pct}%`,
+                      minWidth: isLive ? '8px' : '0',
+                      background: isLive
+                        ? `linear-gradient(to right, ${color}, ${color}88)`
+                        : 'transparent',
+                      transition: 'width 0.6s ease',
+                    }} />
+                  </div>
+                  {/* Count */}
+                  <span style={{
+                    fontSize: '0.72rem', fontWeight: '600', textAlign: 'right',
+                    color: isLive ? color : 'rgba(255,255,255,0.2)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>{ count }</span>
+                </div>
+              );
+            })}
+            <div style={{ marginTop: '0.4rem', fontSize: '0.7rem', color: 'rgba(255,255,255,0.25)', textAlign: 'right' }}>
+              {stats?.current_listeners ?? 0} total
+            </div>
+          </div>
+        </div>
+
+        {/* Announcements */}
         <div className="glass-panel" style={{ height: '280px', display: 'flex', flexDirection: 'column' }}>
           <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Layers size={16} /> Announcements</span>

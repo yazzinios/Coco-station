@@ -720,6 +720,7 @@ class DBClient:
             "target_id":    s["target_id"],
             "deck_ids":     json.dumps(raw_deck_ids),
             "start_time":   s["start_time"],
+            "stop_time":    s.get("stop_time") or None,
             "active_days":  json.dumps(s.get("active_days", [])),
             "excluded_days": json.dumps(s.get("excluded_days", [])),
             "fade_in":      s.get("fade_in", 3),
@@ -744,14 +745,14 @@ class DBClient:
                     cur.execute(
                         """
                         INSERT INTO recurring_mixer_schedules
-                            (id, name, type, target_id, deck_ids, start_time,
+                            (id, name, type, target_id, deck_ids, start_time, stop_time,
                              active_days, excluded_days, fade_in, fade_out, volume, loop,
                              jingle_start, jingle_end, multi_tracks, enabled)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name, type = EXCLUDED.type,
                             target_id = EXCLUDED.target_id, deck_ids = EXCLUDED.deck_ids,
-                            start_time = EXCLUDED.start_time,
+                            start_time = EXCLUDED.start_time, stop_time = EXCLUDED.stop_time,
                             active_days = EXCLUDED.active_days, excluded_days = EXCLUDED.excluded_days,
                             fade_in = EXCLUDED.fade_in, fade_out = EXCLUDED.fade_out,
                             volume = EXCLUDED.volume, loop = EXCLUDED.loop,
@@ -759,7 +760,7 @@ class DBClient:
                             multi_tracks = EXCLUDED.multi_tracks, enabled = EXCLUDED.enabled
                         """,
                         (data["id"], data["name"], data["type"], data["target_id"], data["deck_ids"],
-                         data["start_time"], data["active_days"], data["excluded_days"],
+                         data["start_time"], data["stop_time"], data["active_days"], data["excluded_days"],
                          data["fade_in"], data["fade_out"], data["volume"], data["loop"],
                          data["jingle_start"], data["jingle_end"], data["multi_tracks"], data["enabled"]),
                     )

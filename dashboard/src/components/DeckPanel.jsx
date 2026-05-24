@@ -238,6 +238,7 @@ export default function DeckPanel({ id }) {
   const color = DECK_COLORS[id] || DECK_COLORS.a;
 
   const [volumeLocal, setVolumeLocal] = useState(deck.volume);
+  const volumeDragRef = useRef(deck.volume); // holds in-flight value during drag — no re-render
   const [copied,      setCopied]      = useState(false);
   const [optimistic, setOptimistic]   = useState(null);
 
@@ -303,15 +304,21 @@ export default function DeckPanel({ id }) {
     }
   };
 
-  const handleVolumeChange = (e) => {
+  const handleVolumeChange = useCallback((e) => {
     if (!canVolume) return;
-    setVolumeLocal(Number(e.target.value));
-  };
+    // Only update the ref — zero re-renders during drag
+    volumeDragRef.current = Number(e.target.value);
+    // Update the CSS gradient on the slider directly via the DOM to keep it smooth
+    e.target.style.background = `linear-gradient(to right, ${color.accent} ${volumeDragRef.current}%, rgba(255,255,255,0.15) ${volumeDragRef.current}%)`;
+    // Update the sibling % label via DOM too (querySelector scoped to the parent div)
+    const label = e.target.closest('.volume-row')?.querySelector('.volume-label');
+    if (label) label.textContent = `${volumeDragRef.current}%`;
+  }, [canVolume, color.accent]);
 
   const handleVolumeCommit = useCallback(async (e) => {
     if (!canVolume) return;
-    const v = Number(e.target.value);
-    setVolumeLocal(v);
+    const v = volumeDragRef.current;
+    setVolumeLocal(v);          // single setState on release — one re-render only
     try { await api.setVolume(id, v); } catch { }
   }, [id, api, canVolume]);
 
@@ -570,11 +577,11 @@ export default function DeckPanel({ id }) {
       </div>
 
       {/* Volume */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
+      <div className="volume-row" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
         <Volume2 size={14} color={canVolume ? 'var(--text-secondary)' : 'rgba(255,255,255,0.2)'} />
         <div style={{ flex: 1, position: 'relative' }}>
           <input
-            type="range" min="0" max="100" value={volumeLocal}
+            type="range" min="0" max="100" defaultValue={volumeLocal}
             onChange={handleVolumeChange}
             onPointerUp={handleVolumeCommit}
             onMouseUp={handleVolumeCommit}
@@ -595,7 +602,7 @@ export default function DeckPanel({ id }) {
             </div>
           )}
         </div>
-        <span style={{ fontSize: '0.7rem', color: canVolume ? 'var(--text-secondary)' : 'rgba(255,255,255,0.2)', width: '28px', textAlign: 'right' }}>
+        <span className="volume-label" style={{ fontSize: '0.7rem', color: canVolume ? 'var(--text-secondary)' : 'rgba(255,255,255,0.2)', width: '28px', textAlign: 'right' }}>
           {volumeLocal}%
         </span>
       </div>
@@ -629,8 +636,8 @@ export default function DeckPanel({ id }) {
         </div>
       </div>
 
+      {/* range thumb styles scoped to this component */}
       <style>{`
-        @keyframes vinylSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         input[type='range']::-webkit-slider-thumb {
           -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%;
           background: white; cursor: pointer; box-shadow: 0 0 4px rgba(0,0,0,0.4);

@@ -52,6 +52,7 @@ class Announcement(BaseModel):
     filename: str
     targets: List[str]
     status: str = 'Ready'
+    last_played_at: Optional[str] = None  # ISO datetime — set on each play
     created_at: Optional[str] = None
 
 class AnnouncementUpdateRequest(BaseModel):
@@ -59,6 +60,7 @@ class AnnouncementUpdateRequest(BaseModel):
     targets: Optional[List[str]] = None
     scheduled_at: Optional[str] = None
     status: Optional[str] = None
+    last_played_at: Optional[str] = None  # ISO datetime — set by frontend on each play
 
 class Playlist(BaseModel):
     id: str
@@ -168,7 +170,7 @@ class RecurringMixerSchedule(BaseModel):
     target_id: str
     deck_ids: List[str]   # one or more deck ids
     start_time: str
-    # stop_time removed
+    stop_time: Optional[str] = None
     active_days: List[int]
     excluded_days: List[str] = []
     fade_in: int = 3

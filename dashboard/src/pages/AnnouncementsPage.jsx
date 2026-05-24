@@ -43,7 +43,14 @@ export default function AnnouncementsPage() {
   const [editingId,     setEditingId]     = useState(null);
   const [textDir,       setTextDir]       = useState('ltr');   // auto RTL detection
   const [listeners,     setListeners]     = useState({ total: 0, decks: {} });
+  const [playedAt,      setPlayedAt]     = useState({});  // { [ann.id]: ISO string }
+  const [nowTs,         setNowTs]        = useState(Date.now()); // ticks every 30s to refresh relative times
   const fileRef = useRef(null);
+
+  React.useEffect(() => {
+    const t = setInterval(() => setNowTs(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   React.useEffect(() => {
     const poll = async () => {
@@ -184,10 +191,24 @@ export default function AnnouncementsPage() {
     setTextDir(rtlLangs.includes(ann.lang || 'en') ? 'rtl' : 'ltr');
   };
 
+  // Seed playedAt from any existing last_played_at on announcements
+  React.useEffect(() => {
+    setPlayedAt(prev => {
+      const next = { ...prev };
+      announcements.forEach(a => {
+        if (a.last_played_at && !next[a.id]) next[a.id] = a.last_played_at;
+      });
+      return next;
+    });
+  }, [announcements]);
+
   const handlePlay = async (ann) => {
     try {
-      // Use sync play so ALL target decks start at exactly the same time
       await api.playAnnouncementSync(ann.id);
+      const now = new Date().toISOString();
+      setPlayedAt(prev => ({ ...prev, [ann.id]: now }));
+      // Persist to backend so it survives a page reload
+      api.updateAnnouncement(ann.id, { last_played_at: now }).catch(() => {});
       toast.success(`▶ Playing on all decks: ${ann.name}`);
     } catch (err) {
       toast.error(err.message);
@@ -207,6 +228,16 @@ export default function AnnouncementsPage() {
     if (status === 'Played')    return { bg: 'rgba(46,213,115,0.1)',   color: '#2ed573' };
     if (status === 'Scheduled') return { bg: 'rgba(0,212,255,0.1)',    color: '#00d4ff' };
     return                             { bg: 'rgba(255,255,255,0.06)', color: '#a0a0a0' };
+  };
+
+  const formatRelative = (iso) => {
+    if (!iso) return null;
+    const diff = Math.floor((nowTs - new Date(iso).getTime()) / 1000);
+    if (diff <  5)   return 'just now';
+    if (diff < 60)   return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)return `${Math.floor(diff / 3600)}h ago`;
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   const inputStyle = {
@@ -448,6 +479,21 @@ export default function AnnouncementsPage() {
                           </span>
                         )}
                       </div>
+                      {/* Last played timestamp */}
+                      {(playedAt[a.id] || a.last_played_at) && (
+                        <div style={{
+                          marginTop: '0.35rem',
+                          display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
+                          fontSize: '0.68rem', fontWeight: '500',
+                          color: '#2ed573',
+                          background: 'rgba(46,213,115,0.08)',
+                          border: '1px solid rgba(46,213,115,0.2)',
+                          borderRadius: '20px', padding: '0.1rem 0.5rem',
+                        }}>
+                          <Clock size={9} />
+                          Played {formatRelative(playedAt[a.id] || a.last_played_at)}
+                        </div>
+                      )}
                     </div>
                     <span style={{
                       padding: '0.2rem 0.6rem', borderRadius: '10px', fontSize: '0.72rem',

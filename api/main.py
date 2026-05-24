@@ -148,6 +148,14 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _safe_settings(settings: dict) -> dict:
+    """Return a copy of SETTINGS with sensitive credentials scrubbed.
+    Called before every SETTINGS_UPDATED broadcast so secrets never reach clients.
+    """
+    SENSITIVE_KEYS = {"ldap_bind_pw"}
+    return {k: ("" if k in SENSITIVE_KEYS else v) for k, v in settings.items()}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES
@@ -423,7 +431,7 @@ async def upload_company_logo(
     except Exception as e:
         print(f"[DB] Failed to save company_logo setting: {e}")
 
-    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
     return {"status": "ok", "filename": f"company_logo{suffix}", "mime": mime, "size": len(content)}
 
 
@@ -448,7 +456,7 @@ async def delete_company_logo(_user=Depends(verify_token)):
         )
     except Exception as e:
         print(f"[DB] Failed to clear company_logo setting: {e}")
-    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
     return {"status": "ok"}
 
 
@@ -530,7 +538,7 @@ async def upload_jingle(
     else:
         print(f"[jingle] ERROR: {jingle_type} jingle file not found on disk after write: {safe_name}")
 
-    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
     return {"status": "ok", "jingle_type": jingle_type, "filename": safe_name}
 
 @app.delete("/api/settings/jingles/{jingle_type}")
@@ -554,7 +562,7 @@ async def delete_jingle(jingle_type: str, _user=Depends(verify_token)):
         await asyncio.get_event_loop().run_in_executor(None, db.delete_chime, chime_id)
     except Exception as e:
         print(f"[DB] Failed to delete chime row: {e}")
-    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
     return {"status": "ok", "jingle_type": jingle_type}
 
 
@@ -693,21 +701,31 @@ async def _duck_acquire(source_type: str = "announcement", level: int = None) ->
     else:
         duck_pct = _duck_level(SETTINGS.get("ducking_percent"), 5)
 
+    all_playing = [did for did in DECKS if DECKS[did].get("is_playing")]
+
     if _DUCK_REFCOUNT_REF[0] == 1:
-        all_playing = [did for did in DECKS if DECKS[did].get("is_playing")]
+        # First acquirer: snapshot current volumes atomically before fading.
+        # Build the snapshot first, then replace in one step so a concurrent
+        # second acquire cannot observe a half-cleared dict.
+        snapshot = {did: DECKS[did]["volume"] for did in all_playing}
         _DUCK_SAVED_VOLUMES.clear()
-        _DUCK_SAVED_VOLUMES.update({did: DECKS[did]["volume"] for did in all_playing})
+        _DUCK_SAVED_VOLUMES.update(snapshot)
         if all_playing:
-            from_vol = max(_DUCK_SAVED_VOLUMES.values()) if _DUCK_SAVED_VOLUMES else 100
+            from_vol = max(snapshot.values()) if snapshot else 100
             await _fade_volumes(all_playing, from_vol, duck_pct, FADE_STEP_MS)
             for did in all_playing:
                 DECKS[did]["volume"] = duck_pct
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     else:
-        all_playing = [did for did in DECKS if DECKS[did].get("is_playing")]
+        # Subsequent acquirer: do NOT touch _DUCK_SAVED_VOLUMES — the first
+        # acquirer owns it and will restore from it on final release.
+        # Just ensure all playing decks are at the duck level right now.
         if all_playing:
             async with httpx.AsyncClient(timeout=3) as c:
-                await asyncio.gather(*[c.post(f"{FFMPEG_URL}/decks/{did}/volume/{duck_pct}") for did in all_playing], return_exceptions=True)
+                await asyncio.gather(
+                    *[c.post(f"{FFMPEG_URL}/decks/{did}/volume/{duck_pct}") for did in all_playing],
+                    return_exceptions=True,
+                )
             for did in all_playing:
                 DECKS[did]["volume"] = duck_pct
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
@@ -795,7 +813,7 @@ async def websocket_endpoint(websocket: WebSocket):
         "decks": list(DECKS.values()),
         "mic": MIC_STATE,
         "announcements": ANNOUNCEMENTS,
-        "settings": SETTINGS,
+        "settings": _safe_settings(SETTINGS),
         "playlists": list(PLAYLISTS.values()),
         "music_schedules": MUSIC_SCHEDULES,
         "recurring_schedules": RECURRING_SCHEDULES,
@@ -1477,6 +1495,7 @@ async def update_announcement(ann_id: str, req: AnnouncementUpdateRequest, _user
         ann["status"] = "Scheduled" if req.scheduled_at else "Ready"
         updates["scheduled_at"] = req.scheduled_at; updates["status"] = ann["status"]
     if req.status is not None: ann["status"] = req.status; updates["status"] = req.status
+    if req.last_played_at is not None: ann["last_played_at"] = req.last_played_at; updates["last_played_at"] = req.last_played_at
     if updates:
         try:
             await asyncio.get_event_loop().run_in_executor(None, db.update_announcement, ann_id, updates)
@@ -1740,8 +1759,8 @@ async def update_settings(req: SettingUpdateRequest, _user=Depends(require_admin
         await asyncio.get_event_loop().run_in_executor(None, db.save_settings, req.value)
     except Exception as e:
         print(f"[DB] Failed to persist settings: {e}")
-    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": SETTINGS})
-    return {"status": "ok", "settings": SETTINGS}
+    await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
+    return {"status": "ok", "settings": _safe_settings(SETTINGS)}
 
 # ── Scheduler ──────────────────────────────────────────────
 @app.get("/api/scheduler/status")

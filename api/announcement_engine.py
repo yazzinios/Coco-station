@@ -33,6 +33,13 @@ _DECKS: Dict[str, dict] = {}
 _ANNOUNCEMENT_EVENTS: Dict[str, asyncio.Event] = {}
 _TRIGGER_LOCK: Optional[asyncio.Lock] = None
 
+# Module-level state for mic open/close volume handoff
+# Declared here (above the functions that use them) to avoid NameError
+# if any import-time code triggers mic_open_sequence before the module
+# finishes loading.
+_MIC_SAVED_VOLUMES: Dict[str, int] = {}
+_MIC_ACTIVE_DECKS:  List[str]      = []
+
 # Mixer-side paths (as mounted in the ffmpeg-mixer container)
 MIXER_CHIMES_PATH       = "/chimes"        # docker-compose: ./data/chimes:/chimes:ro
 MIXER_ANNOUNCEMENTS_PATH = "/announcements" # docker-compose: ./data/announcements:/announcements:ro
@@ -339,6 +346,7 @@ async def mic_open_sequence(deck_ids: List[str]) -> None:
         1. FADE DOWN  music → mic_ducking_percent
         2. INTRO      jingle
     Lock stays held until mic_close_sequence().
+    On any error the lock is released unconditionally before re-raising.
     """
     if _TRIGGER_LOCK is None:
         raise RuntimeError("announcement_engine.init() not called")
@@ -366,12 +374,16 @@ async def mic_open_sequence(deck_ids: List[str]) -> None:
             )
         await _play_jingle("intro", deck_ids)
     except Exception as e:
-        print(f"[engine] mic_open error: {e}")
+        # Sequence failed — release the lock unconditionally so the
+        # station isn't permanently frozen, then let the caller handle it.
+        print(f"[engine] mic_open error: {e} — releasing trigger lock")
+        _MIC_SAVED_VOLUMES = {}
+        _MIC_ACTIVE_DECKS  = []
         try:
             _TRIGGER_LOCK.release()
         except RuntimeError:
             pass
-        raise e
+        raise
 
 
 async def mic_close_sequence(deck_ids: List[str]) -> None:
@@ -405,6 +417,3 @@ async def mic_close_sequence(deck_ids: List[str]) -> None:
             pass
 
 
-# Module-level state for mic open/close volume handoff
-_MIC_SAVED_VOLUMES: Dict[str, int] = {}
-_MIC_ACTIVE_DECKS:  List[str]      = []

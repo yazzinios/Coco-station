@@ -15,7 +15,12 @@ from fastapi import HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # ── Config ───────────────────────────────────────────────────
-JWT_SECRET       = os.getenv("JWT_SECRET", "cocostation-jwt-secret-change-me-in-prod")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable is not set. "
+        "Add it to your .env file before starting the server."
+    )
 JWT_ALGORITHM    = "HS256"
 DEFAULT_EXPIRY_HOURS = 8
 

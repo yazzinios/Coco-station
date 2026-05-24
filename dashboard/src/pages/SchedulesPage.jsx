@@ -1,10 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   Calendar, Clock, Music, ListMusic, Mic, Play, Trash2, Edit3,
   Plus, Save, X, Check, Pause, Volume2, Settings2, TriangleAlert,
-  Radio, Music2,
+  Radio, Music2, CalendarOff,
 } from 'lucide-react';
 import { useApp } from '../context/useApp';
+
+// Returns today as YYYY-MM-DD in the local timezone
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
 
 /* ─────────────────────── Constants ─────────────────────── */
 const DAYS_OF_WEEK = [
@@ -108,6 +114,7 @@ function MixerSchedules() {
   const startEdit = (s) => {
     setForm({
       ...MIXER_DEFAULT, ...s,
+      stop_time: s.stop_time || '',
       deck_ids: s.deck_ids ?? (s.deck_id ? [s.deck_id] : ['a']),
       jingle_start: s.jingle_start || library[0]?.filename || null,
       jingle_end:   s.jingle_end   || library[0]?.filename || null,
@@ -166,6 +173,19 @@ function MixerSchedules() {
       toast.success(s.enabled ? 'Schedule disabled' : 'Schedule enabled');
     } catch (err) { toast.error(err.message); }
   };
+
+  const handleSkipToday = useCallback(async (s) => {
+    const today = todayStr();
+    if ((s.excluded_days || []).includes(today)) {
+      toast.info('Already skipping today');
+      return;
+    }
+    const updated = { ...s, excluded_days: [...(s.excluded_days || []), today] };
+    try {
+      await api.updateRecurringMixerSchedule(s.id, updated);
+      toast.success(`Skipping "${s.name}" today (${today})`);
+    } catch (err) { toast.error(err.message); }
+  }, [api, toast]);
 
   return (
     <div>
@@ -429,7 +449,7 @@ function MixerSchedules() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1rem' }}>
           {recurringMixerSchedules.map(s => (
-            <MixerCard key={s.id} s={s} onEdit={startEdit} onDelete={handleDelete} onToggle={toggleStatus} />
+            <MixerCard key={s.id} s={s} onEdit={startEdit} onDelete={handleDelete} onToggle={toggleStatus} onSkipToday={handleSkipToday} />
           ))}
         </div>
       )}
@@ -437,7 +457,9 @@ function MixerSchedules() {
   );
 }
 
-function MixerCard({ s, onEdit, onDelete, onToggle }) {
+function MixerCard({ s, onEdit, onDelete, onToggle, onSkipToday }) {
+  const today    = todayStr();
+  const skipped  = (s.excluded_days || []).includes(today);
   return (
     <div style={{
       background: s.enabled ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.2)',
@@ -452,8 +474,19 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-              <Clock size={11} /> {s.start_time}{s.stop_time ? ` — ${s.stop_time}` : ''}
+              <Clock size={11} /> {s.start_time}
             </span>
+            {s.stop_time && (
+              <span style={{
+                display: 'flex', alignItems: 'center', gap: '0.25rem',
+                background: 'rgba(255,71,87,0.12)', color: '#ff6b7a',
+                border: '1px solid rgba(255,71,87,0.25)',
+                borderRadius: '20px', padding: '0.05rem 0.45rem',
+                fontSize: '0.68rem', fontWeight: '600',
+              }}>
+                ⏹ {s.stop_time}
+              </span>
+            )}
             <span style={{ color: 'var(--accent-blue)', fontWeight: '600' }}>
               {(s.deck_ids ?? (s.deck_id ? [s.deck_id] : [])).map(d => `Deck ${d.toUpperCase()}`).join(' + ')}
             </span>
@@ -463,6 +496,13 @@ function MixerCard({ s, onEdit, onDelete, onToggle }) {
           <ActionBtn onClick={() => onToggle(s)} color={s.enabled ? '#2ed573' : 'var(--text-secondary)'}
             bg={s.enabled ? 'rgba(46,213,115,0.12)' : 'rgba(255,255,255,0.05)'}
             icon={s.enabled ? <Check size={13} /> : <Pause size={13} />} />
+          <ActionBtn
+            onClick={() => onSkipToday(s)}
+            title={skipped ? 'Already skipping today' : 'Skip today only'}
+            color={skipped ? '#fd9644' : 'var(--text-secondary)'}
+            bg={skipped ? 'rgba(253,150,68,0.15)' : 'rgba(255,255,255,0.05)'}
+            icon={<CalendarOff size={13} />}
+          />
           <ActionBtn onClick={() => onEdit(s)}   color="var(--text-secondary)" bg="rgba(255,255,255,0.05)"  icon={<Edit3  size={13} />} />
           <ActionBtn onClick={() => onDelete(s.id)} color="#ff4757"            bg="rgba(255,71,87,0.1)"     icon={<Trash2 size={13} />} />
         </div>
@@ -600,6 +640,19 @@ function AnnSchedules() {
       toast.success(s.enabled ? 'Disabled' : 'Enabled');
     } catch (err) { toast.error(err.message); }
   };
+
+  const handleSkipToday = useCallback(async (s) => {
+    const today = todayStr();
+    if ((s.excluded_days || []).includes(today)) {
+      toast.info('Already skipping today');
+      return;
+    }
+    const updated = { ...s, excluded_days: [...(s.excluded_days || []), today] };
+    try {
+      await api.updateRecurringSchedule(s.id, updated);
+      toast.success(`Skipping "${s.name}" today (${today})`);
+    } catch (err) { toast.error(err.message); }
+  }, [api, toast]);
 
   return (
     <div>
@@ -827,7 +880,7 @@ function AnnSchedules() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1rem' }}>
           {recurringSchedules.map(s => (
-            <AnnCard key={s.id} s={s} onEdit={startEdit} onDelete={handleDelete} onToggle={toggleStatus} />
+            <AnnCard key={s.id} s={s} onEdit={startEdit} onDelete={handleDelete} onToggle={toggleStatus} onSkipToday={handleSkipToday} />
           ))}
         </div>
       )}
@@ -835,7 +888,9 @@ function AnnSchedules() {
   );
 }
 
-function AnnCard({ s, onEdit, onDelete, onToggle }) {
+function AnnCard({ s, onEdit, onDelete, onToggle, onSkipToday }) {
+  const today   = todayStr();
+  const skipped = (s.excluded_days || []).includes(today);
   return (
     <div style={{
       background: s.enabled ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.2)',
@@ -856,6 +911,13 @@ function AnnCard({ s, onEdit, onDelete, onToggle }) {
           <ActionBtn onClick={() => onToggle(s)} color={s.enabled ? '#2ed573' : 'var(--text-secondary)'}
             bg={s.enabled ? 'rgba(46,213,115,0.12)' : 'rgba(255,255,255,0.05)'}
             icon={s.enabled ? <Check size={13} /> : <Pause size={13} />} />
+          <ActionBtn
+            onClick={() => onSkipToday(s)}
+            title={skipped ? 'Already skipping today' : 'Skip today only'}
+            color={skipped ? '#fd9644' : 'var(--text-secondary)'}
+            bg={skipped ? 'rgba(253,150,68,0.15)' : 'rgba(255,255,255,0.05)'}
+            icon={<CalendarOff size={13} />}
+          />
           <ActionBtn onClick={() => onEdit(s)}      color="var(--text-secondary)" bg="rgba(255,255,255,0.05)"  icon={<Edit3  size={13} />} />
           <ActionBtn onClick={() => onDelete(s.id)} color="#ff4757"               bg="rgba(255,71,87,0.1)"     icon={<Trash2 size={13} />} />
         </div>
@@ -912,9 +974,9 @@ function DaysRow({ days }) {
   );
 }
 
-function ActionBtn({ onClick, color, bg, icon }) {
+function ActionBtn({ onClick, color, bg, icon, title }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} title={title} style={{
       width: '32px', height: '32px', borderRadius: '8px', border: 'none',
       background: bg, color, cursor: 'pointer',
       display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s',
