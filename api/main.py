@@ -1527,6 +1527,21 @@ async def delete_announcement(ann_id: str, _user=Depends(require_permission("can
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok"}
 
+# ── Listener IP → friendly label mapping (edit here to rename zones) ────────
+LISTENER_IP_LABELS: dict = {}
+
+@app.get("/api/listener-labels")
+async def get_listener_labels(_user=Depends(verify_token)):
+    """Return the current IP→label mapping."""
+    return LISTENER_IP_LABELS
+
+@app.put("/api/listener-labels")
+async def set_listener_labels(payload: dict, _user=Depends(verify_token)):
+    """Replace the full IP→label mapping (pass {\"ip\": \"label\"} dict)."""
+    global LISTENER_IP_LABELS
+    LISTENER_IP_LABELS = {str(k): str(v) for k, v in payload.items()}
+    return LISTENER_IP_LABELS
+
 # ── Listeners ───────────────────────────────────────────────
 @app.get("/api/listeners")
 async def get_listeners():
@@ -1538,10 +1553,26 @@ async def get_listeners():
                 data = resp.json()
                 for item in data.get("items", []):
                     path_name = item.get("name", "")
-                    readers = item.get("readers", [])
-                    reader_count = len(readers) if isinstance(readers, list) else item.get("readersCount", 0)
-                    result[path_name] = {"path": path_name, "listeners": reader_count,
-                                          "ready": item.get("ready", False)}
+                    readers_raw = item.get("readers", [])
+                    readers_list = readers_raw if isinstance(readers_raw, list) else []
+                    reader_count = len(readers_list) if readers_list else item.get("readersCount", 0)
+                    # Collect reader details (IP + protocol) when available
+                    reader_details = []
+                    for r in readers_list:
+                        addr = r.get("remoteAddr") or r.get("raddr") or r.get("addr", "")
+                        ip   = addr.split(":")[0] if ":" in addr else addr
+                        reader_details.append({
+                            "ip":       ip,
+                            "addr":     addr,
+                            "protocol": r.get("type", r.get("proto", "rtsp")),
+                            "label":    LISTENER_IP_LABELS.get(ip, ""),
+                        })
+                    result[path_name] = {
+                        "path":    path_name,
+                        "listeners": reader_count,
+                        "ready":   item.get("ready", False),
+                        "readers": reader_details,
+                    }
     except Exception as e:
         print(f"[listeners] Failed to query mediamtx: {e}")
     decks_summary = {}; total = 0

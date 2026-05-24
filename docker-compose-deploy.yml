@@ -38,6 +38,7 @@ services:
       - POSTGRES_DB=cocostation
       - POSTGRES_HOST=db
       - FFMPEG_HOST=ffmpeg-mixer
+      - JWT_SECRET=cocostation-local-dev-secret-change-me-in-prod
     depends_on:
       - db
 

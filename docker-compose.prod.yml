@@ -57,6 +57,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-cocostation}
       - POSTGRES_HOST=db
       - FFMPEG_HOST=ffmpeg-mixer
+      - JWT_SECRET=${JWT_SECRET}
       # WebSocket keepalive — FastAPI/uvicorn sends a ping every 30s so nginx
       # never sees the connection as idle and drops it
       - WS_PING_INTERVAL=30

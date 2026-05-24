@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { BarChart2, Clock, Music, Radio, Layers } from 'lucide-react';
+import { BarChart2, Clock, Music, Radio, Layers, Wifi, Edit2, Check, X } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 // Inline Library icon (not in lucide)
@@ -36,6 +36,60 @@ export default function StatisticsPage() {
     const interval = setInterval(() => setNowTs(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  const [listeners, setListeners]   = useState(null);
+  const [labels, setLabels]         = useState({});       // ip → friendly name
+  const [editingIp, setEditingIp]   = useState(null);     // ip currently being renamed
+  const [editValue, setEditValue]   = useState('');
+
+  // Poll /api/listeners every 10 s
+  useEffect(() => {
+    const fetchListeners = async () => {
+      try {
+        const res = await authFetch('/api/listeners');
+        if (res.ok) setListeners(await res.json());
+      } catch {}
+    };
+    fetchListeners();
+    const poll = setInterval(fetchListeners, 10000);
+    return () => clearInterval(poll);
+  }, []);
+
+  // Load saved labels once
+  useEffect(() => {
+    authFetch('/api/listener-labels')
+      .then(r => r.ok ? r.json() : {})
+      .then(data => setLabels(data))
+      .catch(() => {});
+  }, []);
+
+  const saveLabel = async (ip, name) => {
+    const updated = { ...labels, [ip]: name };
+    try {
+      const res = await authFetch('/api/listener-labels', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+      if (res.ok) setLabels(updated);
+    } catch {}
+    setEditingIp(null);
+  };
+
+  // Flatten all active readers across all decks into a single list
+  const activeReaders = useMemo(() => {
+    if (!listeners?.paths) return [];
+    const DECK_COLORS = { 'deck-a': '#00d4ff', 'deck-b': '#26de81', 'deck-c': '#fd9644', 'deck-d': '#a55eea', 'deck-e': '#ff6b81', 'deck-f': '#45aaf2' };
+    const rows = [];
+    for (const [deckName, info] of Object.entries(listeners.paths)) {
+      const color = DECK_COLORS[deckName] || '#aaa';
+      for (const r of (info.readers || [])) {
+        if (!r.ip) continue;
+        rows.push({ deck: deckName, color, ip: r.ip, addr: r.addr, protocol: r.protocol, label: labels[r.ip] || r.label || '' });
+      }
+    }
+    return rows;
+  }, [listeners, labels]);
 
   const baseStartedAt = useMemo(() => {
     if (!stats?.uptime_seconds) return null;
@@ -176,6 +230,81 @@ export default function StatisticsPage() {
             <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>announcements in library</div>
           </div>
         </div>
+      </div>
+
+      {/* Live Listener Details Table */}
+      <div className="glass-panel" style={{ marginTop: '1rem' }}>
+        <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Wifi size={16} /> Live Listener Details
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>Click ✏️ to label an IP</span>
+        </h3>
+        {activeReaders.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2rem', color: 'rgba(255,255,255,0.25)', fontSize: '0.85rem' }}>
+            No active listeners right now
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+            <thead>
+              <tr style={{ color: 'rgba(255,255,255,0.35)', textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                <th style={{ padding: '0.4rem 0.6rem' }}>Deck</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>IP Address</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>Protocol</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>Label / Zone</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activeReaders.map((r, i) => (
+                <tr key={`${r.deck}-${r.ip}-${i}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  {/* Deck */}
+                  <td style={{ padding: '0.55rem 0.6rem' }}>
+                    <span style={{
+                      display: 'inline-block', padding: '0.2rem 0.55rem', borderRadius: '12px',
+                      fontSize: '0.72rem', fontWeight: '700', color: r.color,
+                      background: `${r.color}18`, border: `1px solid ${r.color}44`,
+                    }}>{r.deck.toUpperCase()}</span>
+                  </td>
+                  {/* IP */}
+                  <td style={{ padding: '0.55rem 0.6rem', fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{r.addr || r.ip}</td>
+                  {/* Protocol */}
+                  <td style={{ padding: '0.55rem 0.6rem' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', fontSize: '0.72rem' }}>{r.protocol}</span>
+                  </td>
+                  {/* Label */}
+                  <td style={{ padding: '0.55rem 0.6rem' }}>
+                    {editingIp === r.ip ? (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <input
+                          autoFocus
+                          value={editValue}
+                          onChange={e => setEditValue(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveLabel(r.ip, editValue); if (e.key === 'Escape') setEditingIp(null); }}
+                          style={{
+                            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+                            borderRadius: '6px', color: '#fff', padding: '0.2rem 0.5rem', fontSize: '0.8rem', width: '140px',
+                          }}
+                          placeholder="e.g. Pool Area"
+                        />
+                        <button onClick={() => saveLabel(r.ip, editValue)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2ed573', padding: '2px' }}><Check size={14} /></button>
+                        <button onClick={() => setEditingIp(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: '2px' }}><X size={14} /></button>
+                      </span>
+                    ) : (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ color: r.label ? '#fff' : 'rgba(255,255,255,0.2)', fontStyle: r.label ? 'normal' : 'italic' }}>
+                          {r.label || 'unlabelled'}
+                        </span>
+                        <button
+                          onClick={() => { setEditingIp(r.ip); setEditValue(labels[r.ip] || ''); }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.25)', padding: '2px', lineHeight: 1 }}
+                          title="Rename"
+                        ><Edit2 size={12} /></button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {/* Status row */}
