@@ -158,9 +158,9 @@ def _safe_settings(settings: dict) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES
+    global ANNOUNCEMENTS, PLAYLISTS, SETTINGS, MUSIC_SCHEDULES, RECURRING_SCHEDULES, RECURRING_MIXER_SCHEDULES, MUSIC_REQUESTS
     print("CocoStation API Starting...")
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     now = datetime.now()
     utcnow = datetime.utcnow()
@@ -224,6 +224,13 @@ async def lifespan(app: FastAPI):
         print(f"[startup] Loaded {len(RECURRING_MIXER_SCHEDULES)} recurring mixer schedule(s) from DB.")
     except Exception as e:
         print(f"[startup] Failed to load recurring mixer schedules: {e}")
+
+    # FIX (Bug 9): Load persisted music requests so they survive restarts
+    try:
+        MUSIC_REQUESTS = await loop.run_in_executor(None, db.get_music_requests)
+        print(f"[startup] Loaded {len(MUSIC_REQUESTS)} music request(s) from DB.")
+    except Exception as e:
+        print(f"[startup] Failed to load music requests: {e}")
 
     state = {
         "decks": DECKS,
@@ -360,7 +367,7 @@ async def get_company_logo(request: Request = None):
     from fastapi.responses import Response
     import base64
     try:
-        branding = await asyncio.get_event_loop().run_in_executor(None, db.get_branding)
+        branding = await asyncio.get_running_loop().run_in_executor(None, db.get_branding)
         logo_data = branding.get("logo_data")
         logo_mime = branding.get("logo_mime") or "image/png"
         if not logo_data:
@@ -402,7 +409,7 @@ async def upload_company_logo(
 
     # 1. Save to DB (primary storage — survives volume wipes)
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, db.save_branding, None, b64_data, mime, len(content)
         )
         print(f"[branding] Logo saved to DB: {file.filename} ({len(content)} bytes, {mime})")
@@ -418,14 +425,14 @@ async def upload_company_logo(
             old = BRANDING_DIR / f"company_logo{ext}"
             if old.exists() and old != dest:
                 old.unlink(missing_ok=True)
-        await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+        await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
     except Exception as e:
         print(f"[branding] Disk write failed (non-fatal): {e}")
 
     # 3. Update settings flag so frontend knows logo exists
     SETTINGS["company_logo"] = f"company_logo{suffix}"
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, db.save_settings, {"company_logo": f"company_logo{suffix}"}
         )
     except Exception as e:
@@ -440,7 +447,7 @@ async def delete_company_logo(_user=Depends(verify_token)):
     """Delete the company logo from DB and disk."""
     # 1. Clear from DB
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.clear_branding_logo)
+        await asyncio.get_running_loop().run_in_executor(None, db.clear_branding_logo)
     except Exception as e:
         print(f"[DB] Failed to clear branding logo: {e}")
     # 2. Clear from disk
@@ -451,7 +458,7 @@ async def delete_company_logo(_user=Depends(verify_token)):
     # 3. Clear setting
     SETTINGS["company_logo"] = None
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, db.save_settings, {"company_logo": None}
         )
     except Exception as e:
@@ -486,7 +493,7 @@ def jingle_status():
 async def list_chimes(_user=Depends(verify_token)):
     """Return all chimes from the library (DB-backed)."""
     try:
-        chimes = await asyncio.get_event_loop().run_in_executor(None, db.list_chimes)
+        chimes = await asyncio.get_running_loop().run_in_executor(None, db.list_chimes)
         return {"chimes": chimes}
     except Exception as e:
         print(f"[chimes] list failed: {e}")
@@ -507,13 +514,13 @@ async def upload_jingle(
     safe_name = f"global_jingle_{jingle_type}{Path(file.filename).suffix.lower()}"
     dest = CHIMES_DIR / safe_name
     content = await file.read()
-    await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+    await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
 
     # 1. Update the active-jingle setting (used by the player at runtime)
     settings_key = f"jingle_{jingle_type}"
     SETTINGS[settings_key] = safe_name
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_settings, {settings_key: safe_name})
+        await asyncio.get_running_loop().run_in_executor(None, db.save_settings, {settings_key: safe_name})
     except Exception as e:
         print(f"[DB] Failed to save jingle setting: {e}")
 
@@ -528,7 +535,7 @@ async def upload_jingle(
         "type":     jingle_type,
     }
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_chime, chime_row)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_chime, chime_row)
         print(f"[chimes] Saved chime to DB: {chime_row}")
     except Exception as e:
         print(f"[DB] Failed to save chime row: {e}")
@@ -553,13 +560,13 @@ async def delete_jingle(jingle_type: str, _user=Depends(verify_token)):
             path.unlink()
     SETTINGS[settings_key] = None
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_settings, {settings_key: None})
+        await asyncio.get_running_loop().run_in_executor(None, db.save_settings, {settings_key: None})
     except Exception as e:
         print(f"[DB] Failed to clear jingle setting: {e}")
     # Remove from chimes library table too
     chime_id = f"jingle_{jingle_type}"
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.delete_chime, chime_id)
+        await asyncio.get_running_loop().run_in_executor(None, db.delete_chime, chime_id)
     except Exception as e:
         print(f"[DB] Failed to delete chime row: {e}")
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
@@ -904,7 +911,7 @@ async def upload_track(file: UploadFile = File(...), _user=Depends(require_permi
     safe_name = Path(file.filename).name
     dest = MEDIA_DIR / safe_name
     content = await file.read()
-    await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+    await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
     item = LibraryItem(filename=safe_name, size=dest.stat().st_size)
     await manager.broadcast({"type": "LIBRARY_UPDATED", "action": "added", "item": item.model_dump()})
     return {"status": "ok", "filename": safe_name, "size": dest.stat().st_size}
@@ -923,7 +930,10 @@ async def delete_track(filename: str, _user=Depends(require_permission("can_libr
 
 @app.get("/api/library/file/{filename}")
 async def serve_file(filename: str):
-    path = MEDIA_DIR / filename
+    # FIX (Bug 3): path traversal guard
+    path = (MEDIA_DIR / filename).resolve()
+    if MEDIA_DIR.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not path.exists(): raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(str(path), media_type="audio/mpeg")
 
@@ -936,7 +946,7 @@ async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(requir
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["name"] = req.name
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_deck_name, deck_id, req.name)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_deck_name, deck_id, req.name)
     except Exception as e:
         print(f"[DB] Failed to persist deck name: {e}")
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
@@ -1388,7 +1398,7 @@ async def create_tts_announcement(req: TTSRequest, _user=Depends(require_permiss
            "scheduled_at": getattr(req, 'scheduled_at', None),
            "created_at": datetime.now().isoformat()}
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.create_announcement, ann)
+        await asyncio.get_running_loop().run_in_executor(None, db.create_announcement, ann)
     except Exception as e:
         print(f"[DB] Failed to persist TTS announcement: {e}")
     ANNOUNCEMENTS.insert(0, ann)
@@ -1404,7 +1414,7 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
     safe_name = Path(file.filename).name
     dest = ANNOUNCEMENTS_DIR / safe_name
     content = await file.read()
-    await asyncio.get_event_loop().run_in_executor(None, dest.write_bytes, content)
+    await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
     ann_id = str(uuid.uuid4())
     norm_targets = targets.split(",") if isinstance(targets, str) else list(targets)
     ann = {"id": ann_id, "name": name or safe_name, "type": "MP3", "filename": safe_name,
@@ -1412,7 +1422,7 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
            "status": "Scheduled" if scheduled_at else "Ready",
            "scheduled_at": scheduled_at, "created_at": datetime.now().isoformat()}
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.create_announcement, ann)
+        await asyncio.get_running_loop().run_in_executor(None, db.create_announcement, ann)
     except Exception as e:
         print(f"[DB] Failed to persist MP3 announcement: {e}")
     ANNOUNCEMENTS.insert(0, ann)
@@ -1430,7 +1440,7 @@ async def play_announcement(ann_id: str, _user=Depends(require_permission("can_a
     deck_ids = ["a","b","c","d","e","f"] if "ALL" in ann.get("targets",["ALL"]) else [t.lower() for t in ann.get("targets",[])]
     asyncio.create_task(fade_and_play_announcement(deck_ids, filepath))
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
+        await asyncio.get_running_loop().run_in_executor(None, db.update_announcement_status, ann_id, "Played")
     except Exception: pass
     await manager.broadcast({"type": "ANNOUNCEMENT_PLAY", "announcement": ann})
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
@@ -1473,7 +1483,7 @@ async def play_announcement_sync(ann_id: str, _user=Depends(require_permission("
     asyncio.create_task(_sync_sequence())
 
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, db.update_announcement_status, ann_id, "Played"
         )
     except Exception:
@@ -1498,7 +1508,7 @@ async def update_announcement(ann_id: str, req: AnnouncementUpdateRequest, _user
     if req.last_played_at is not None: ann["last_played_at"] = req.last_played_at; updates["last_played_at"] = req.last_played_at
     if updates:
         try:
-            await asyncio.get_event_loop().run_in_executor(None, db.update_announcement, ann_id, updates)
+            await asyncio.get_running_loop().run_in_executor(None, db.update_announcement, ann_id, updates)
         except Exception: pass
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok", "announcement": ann}
@@ -1509,7 +1519,7 @@ async def delete_announcement(ann_id: str, _user=Depends(require_permission("can
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann: raise HTTPException(status_code=404, detail="Not found")
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.delete_announcement, ann_id)
+        await asyncio.get_running_loop().run_in_executor(None, db.delete_announcement, ann_id)
     except Exception: pass
     ANNOUNCEMENTS = [a for a in ANNOUNCEMENTS if a["id"] != ann_id]
     p = ANNOUNCEMENTS_DIR / ann["filename"]
@@ -1550,7 +1560,7 @@ async def create_playlist(req: PlaylistCreateRequest, _user=Depends(verify_token
     playlist = {"id": pid, "name": req.name, "tracks": req.tracks}
     PLAYLISTS[pid] = playlist
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_playlist, playlist)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_playlist, playlist)
     except Exception: pass
     await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
     return playlist
@@ -1560,7 +1570,7 @@ async def update_playlist(playlist_id: str, req: PlaylistCreateRequest, _user=De
     if playlist_id not in PLAYLISTS: raise HTTPException(status_code=404, detail="Playlist not found")
     PLAYLISTS[playlist_id].update({"name": req.name, "tracks": req.tracks})
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_playlist, PLAYLISTS[playlist_id])
+        await asyncio.get_running_loop().run_in_executor(None, db.save_playlist, PLAYLISTS[playlist_id])
     except Exception: pass
     await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
     return PLAYLISTS[playlist_id]
@@ -1570,7 +1580,7 @@ async def delete_playlist(playlist_id: str, _user=Depends(verify_token)):
     if playlist_id not in PLAYLISTS: raise HTTPException(status_code=404, detail="Playlist not found")
     del PLAYLISTS[playlist_id]
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.delete_playlist, playlist_id)
+        await asyncio.get_running_loop().run_in_executor(None, db.delete_playlist, playlist_id)
     except Exception: pass
     await manager.broadcast({"type": "PLAYLISTS_UPDATED", "playlists": list(PLAYLISTS.values())})
     return {"status": "ok"}
@@ -1756,7 +1766,7 @@ def get_settings(): return SETTINGS
 async def update_settings(req: SettingUpdateRequest, _user=Depends(require_admin)):
     SETTINGS.update(req.value)
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_settings, req.value)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_settings, req.value)
     except Exception as e:
         print(f"[DB] Failed to persist settings: {e}")
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
@@ -1772,7 +1782,7 @@ async def reset_mixer_schedule(schedule_id: str, _user=Depends(require_permissio
     if not rs: raise HTTPException(status_code=404, detail="Schedule not found")
     rs["last_run_date"] = None
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.update_recurring_mixer_last_run, schedule_id, None)
+        await asyncio.get_running_loop().run_in_executor(None, db.update_recurring_mixer_last_run, schedule_id, None)
     except Exception: pass
     return {"status": "ok"}
 
@@ -1782,7 +1792,7 @@ async def reset_recurring_schedule(schedule_id: str, _user=Depends(require_permi
     if not rs: raise HTTPException(status_code=404, detail="Schedule not found")
     rs["last_run_date"] = None
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.update_recurring_last_run, schedule_id, None)
+        await asyncio.get_running_loop().run_in_executor(None, db.update_recurring_last_run, schedule_id, None)
     except Exception: pass
     return {"status": "ok"}
 
@@ -1809,7 +1819,7 @@ async def test_db_connection(req: SettingUpdateRequest, _user=Depends(require_ad
             conn.close()
             from migrate import run_migrations_local
             db_url = f"postgresql://{os.getenv('POSTGRES_USER','coco')}:{os.getenv('POSTGRES_PASSWORD','coco_secret')}@{os.getenv('POSTGRES_HOST','db')}:5432/{os.getenv('POSTGRES_DB','cocostation')}"
-            await asyncio.get_event_loop().run_in_executor(None, run_migrations_local, db_url)
+            await asyncio.get_running_loop().run_in_executor(None, run_migrations_local, db_url)
             return {"status": "ok", "mode": "local", "migrations": "applied"}
         except Exception as e: raise HTTPException(status_code=503, detail=f"Local DB unreachable: {e}")
     else:
@@ -1822,7 +1832,7 @@ async def test_db_connection(req: SettingUpdateRequest, _user=Depends(require_ad
                 r = await c.get(f"{supabase_url}/rest/v1/", headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"})
             if r.status_code >= 500: raise HTTPException(status_code=503, detail=f"Supabase returned {r.status_code}")
             from migrate import run_migrations_cloud
-            ran = await asyncio.get_event_loop().run_in_executor(None, run_migrations_cloud, supabase_url, supabase_key)
+            ran = await asyncio.get_running_loop().run_in_executor(None, run_migrations_cloud, supabase_url, supabase_key)
             return {"status": "ok", "mode": "cloud", "migrations_applied": ran}
         except HTTPException: raise
         except Exception as e: raise HTTPException(status_code=503, detail=f"Supabase unreachable: {e}")
@@ -1840,7 +1850,7 @@ async def create_music_schedule(req: MusicScheduleCreateRequest, _user=Depends(r
                 "loop": req.loop, "status": "Scheduled", "created_at": datetime.now().isoformat()}
     MUSIC_SCHEDULES.append(schedule); MUSIC_SCHEDULES.sort(key=lambda x: x["scheduled_at"])
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.create_music_schedule, schedule)
+        await asyncio.get_running_loop().run_in_executor(None, db.create_music_schedule, schedule)
     except Exception: pass
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
     return schedule
@@ -1850,7 +1860,7 @@ async def delete_music_schedule(schedule_id: str, _user=Depends(require_permissi
     global MUSIC_SCHEDULES
     MUSIC_SCHEDULES = [x for x in MUSIC_SCHEDULES if x["id"] != schedule_id]
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.delete_music_schedule, schedule_id)
+        await asyncio.get_running_loop().run_in_executor(None, db.delete_music_schedule, schedule_id)
     except Exception: pass
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
     return {"status": "ok"}
@@ -1862,7 +1872,7 @@ async def trigger_music_schedule_now(schedule_id: str, _user=Depends(require_per
     s["status"] = "Played"
     asyncio.create_task(_trigger_music_schedule(s))
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.update_music_schedule_status, schedule_id, "Played")
+        await asyncio.get_running_loop().run_in_executor(None, db.update_music_schedule_status, schedule_id, "Played")
     except Exception: pass
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": MUSIC_SCHEDULES})
     return {"status": "ok"}
@@ -1882,7 +1892,7 @@ async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=D
     RECURRING_SCHEDULES.append(schedule)
     register_recurring_job(schedule)
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, schedule)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_recurring_schedule, schedule)
     except Exception: pass
     await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
     return schedule
@@ -1899,7 +1909,7 @@ async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCrea
     RECURRING_SCHEDULES[idx] = updated
     register_recurring_job(updated)
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_schedule, updated)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_recurring_schedule, updated)
     except Exception: pass
     await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
     return updated
@@ -1910,7 +1920,7 @@ async def delete_recurring_schedule(schedule_id: str, _user=Depends(verify_token
     RECURRING_SCHEDULES = [x for x in RECURRING_SCHEDULES if x["id"] != schedule_id]
     unregister_job(f"recurring_{schedule_id}")
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.delete_recurring_schedule, schedule_id)
+        await asyncio.get_running_loop().run_in_executor(None, db.delete_recurring_schedule, schedule_id)
     except Exception: pass
     await manager.broadcast({"type": "RECURRING_SCHEDULES_UPDATED", "schedules": RECURRING_SCHEDULES})
     return {"status": "ok"}
@@ -1940,7 +1950,7 @@ async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateReque
     RECURRING_MIXER_SCHEDULES.append(schedule)
     register_mixer_job(schedule)
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, schedule)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_recurring_mixer_schedule, schedule)
     except Exception: pass
     await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
     return schedule
@@ -1958,7 +1968,7 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
     RECURRING_MIXER_SCHEDULES[idx] = updated
     register_mixer_job(updated)
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.save_recurring_mixer_schedule, updated)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_recurring_mixer_schedule, updated)
     except Exception: pass
     await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
     return updated
@@ -1969,7 +1979,7 @@ async def delete_recurring_mixer_schedule(schedule_id: str, _user=Depends(verify
     RECURRING_MIXER_SCHEDULES = [x for x in RECURRING_MIXER_SCHEDULES if x["id"] != schedule_id]
     unregister_job(f"mixer_{schedule_id}")
     try:
-        await asyncio.get_event_loop().run_in_executor(None, db.delete_recurring_mixer_schedule, schedule_id)
+        await asyncio.get_running_loop().run_in_executor(None, db.delete_recurring_mixer_schedule, schedule_id)
     except Exception: pass
     await manager.broadcast({"type": "RECURRING_MIXER_SCHEDULES_UPDATED", "schedules": RECURRING_MIXER_SCHEDULES})
     return {"status": "ok"}
@@ -2011,6 +2021,12 @@ async def submit_music_request(req: MusicRequestSubmit):
                  "requester_photo": req.requester_photo, "track": req.track, "message": req.message,
                  "target_deck": req.target_deck, "status": "pending", "created_at": datetime.now().isoformat()}
     MUSIC_REQUESTS.insert(0, music_req)
+    # FIX (Bug 9): persist new request to DB
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, db.save_music_request, music_req)
+    except Exception as e:
+        print(f"[requests] Failed to persist music request: {e}")
     await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
     return {"status": "ok", "request": music_req}
 
@@ -2041,6 +2057,12 @@ async def dismiss_music_request(request_id: str, _user=Depends(require_permissio
     req = next((r for r in MUSIC_REQUESTS if r["id"] == request_id), None)
     if req: req["status"] = "dismissed"
     MUSIC_REQUESTS = [r for r in MUSIC_REQUESTS if r["status"] in ("pending", "accepted")]
+    # FIX (Bug 9): remove dismissed request from DB
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, db.delete_music_request, request_id)
+    except Exception as e:
+        print(f"[requests] Failed to delete music request: {e}")
     await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
     return {"status": "ok"}
 
@@ -2048,6 +2070,12 @@ async def dismiss_music_request(request_id: str, _user=Depends(require_permissio
 async def clear_all_requests(_user=Depends(require_permission("can_requests"))):
     global MUSIC_REQUESTS
     MUSIC_REQUESTS = []
+    # FIX (Bug 9): clear all requests from DB
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, db.clear_music_requests)
+    except Exception as e:
+        print(f"[requests] Failed to clear music requests: {e}")
     await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})
     return {"status": "ok"}
 
@@ -2069,7 +2097,7 @@ class UserUpdateRequest(_PydanticBase):
 
 @app.get("/api/users")
 async def list_users(_user: dict = Depends(verify_token)):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     users = await loop.run_in_executor(None, db.list_users)
     return [{k: v for k, v in u.items() if k != "password_hash"} for u in users]
 
@@ -2078,7 +2106,7 @@ async def create_user(req: UserCreateRequest, request: Request, _user: dict = De
     if not (_user.get("role") == "admin" or _user.get("is_super_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     all_roles = await loop.run_in_executor(None, db.list_roles)
     valid_names = {r["name"] for r in all_roles}
     role = req.role.strip().lower()
@@ -2125,7 +2153,7 @@ async def update_user(user_id: str, req: UserUpdateRequest, request: Request, _u
     if not is_super and not is_admin and (req.role is not None or req.enabled is not None):
         raise HTTPException(status_code=403, detail="Only admins can change role or enabled status")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     if req.role is not None:
         all_roles = await loop.run_in_executor(None, db.list_roles)
         valid_names = {r["name"] for r in all_roles}
@@ -2159,7 +2187,7 @@ async def delete_user(user_id: str, request: Request, _user: dict = Depends(veri
         raise HTTPException(status_code=403, detail="Admin access required")
     if _user.get("sub") == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, db.delete_user, user_id)
     except Exception as e:
@@ -2182,7 +2210,7 @@ class PermissionsRequest(_PydanticBase):
 
 @app.get("/api/users/{user_id}/permissions")
 async def get_user_permissions(user_id: str, _user: dict = Depends(verify_token)):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, db.get_permissions, user_id)
 
 @app.put("/api/users/{user_id}/permissions")
@@ -2194,7 +2222,7 @@ async def save_user_permissions(user_id: str, req: PermissionsRequest, request: 
     if perms["deck_control"]   is None: perms["deck_control"]   = DEFAULT_DECK_CONTROL
     if perms["deck_actions"]   is None: perms["deck_actions"]   = DEFAULT_DECK_ACTIONS
     if perms["playlist_perms"] is None: perms["playlist_perms"] = DEFAULT_PLAYLIST_PERMS
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, db.save_permissions, user_id, perms)
     _audit(request, _user, "user.permissions", {"target_id": user_id, "decks": req.allowed_decks})
     return {"status": "ok"}
@@ -2211,5 +2239,5 @@ async def get_audit_logs(
     """Admins see all logs; operators only see their own."""
     if _user.get("role") != "admin" and not _user.get("is_super_admin"):
         user_id = _user.get("sub")
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, db.get_logs, limit, user_id, offset)

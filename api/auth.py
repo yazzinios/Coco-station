@@ -138,7 +138,7 @@ def require_permission(perm: str):
         try:
             from db_client import db
             import asyncio
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             perms = await loop.run_in_executor(None, db.get_permissions, user["sub"])
             granted = (perms.get("deck_actions") or []) + (perms.get("playlist_perms") or [])
             if perm not in granted:
@@ -168,7 +168,7 @@ def require_deck_access(level: str = "view"):
         try:
             from db_client import db
             import asyncio
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             perms = await loop.run_in_executor(None, db.get_permissions, user["sub"])
             deck_control = perms.get("deck_control") or {}
             deck_cfg = deck_control.get(deck_id.lower(), {})

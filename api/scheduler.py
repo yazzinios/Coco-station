@@ -26,9 +26,17 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-# ── Timezone — all cron jobs fire in local park time ────────────────────────
+# ── Timezone — reads from shared state at job-build time ───────────────────
+# The module constant is kept as a fallback default only.
 TIMEZONE = "Africa/Casablanca"
 _TZ      = ZoneInfo(TIMEZONE)
+
+def _get_timezone() -> str:
+    """Return the configured timezone from settings, falling back to the module default.
+    Called when registering/rescheduling CronTrigger jobs so that an admin
+    change in the UI takes effect on the next register/reschedule call.
+    """
+    return _state.get("settings", {}).get("timezone") or TIMEZONE
 
 def _now() -> datetime:
     """Return the current local (Casablanca) time as a naive datetime.
@@ -266,18 +274,9 @@ async def _trigger_music_schedule(s: dict) -> None:
 #  JINGLE HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def _get_audio_duration(filepath: Path) -> float:
-    import json
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(filepath),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await proc.communicate()
-        data = json.loads(stdout)
-        return float(data["format"]["duration"])
-    except Exception:
-        return 2.5
+# FIX (Bug 12): import shared get_audio_duration from announcement_engine
+# instead of duplicating the implementation here.
+from announcement_engine import get_audio_duration as _get_audio_duration
 
 
 async def _play_library_track_on_deck(deck_id: str, filename: str) -> None:
@@ -628,11 +627,12 @@ async def _ap_heartbeat() -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _make_cron_trigger(hour: int, minute: int, active_days: list) -> CronTrigger:
+    tz = _get_timezone()
     return CronTrigger(
         day_of_week=",".join(str(d) for d in active_days),
         hour=hour,
         minute=minute,
-        timezone=TIMEZONE,
+        timezone=tz,
     )
 
 
@@ -757,7 +757,13 @@ def register_mixer_job(rs: dict) -> None:
 
 def unregister_job(job_id: str) -> None:
     """Remove a job (and its companion stop job) safely — ignores missing jobs."""
-    for jid in (job_id, f"mixer_stop_{job_id.replace('mixer_', '')}"):
+    # FIX (Bug 11): only derive the stop-job ID when job_id actually starts with "mixer_"
+    # to avoid orphaned stop jobs for non-mixer IDs (e.g. "recurring_abc123").
+    jobs_to_remove = [job_id]
+    if job_id.startswith("mixer_"):
+        stop_id = f"mixer_stop_{job_id[len('mixer_'):]}"
+        jobs_to_remove.append(stop_id)
+    for jid in jobs_to_remove:
         try:
             ap_scheduler.remove_job(jid)
             print(f"[apscheduler] Removed job '{jid}'")

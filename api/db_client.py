@@ -1537,4 +1537,128 @@ class DBClient:
                 self._put_conn(conn)
 
 
+    # ── Music Requests ─────────────────────────────────────────────────────────
+
+    def get_music_requests(self) -> list:
+        """Return all pending/accepted music requests, newest first."""
+        if self.mode == "cloud":
+            try:
+                res = self.supabase.table("music_requests").select("*") \
+                    .in_("status", ["pending", "accepted"]) \
+                    .order("created_at", desc=True).execute()
+                return res.data or []
+            except Exception as e:
+                print(f"[DB] get_music_requests (cloud) failed: {e}"); return []
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, requester_name, requester_email, requester_phone, "
+                        "requester_photo, track, message, target_deck, status, created_at::text "
+                        "FROM music_requests WHERE status IN ('pending','accepted') "
+                        "ORDER BY created_at DESC"
+                    )
+                    return [dict(r) for r in cur.fetchall()]
+            except Exception as e:
+                print(f"[DB] get_music_requests (local) failed: {e}"); return []
+            finally:
+                self._put_conn(conn)
+
+    def save_music_request(self, req: dict):
+        """Insert a new music request row."""
+        data = {
+            "id":              req["id"],
+            "requester_name":  req["requester_name"],
+            "requester_email": req.get("requester_email"),
+            "requester_phone": req.get("requester_phone"),
+            "requester_photo": req.get("requester_photo"),
+            "track":           req["track"],
+            "message":         req.get("message"),
+            "target_deck":     req.get("target_deck"),
+            "status":          req.get("status", "pending"),
+        }
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("music_requests").insert(data).execute()
+            except Exception as e:
+                print(f"[DB] save_music_request (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO music_requests
+                            (id, requester_name, requester_email, requester_phone,
+                             requester_photo, track, message, target_deck, status)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (data["id"], data["requester_name"], data["requester_email"],
+                         data["requester_phone"], data["requester_photo"], data["track"],
+                         data["message"], data["target_deck"], data["status"]),
+                    )
+            except Exception as e:
+                print(f"[DB] save_music_request (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def update_music_request_status(self, request_id: str, status: str):
+        """Update the status of a music request."""
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("music_requests").update({"status": status}).eq("id", request_id).execute()
+            except Exception as e:
+                print(f"[DB] update_music_request_status (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE music_requests SET status = %s WHERE id = %s", (status, request_id))
+            except Exception as e:
+                print(f"[DB] update_music_request_status (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def delete_music_request(self, request_id: str):
+        """Delete a music request by id."""
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("music_requests").delete().eq("id", request_id).execute()
+            except Exception as e:
+                print(f"[DB] delete_music_request (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM music_requests WHERE id = %s", (request_id,))
+            except Exception as e:
+                print(f"[DB] delete_music_request (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+    def clear_music_requests(self):
+        """Delete all music requests."""
+        if self.mode == "cloud":
+            try:
+                self.supabase.table("music_requests").delete().neq("id", "").execute()
+            except Exception as e:
+                print(f"[DB] clear_music_requests (cloud) failed: {e}")
+        else:
+            conn = None
+            try:
+                conn = self._get_conn()
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM music_requests")
+            except Exception as e:
+                print(f"[DB] clear_music_requests (local) failed: {e}")
+            finally:
+                self._put_conn(conn)
+
+
 db = DBClient()

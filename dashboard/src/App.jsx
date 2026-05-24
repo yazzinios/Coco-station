@@ -21,7 +21,7 @@ function AppHeader({ onToggleFullscreen, isFullscreen }) {
   const { wsConnected, currentUser, logout, settings, api } = useApp();
   const stationName = settings?.company_name || 'CocoStation';
   const logoUrl     = settings?.company_logo
-    ? `${(api?.baseUrl || '')}/api/settings/company/logo?t=${Math.floor(Date.now()/60000)}`
+    ? `${(api?.baseUrl || '')}/api/settings/company/logo?t=${Date.now()}`
     : null;
 
   // Sync browser tab title
