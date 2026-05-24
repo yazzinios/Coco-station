@@ -11,9 +11,8 @@ services:
       - "8888:8888"   # HLS
       - "8889:8889"   # WebRTC WHEP (HTTP signalling)
       - "8189:8189/udp" # WebRTC ICE UDP media
-    configs:
-      - source: mediamtx_config
-        target: /mediamtx.yml
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
 
   ffmpeg-mixer:
     build: ./ffmpeg-mixer
@@ -31,7 +30,6 @@ services:
       - MEDIAMTX_HOST=mediamtx
       - API_HOST=api
       - PYTHONUNBUFFERED=1
-    # Command is handled by entrypoint.sh in the Dockerfile
 
   api:
     build: ./api
@@ -44,9 +42,6 @@ services:
       - ./data/announcements:/app/data/announcements
       - ./data/chimes:/app/data/chimes
       - ./data/branding:/app/data/branding
-      # NOTE: ./api:/app removed — it shadowed the built image and broke rebuilds.
-      # For hot-reload dev, uncomment the line below AND run with the local compose:
-      # - ./api:/app
       - ./supabase/migrations:/app/supabase/migrations:ro
     environment:
       - TZ=Africa/Casablanca
@@ -59,6 +54,9 @@ services:
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY:-}
       - FFMPEG_HOST=ffmpeg-mixer
       - JWT_SECRET=${JWT_SECRET}
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://radio.cocopark.duckdns.org}
+      - WS_PING_INTERVAL=${WS_PING_INTERVAL:-30}
+      - WS_PING_TIMEOUT=${WS_PING_TIMEOUT:-20}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 5s
@@ -95,8 +93,8 @@ services:
       context: ./dashboard
       dockerfile: Dockerfile
       args:
-        - VITE_API_URL=http://localhost:8000
-        - VITE_WS_URL=ws://localhost:8000
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+        - VITE_WS_URL=${VITE_WS_URL:-ws://localhost:8000}
         - VITE_SUPABASE_URL=${SUPABASE_URL:-}
         - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
     container_name: cc_dashboard
@@ -108,7 +106,3 @@ services:
     depends_on:
       api:
         condition: service_healthy
-
-configs:
-  mediamtx_config:
-    file: ./mediamtx/mediamtx.yml
