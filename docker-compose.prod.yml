@@ -57,6 +57,7 @@ services:
       - POSTGRES_HOST=db
       - FFMPEG_HOST=ffmpeg-mixer
       - JWT_SECRET=${JWT_SECRET}
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://radio.cocopark.duckdns.org}
       # WebSocket keepalive — FastAPI/uvicorn sends a ping every 30s so nginx
       # never sees the connection as idle and drops it
       - WS_PING_INTERVAL=30
@@ -65,6 +66,7 @@ services:
       - cocostation-library:/app/data/library
       - cocostation-announcements:/app/data/announcements
       - cocostation-chimes:/app/data/chimes
+      - cocostation-branding:/app/data/branding
     depends_on:
       db:
         condition: service_healthy
@@ -128,3 +130,5 @@ volumes:
     name: cocostation-announcements
   cocostation-chimes:
     name: cocostation-chimes
+  cocostation-branding:
+    name: cocostation-branding
