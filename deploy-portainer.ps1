@@ -38,9 +38,9 @@ if (Test-Path $envFile) {
 
 # Prepare JSON payload
 $payload = @{
-    Name = $StackName
-    StackFileContent = $composeContent
-    Env = $envArray
+    name = $StackName
+    stackFileContent = $composeContent
+    env = $envArray
 } | ConvertTo-Json -Depth 10
 
 # API Request

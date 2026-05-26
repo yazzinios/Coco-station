@@ -31,11 +31,11 @@ if (Test-Path $envFile) {
 }
 
 $payload = @{
-    Name = $StackName
-    RepositoryURL = $RepoUrl
-    RepositoryReferenceName = "refs/heads/main"
-    ComposeFile = $ComposeFile
-    Env = $envArray
+    name = $StackName
+    repositoryURL = $RepoUrl
+    repositoryReferenceName = "refs/heads/main"
+    composeFile = $ComposeFile
+    env = $envArray
 } | ConvertTo-Json -Depth 10
 
 # Note: Using create/standalone/repository API allows Portainer to clone the github repo. 
