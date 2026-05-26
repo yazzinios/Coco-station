@@ -884,7 +884,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      currentUser, login, logout,
+      currentUser, login, logout, authFetch,
       decks, library, announcements, playlists, musicSchedules,
       recurringSchedules, recurringMixerSchedules, musicRequests,
       mic, wsConnected, settings, schedulerStatus, toast, api,
