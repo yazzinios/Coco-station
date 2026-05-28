@@ -208,12 +208,17 @@ async def _trigger_music_schedule(s: dict) -> None:
         current_vol = duck_pct
         print(f"[scheduler] Ducking active; starting {deck_id} at {duck_pct}%")
 
+    # FIX: snapshot is_playing BEFORE mutating deck state below.
+    # _play_on_deck used to read is_playing from the dict AFTER the update,
+    # so every "track" schedule saw is_playing=True and incorrectly crossfaded
+    # instead of doing a clean hard-play on an idle deck.
+    deck_was_playing = decks.get(deck_id, {}).get("is_playing", False)
+
     async def _play_on_deck(filepath: str, loop_: bool) -> None:
         try:
             async with httpx.AsyncClient(timeout=5) as c:
-                # Crossfade if deck is already playing, hard-play if starting fresh
-                deck_is_playing = decks.get(deck_id, {}).get("is_playing", False)
-                if deck_is_playing:
+                # Use the pre-mutation snapshot — not the live dict value
+                if deck_was_playing:
                     await c.post(f"{ffmpeg_url}/decks/{deck_id}/crossfade",
                                  json={"filepath": filepath, "loop": loop_})
                 else:

@@ -13,46 +13,44 @@ function Library({ size }) {
 }
 
 export default function StatisticsPage() {
-  const { authFetch } = useApp();
-  const [stats, setStats] = useState(null);
-  const [nowTs, setNowTs] = useState(0);
+  const { authFetch, decks } = useApp();
+  const [stats,     setStats]     = useState(null);
+  const [listeners, setListeners] = useState(null);
+  const [labels,    setLabels]    = useState({});
+  const [editingIp, setEditingIp] = useState(null);
+  const [editValue, setEditValue] = useState('');
+  const [nowTs,     setNowTs]     = useState(Date.now());
 
+  // Live uptime counter
   useEffect(() => {
-    const fetchStats = async () => {
+    const id = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Poll /api/stats every 10 s
+  useEffect(() => {
+    const fetch_ = async () => {
       try {
         const res = await authFetch('/api/stats');
         if (res.ok) setStats(await res.json());
-      } catch {
-        // Keep stale stats when fetch fails.
-      }
+      } catch {}
     };
-    fetchStats();
-    const poll = setInterval(fetchStats, 10000); // poll every 10s
-    return () => clearInterval(poll);
+    fetch_();
+    const id = setInterval(fetch_, 10000);
+    return () => clearInterval(id);
   }, []);
-
-  // Live uptime counter.
-  useEffect(() => {
-    const interval = setInterval(() => setNowTs(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const [listeners, setListeners]   = useState(null);
-  const [labels, setLabels]         = useState({});       // ip → friendly name
-  const [editingIp, setEditingIp]   = useState(null);     // ip currently being renamed
-  const [editValue, setEditValue]   = useState('');
 
   // Poll /api/listeners every 10 s
   useEffect(() => {
-    const fetchListeners = async () => {
+    const fetch_ = async () => {
       try {
         const res = await authFetch('/api/listeners');
         if (res.ok) setListeners(await res.json());
       } catch {}
     };
-    fetchListeners();
-    const poll = setInterval(fetchListeners, 10000);
-    return () => clearInterval(poll);
+    fetch_();
+    const id = setInterval(fetch_, 10000);
+    return () => clearInterval(id);
   }, []);
 
   // Load saved labels once
@@ -76,16 +74,31 @@ export default function StatisticsPage() {
     setEditingIp(null);
   };
 
+  // Active deck count: use live WS deck state for accuracy, fall back to stats
+  const activeDeckCount = useMemo(() => {
+    if (decks && Object.keys(decks).length > 0) {
+      return Object.values(decks).filter(d => d?.is_playing).length;
+    }
+    return stats?.playing_decks ?? 0;
+  }, [decks, stats]);
+
   // Flatten all active readers across all decks into a single list
   const activeReaders = useMemo(() => {
     if (!listeners?.paths) return [];
-    const DECK_COLORS = { 'deck-a': '#00d4ff', 'deck-b': '#26de81', 'deck-c': '#fd9644', 'deck-d': '#a55eea', 'deck-e': '#ff6b81', 'deck-f': '#45aaf2' };
+    const DECK_COLORS = {
+      'deck-a': '#00d4ff', 'deck-b': '#26de81', 'deck-c': '#fd9644',
+      'deck-d': '#a55eea', 'deck-e': '#ff6b81', 'deck-f': '#45aaf2',
+    };
     const rows = [];
     for (const [deckName, info] of Object.entries(listeners.paths)) {
       const color = DECK_COLORS[deckName] || '#aaa';
       for (const r of (info.readers || [])) {
         if (!r.ip) continue;
-        rows.push({ deck: deckName, color, ip: r.ip, addr: r.addr, protocol: r.protocol, label: labels[r.ip] || r.label || '' });
+        rows.push({
+          deck: deckName, color, ip: r.ip, addr: r.addr,
+          protocol: r.protocol,
+          label: labels[r.ip] || r.label || '',
+        });
       }
     }
     return rows;
@@ -94,12 +107,12 @@ export default function StatisticsPage() {
   const baseStartedAt = useMemo(() => {
     if (!stats?.uptime_seconds) return null;
     return nowTs - (stats.uptime_seconds * 1000);
-  }, [stats?.uptime_seconds, nowTs]);
+  }, [stats?.uptime_seconds]);   // intentionally omit nowTs — only recalc when uptime changes
 
-  const formatUptime = (base) => {
+  const formatUptime = () => {
     const total = baseStartedAt
       ? Math.max(0, Math.floor((nowTs - baseStartedAt) / 1000))
-      : (base || 0);
+      : (stats?.uptime_seconds || 0);
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
     const s = total % 60;
@@ -107,10 +120,10 @@ export default function StatisticsPage() {
   };
 
   const statCards = stats ? [
-    { label: 'Total Uptime',       value: formatUptime(stats.uptime_seconds), icon: <Clock size={22} />, color: '#00d4ff' },
-    { label: 'Tracks Played',      value: stats.tracks_played ?? 0,           icon: <Music size={22} />, color: '#26de81' },
-    { label: 'Active Decks',       value: `${stats.playing_decks ?? 0} / 6`,  icon: <Layers size={22} />, color: '#a55eea' },
-    { label: 'Library Tracks',     value: stats.library_count ?? 0,           icon: <Library size={22} />, color: '#fd9644' },
+    { label: 'Total Uptime',   value: formatUptime(),              icon: <Clock   size={22} />, color: '#00d4ff' },
+    { label: 'Tracks Played',  value: stats.tracks_played ?? 0,    icon: <Music   size={22} />, color: '#26de81' },
+    { label: 'Active Decks',   value: `${activeDeckCount} / 6`,    icon: <Layers  size={22} />, color: '#a55eea' },
+    { label: 'Library Tracks', value: stats.library_count ?? 0,    icon: <Library size={22} />, color: '#fd9644' },
   ] : [];
 
   return (
@@ -143,26 +156,25 @@ export default function StatisticsPage() {
 
       {/* Charts */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+
         {/* Live Listeners */}
         <div className="glass-panel" style={{ height: '280px', display: 'flex', flexDirection: 'column' }}>
           <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Radio size={16} /> Live Listeners</span>
           </h3>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
-            <div style={{ fontSize: '3.5rem', fontWeight: '800', color: 'var(--accent-blue)', fontVariantNumeric: 'tabular-nums' }}>{stats?.current_listeners ?? 0}</div>
+            <div style={{ fontSize: '3.5rem', fontWeight: '800', color: 'var(--accent-blue)', fontVariantNumeric: 'tabular-nums' }}>
+              {listeners?.total ?? stats?.current_listeners ?? 0}
+            </div>
             <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>listeners right now</div>
             <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'rgba(255,255,255,0.35)' }}>
               Peak today: <span style={{ color: 'var(--accent-blue)', fontWeight: '600' }}>{stats?.peak_listeners ?? 0}</span>
             </div>
-            {(stats?.current_listeners ?? 0) > 0 && (
-              <div style={{
-                marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.35rem',
-                fontSize: '0.72rem', color: '#2ed573',
-              }}>
+            {(listeners?.total ?? stats?.current_listeners ?? 0) > 0 && (
+              <div style={{ marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.72rem', color: '#2ed573' }}>
                 <span style={{
                   width: '7px', height: '7px', borderRadius: '50%',
-                  background: '#2ed573',
-                  boxShadow: '0 0 6px #2ed573',
+                  background: '#2ed573', boxShadow: '0 0 6px #2ed573',
                   animation: 'livePulse 1.4s ease-in-out infinite',
                   display: 'inline-block',
                 }} />
@@ -179,55 +191,90 @@ export default function StatisticsPage() {
           </h3>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '0.55rem' }}>
             {['a','b','c','d','e','f'].map(deck => {
-              const key     = `deck-${deck}`;
-              const count   = stats?.decks_summary?.[key] ?? 0;
-              const total   = stats?.current_listeners ?? 0;
-              const pct     = total > 0 ? Math.round((count / total) * 100) : 0;
-              const isLive  = count > 0;
-              const COLORS  = { a: '#00d4ff', b: '#26de81', c: '#fd9644', d: '#a55eea', e: '#ff6b81', f: '#45aaf2' };
-              const color   = COLORS[deck];
+              const key    = `deck-${deck}`;
+              // FIX: use listeners?.decks (from /api/listeners), not stats?.decks_summary
+              const count  = listeners?.decks?.[key] ?? 0;
+              const total  = listeners?.total ?? 0;
+              const pct    = total > 0 ? Math.round((count / total) * 100) : 0;
+              const isLive = count > 0;
+              const COLORS = { a: '#00d4ff', b: '#26de81', c: '#fd9644', d: '#a55eea', e: '#ff6b81', f: '#45aaf2' };
+              const color  = COLORS[deck];
               return (
                 <div key={deck} style={{ display: 'grid', gridTemplateColumns: '22px 1fr 36px', alignItems: 'center', gap: '0.6rem' }}>
-                  {/* Deck label */}
                   <span style={{
-                    fontSize: '0.72rem', fontWeight: '700', color: isLive ? color : 'rgba(255,255,255,0.2)',
+                    fontSize: '0.72rem', fontWeight: '700',
+                    color: isLive ? color : 'rgba(255,255,255,0.2)',
                     width: '20px', textAlign: 'center',
-                  }}>{ deck.toUpperCase() }</span>
-                  {/* Bar */}
+                  }}>{deck.toUpperCase()}</span>
                   <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
                     <div style={{
                       height: '100%', borderRadius: '4px',
                       width: `${pct}%`,
                       minWidth: isLive ? '8px' : '0',
-                      background: isLive
-                        ? `linear-gradient(to right, ${color}, ${color}88)`
-                        : 'transparent',
+                      background: isLive ? `linear-gradient(to right, ${color}, ${color}88)` : 'transparent',
                       transition: 'width 0.6s ease',
                     }} />
                   </div>
-                  {/* Count */}
                   <span style={{
                     fontSize: '0.72rem', fontWeight: '600', textAlign: 'right',
                     color: isLive ? color : 'rgba(255,255,255,0.2)',
                     fontVariantNumeric: 'tabular-nums',
-                  }}>{ count }</span>
+                  }}>{count}</span>
                 </div>
               );
             })}
             <div style={{ marginTop: '0.4rem', fontSize: '0.7rem', color: 'rgba(255,255,255,0.25)', textAlign: 'right' }}>
-              {stats?.current_listeners ?? 0} total
+              {listeners?.total ?? 0} total
             </div>
           </div>
         </div>
 
-        {/* Announcements */}
+        {/* Active Decks breakdown */}
         <div className="glass-panel" style={{ height: '280px', display: 'flex', flexDirection: 'column' }}>
           <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Layers size={16} /> Announcements</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Layers size={16} /> Active Decks</span>
           </h3>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
-            <div style={{ fontSize: '3.5rem', fontWeight: '800', color: '#a55eea' }}>{stats?.announcements_count ?? 0}</div>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>announcements in library</div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '0.5rem' }}>
+            {['a','b','c','d','e','f'].map(deck => {
+              const deckState = decks?.[deck];
+              const isPlaying = deckState?.is_playing;
+              const isPaused  = deckState?.is_paused;
+              const track     = deckState?.track?.replace(/\.[^.]+$/, '') || '—';
+              const COLORS    = { a: '#00d4ff', b: '#26de81', c: '#fd9644', d: '#a55eea', e: '#ff6b81', f: '#45aaf2' };
+              const color     = COLORS[deck];
+              return (
+                <div key={deck} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  {/* Status dot */}
+                  <div style={{
+                    width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
+                    background: isPlaying ? color : isPaused ? '#fd9644' : 'rgba(255,255,255,0.12)',
+                    boxShadow: isPlaying ? `0 0 6px ${color}` : 'none',
+                  }} />
+                  {/* Deck label */}
+                  <span style={{ fontSize: '0.72rem', fontWeight: '700', color: isPlaying ? color : 'rgba(255,255,255,0.3)', width: '20px' }}>
+                    {deck.toUpperCase()}
+                  </span>
+                  {/* Track name */}
+                  <span style={{
+                    flex: 1, fontSize: '0.72rem',
+                    color: isPlaying ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.2)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>{isPlaying || isPaused ? track : 'idle'}</span>
+                  {/* State badge */}
+                  <span style={{
+                    fontSize: '0.6rem', padding: '0.1rem 0.4rem', borderRadius: '8px',
+                    background: isPlaying ? `${color}18` : isPaused ? 'rgba(253,150,68,0.15)' : 'transparent',
+                    color: isPlaying ? color : isPaused ? '#fd9644' : 'rgba(255,255,255,0.15)',
+                    border: `1px solid ${isPlaying ? color + '33' : isPaused ? 'rgba(253,150,68,0.3)' : 'transparent'}`,
+                  }}>
+                    {isPlaying ? '▶ LIVE' : isPaused ? '⏸ PAUSED' : 'OFF'}
+                  </span>
+                </div>
+              );
+            })}
+            <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-secondary)', textAlign: 'right' }}>
+              {activeDeckCount} / 6 active
+            </div>
           </div>
         </div>
       </div>
@@ -236,7 +283,7 @@ export default function StatisticsPage() {
       <div className="glass-panel" style={{ marginTop: '1rem' }}>
         <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Wifi size={16} /> Live Listener Details
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>Click ✏️ to label an IP</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>Click ✏️ to name a listener</span>
         </h3>
         {activeReaders.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '2rem', color: 'rgba(255,255,255,0.25)', fontSize: '0.85rem' }}>
@@ -249,7 +296,7 @@ export default function StatisticsPage() {
                 <th style={{ padding: '0.4rem 0.6rem' }}>Deck</th>
                 <th style={{ padding: '0.4rem 0.6rem' }}>IP Address</th>
                 <th style={{ padding: '0.4rem 0.6rem' }}>Protocol</th>
-                <th style={{ padding: '0.4rem 0.6rem' }}>Label / Zone</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>Name / Zone</th>
               </tr>
             </thead>
             <tbody>
@@ -269,7 +316,7 @@ export default function StatisticsPage() {
                   <td style={{ padding: '0.55rem 0.6rem' }}>
                     <span style={{ color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', fontSize: '0.72rem' }}>{r.protocol}</span>
                   </td>
-                  {/* Label */}
+                  {/* Label / Name */}
                   <td style={{ padding: '0.55rem 0.6rem' }}>
                     {editingIp === r.ip ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -277,15 +324,19 @@ export default function StatisticsPage() {
                           autoFocus
                           value={editValue}
                           onChange={e => setEditValue(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') saveLabel(r.ip, editValue); if (e.key === 'Escape') setEditingIp(null); }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter')  saveLabel(r.ip, editValue);
+                            if (e.key === 'Escape') setEditingIp(null);
+                          }}
                           style={{
                             background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
-                            borderRadius: '6px', color: '#fff', padding: '0.2rem 0.5rem', fontSize: '0.8rem', width: '140px',
+                            borderRadius: '6px', color: '#fff', padding: '0.2rem 0.5rem',
+                            fontSize: '0.8rem', width: '140px',
                           }}
                           placeholder="e.g. Pool Area"
                         />
                         <button onClick={() => saveLabel(r.ip, editValue)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2ed573', padding: '2px' }}><Check size={14} /></button>
-                        <button onClick={() => setEditingIp(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: '2px' }}><X size={14} /></button>
+                        <button onClick={() => setEditingIp(null)}         style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: '2px' }}><X size={14} /></button>
                       </span>
                     ) : (
                       <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -295,7 +346,7 @@ export default function StatisticsPage() {
                         <button
                           onClick={() => { setEditingIp(r.ip); setEditValue(labels[r.ip] || ''); }}
                           style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.25)', padding: '2px', lineHeight: 1 }}
-                          title="Rename"
+                          title="Name this listener"
                         ><Edit2 size={12} /></button>
                       </span>
                     )}
@@ -310,29 +361,17 @@ export default function StatisticsPage() {
       {/* Status row */}
       {stats && (
         <div style={{ marginTop: '1.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <div style={{
-            padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem', fontWeight: '500',
-            background: 'rgba(46,213,115,0.1)', color: '#2ed573', border: '1px solid rgba(46,213,115,0.2)',
-          }}>
+          <div style={{ padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem', fontWeight: '500', background: 'rgba(46,213,115,0.1)', color: '#2ed573', border: '1px solid rgba(46,213,115,0.2)' }}>
             ● API Connected
           </div>
-          <div style={{
-            padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem',
-            background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--panel-border)',
-          }}>
+          <div style={{ padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--panel-border)' }}>
             Library: {stats.library_count} files
           </div>
-          <div style={{
-            padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem',
-            background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--panel-border)',
-          }}>
-            Uptime: {formatUptime(stats.uptime_seconds)}
+          <div style={{ padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--panel-border)' }}>
+            Uptime: {formatUptime()}
           </div>
         </div>
       )}
     </div>
   );
 }
-
-// Live-pulse keyframe injected once at module level via a style element in App.css
-// (moved out of component render to avoid duplicate injection across re-renders)

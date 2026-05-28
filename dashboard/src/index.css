@@ -173,6 +173,18 @@ body {
   display: none;
 }
 
+/* ── Vinyl spin animation for deck panels ───────────────── */
+@keyframes vinylSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Live listener pulse ────────────────────────────────── */
+@keyframes livePulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(1.3); }
+}
+
 /* ════════════════════════════════════════════════════════════
    RESPONSIVE BREAKPOINTS
    ════════════════════════════════════════════════════════════ */
