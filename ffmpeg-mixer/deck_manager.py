@@ -109,6 +109,47 @@ def _measure_ffmpeg_startup(filepath: str) -> float:
     return latency
 
 
+class EffectProcessor:
+    def __init__(self):
+        self.buffer = []
+        self.max_buffer_size = 30  # ~0.7 seconds of delay at CHUNK_DURATION
+
+    def process(self, chunk: bytes, effect_type: str) -> bytes:
+        if effect_type == "none" or not effect_type:
+            return chunk
+
+        self.buffer.append(chunk)
+        if len(self.buffer) > self.max_buffer_size:
+            self.buffer.pop(0)
+
+        if effect_type == "echo":
+            # Echo: Mix in a chunk from 15 steps ago (~350ms delay) at 40% volume
+            if len(self.buffer) >= 15:
+                delayed = self.buffer[-15]
+                try:
+                    delayed_scaled = audioop.mul(delayed, SAMPWIDTH, 0.4)
+                    return audioop.add(chunk, delayed_scaled, SAMPWIDTH)
+                except Exception:
+                    return chunk
+            return chunk
+
+        elif effect_type == "reverb":
+            # Reverb: Mix in multiple decaying delayed reflections
+            out = chunk
+            reflections = [(5, 0.3), (10, 0.2), (15, 0.1)]
+            for delay_steps, volume in reflections:
+                if len(self.buffer) >= delay_steps:
+                    delayed = self.buffer[-delay_steps]
+                    try:
+                        delayed_scaled = audioop.mul(delayed, SAMPWIDTH, volume)
+                        out = audioop.add(out, delayed_scaled, SAMPWIDTH)
+                    except Exception:
+                        pass
+            return out
+
+        return chunk
+
+
 class Deck:
     def __init__(self, name):
         self.name            = name
@@ -127,6 +168,12 @@ class Deck:
 
         self._mic_last_active = 0.0
         self._mic_holdoff     = 0.8
+
+        # Effects & Recording
+        self.effect_processor = EffectProcessor()
+        self.active_effect    = "none"
+        self.recording_proc   = None
+        self.recording_file   = None
 
         # ── Precise position tracking ──────────────────────────────
         # _play_started_at : monotonic clock when first PCM chunk was written
@@ -266,6 +313,23 @@ class Deck:
                 mixed = audioop.add(mixed, mic_chunk, SAMPWIDTH)
             except Exception:
                 pass
+
+            # Apply audio effects (reverb / echo)
+            try:
+                mixed = self.effect_processor.process(mixed, self.active_effect)
+            except Exception as e:
+                pass
+
+            # Write to recording process if active
+            rec_proc = None
+            with self.lock:
+                rec_proc = self.recording_proc
+            if rec_proc:
+                try:
+                    if rec_proc.stdin and rec_proc.poll() is None:
+                        rec_proc.stdin.write(mixed)
+                except Exception:
+                    pass
 
             try:
                 if self.stream_proc and self.stream_proc.stdin:
@@ -507,6 +571,54 @@ class Deck:
     def set_ducking(self, vol):
         with self.lock:
             self.duck_volume = max(0, min(100, vol))
+
+    def fade_volume(self, target_volume: int, duration: float = 3.0):
+        def _run():
+            start_vol = self.volume
+            steps = 30
+            delay = duration / steps
+            for i in range(steps + 1):
+                t = i / steps
+                current_vol = int(start_vol + (target_volume - start_vol) * t)
+                self.set_volume(current_vol)
+                time.sleep(delay)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def set_effect(self, effect_name: str):
+        with self.lock:
+            self.active_effect = effect_name
+
+    def record_start(self, filename: str):
+        self.record_stop()
+        os.makedirs("/recordings", exist_ok=True)
+        filepath = os.path.join("/recordings", filename)
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "-i", "pipe:0",
+            "-c:a", "libmp3lame", "-b:a", "192k", filepath
+        ]
+        with self.lock:
+            self.recording_file = filepath
+            self.recording_proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        print(f"[Deck {self.name}] Recording started → {filepath}")
+
+    def record_stop(self):
+        proc = None
+        with self.lock:
+            proc = self.recording_proc
+            self.recording_proc = None
+            self.recording_file = None
+        if proc:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            print(f"[Deck {self.name}] Recording stopped")
 
     def cancel_xfade(self):
         with self._xfade_lock:
@@ -865,6 +977,80 @@ def mic_off():
     for k in list(mic_sessions.keys()):
         mic_stream_stop(MicStreamStopRequest(session_id=k))
     return {"status": "ok"}
+
+
+# ── Request models for DJ ─────────────────────────────────────
+class RecordStartRequest(BaseModel):
+    filename: str
+
+class EffectRequest(BaseModel):
+    effect: str
+
+
+# ── DJ endpoints ──────────────────────────────────────────────
+@app.post("/dj/{deck_id}/switch_to_dj")
+def switch_to_dj(deck_id: str):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    rtmp_url = f"rtmp://{MEDIAMTX_HOST}:1935/dj-{deck_id}"
+    decks[deck_id].play(rtmp_url, loop=False)
+    return {"status": "ok", "deck": deck_id, "source": rtmp_url}
+
+@app.post("/dj/{deck_id}/switch_to_playlist")
+def switch_to_playlist(deck_id: str, req: PlayRequest):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].play(req.filepath, loop=req.loop, seek_seconds=req.seek_seconds)
+    return {"status": "ok", "deck": deck_id, "filepath": req.filepath}
+
+@app.post("/dj/{deck_id}/fade_out")
+def dj_fade_out(deck_id: str):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].fade_volume(0, 3.0)
+    return {"status": "ok", "deck": deck_id}
+
+@app.post("/dj/{deck_id}/fade_in")
+def dj_fade_in(deck_id: str):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].fade_volume(100, 3.0)
+    return {"status": "ok", "deck": deck_id}
+
+@app.post("/dj/{deck_id}/duck")
+def dj_duck(deck_id: str):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].set_volume(20)
+    return {"status": "ok", "deck": deck_id}
+
+@app.post("/dj/{deck_id}/unduck")
+def dj_unduck(deck_id: str):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].set_volume(100)
+    return {"status": "ok", "deck": deck_id}
+
+@app.post("/dj/{deck_id}/record_start")
+def dj_record_start(deck_id: str, req: RecordStartRequest):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].record_start(req.filename)
+    return {"status": "ok", "deck": deck_id, "filename": req.filename}
+
+@app.post("/dj/{deck_id}/record_stop")
+def dj_record_stop(deck_id: str):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].record_stop()
+    return {"status": "ok", "deck": deck_id}
+
+@app.post("/dj/{deck_id}/effect")
+def dj_effect(deck_id: str, req: EffectRequest):
+    if deck_id not in decks:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    decks[deck_id].set_effect(req.effect)
+    return {"status": "ok", "deck": deck_id, "effect": req.effect}
 
 
 # ── Health ────────────────────────────────────────────────────

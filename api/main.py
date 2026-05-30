@@ -51,6 +51,8 @@ from db_client import db
 from auth import verify_token, hash_password, require_permission, require_deck_access, require_admin
 from rbac import router as rbac_router
 from auth_routes import auth_router, set_auth_settings_ref
+from dj_routes import dj_router, init_dj_router
+from dj_redis import get_full_dj_state
 
 # ── Audit log helper ──────────────────────────────────────────
 def _audit(request: Request, user: dict, action: str, details: dict = None):
@@ -293,6 +295,16 @@ async def lifespan(app: FastAPI):
 
     set_auth_settings_ref(SETTINGS)
 
+    # ── Wire DJ router shared state ──────────────────────────────────────────
+    init_dj_router(
+        manager      = manager,
+        decks        = DECKS,
+        db           = db,
+        audit_fn     = _audit,
+        tts_fn       = generate_tts,
+        audio_dur_fn = get_audio_duration,
+    )
+
     # ── Background listener poller (MediaMTX every 10 s) ──────────────────────
     async def _poll_listeners():
         global CURRENT_LISTENERS, PEAK_LISTENERS
@@ -336,6 +348,9 @@ app.include_router(auth_router)
 
 # ── RBAC router (roles, extended user creation, permission catalogue) ────────
 app.include_router(rbac_router)
+
+# ── DJ Booth router (/api/dj/*) ──────────────────────────────────────────────
+app.include_router(dj_router)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -764,6 +779,12 @@ def debug_paths():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+    try:
+        dj_state = await get_full_dj_state()
+    except Exception as e:
+        print(f"[ws] Failed to get DJ state: {e}")
+        dj_state = {"dj_decks": {}, "dj_engine": "offline"}
+
     await websocket.send_json({
         "type": "FULL_STATE",
         "decks": list(DECKS.values()),
@@ -775,6 +796,7 @@ async def websocket_endpoint(websocket: WebSocket):
         "recurring_schedules": RECURRING_SCHEDULES,
         "recurring_mixer_schedules": RECURRING_MIXER_SCHEDULES,
         "music_requests": MUSIC_REQUESTS,
+        **dj_state,
     })
     try:
         while True: await websocket.receive_text()
