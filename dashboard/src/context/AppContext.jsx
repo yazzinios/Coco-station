@@ -363,7 +363,21 @@ export function AppProvider({ children }) {
       case 'DECK_STATE':
         if (msg.decks) {
           const m = {};
-          msg.decks.forEach(d => { m[d.id] = { is_loop: false, ...d }; });
+          // FIX: preserve existing playlist state when merging DECK_STATE.
+          // The old code only defaulted is_loop but not playlist fields, so a
+          // DECK_STATE broadcast that omits playlist_id/playlist_loop/playlist_index
+          // would silently reset them to undefined, breaking the playlist UI.
+          msg.decks.forEach(d => {
+            const prev = decks[d.id] || {};
+            m[d.id] = {
+              is_loop: false,
+              playlist_id: null,
+              playlist_index: null,
+              playlist_loop: false,
+              ...prev,   // keep existing state as base
+              ...d,      // server values win
+            };
+          });
           setDecks(m);
         }
         break;

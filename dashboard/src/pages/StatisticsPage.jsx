@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { BarChart2, Clock, Music, Radio, Layers, Wifi, Edit2, Check, X } from 'lucide-react';
+import { BarChart2, Clock, Music, Radio, Layers, Wifi, Edit2, Check, X, Broadcast } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 // Inline Library icon (not in lucide)
@@ -8,6 +8,17 @@ function Library({ size }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
       <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+    </svg>
+  );
+}
+
+// Inline Upload/Broadcast icon for RTMP publishers
+function UploadCloud({ size }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="16 16 12 12 8 16"/>
+      <line x1="12" y1="12" x2="12" y2="21"/>
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
     </svg>
   );
 }
@@ -74,7 +85,7 @@ export default function StatisticsPage() {
     setEditingIp(null);
   };
 
-  // Active deck count: use live WS deck state for accuracy, fall back to stats
+  // Active deck count
   const activeDeckCount = useMemo(() => {
     if (decks && Object.keys(decks).length > 0) {
       return Object.values(decks).filter(d => d?.is_playing).length;
@@ -82,7 +93,7 @@ export default function StatisticsPage() {
     return stats?.playing_decks ?? 0;
   }, [decks, stats]);
 
-  // Flatten all active readers across all decks into a single list
+  // Flatten all active RTSP readers across all decks
   const activeReaders = useMemo(() => {
     if (!listeners?.paths) return [];
     const DECK_COLORS = {
@@ -104,10 +115,19 @@ export default function StatisticsPage() {
     return rows;
   }, [listeners, labels]);
 
+  // RTMP publishers with live labels merged in
+  const activePublishers = useMemo(() => {
+    if (!listeners?.publishers) return [];
+    return listeners.publishers.map(p => ({
+      ...p,
+      label: labels[p.ip] || p.label || '',
+    }));
+  }, [listeners, labels]);
+
   const baseStartedAt = useMemo(() => {
     if (!stats?.uptime_seconds) return null;
     return nowTs - (stats.uptime_seconds * 1000);
-  }, [stats?.uptime_seconds]);   // intentionally omit nowTs — only recalc when uptime changes
+  }, [stats?.uptime_seconds]);
 
   const formatUptime = () => {
     const total = baseStartedAt
@@ -125,6 +145,45 @@ export default function StatisticsPage() {
     { label: 'Active Decks',   value: `${activeDeckCount} / 6`,    icon: <Layers  size={22} />, color: '#a55eea' },
     { label: 'Library Tracks', value: stats.library_count ?? 0,    icon: <Library size={22} />, color: '#fd9644' },
   ] : [];
+
+  // Shared inline edit cell renderer
+  const renderLabelCell = (ip, label) => {
+    if (editingIp === ip) {
+      return (
+        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <input
+            autoFocus
+            value={editValue}
+            onChange={e => setEditValue(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter')  saveLabel(ip, editValue);
+              if (e.key === 'Escape') setEditingIp(null);
+            }}
+            style={{
+              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: '6px', color: '#fff', padding: '0.2rem 0.5rem',
+              fontSize: '0.8rem', width: '140px',
+            }}
+            placeholder="e.g. Pool Area"
+          />
+          <button onClick={() => saveLabel(ip, editValue)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2ed573', padding: '2px' }}><Check size={14} /></button>
+          <button onClick={() => setEditingIp(null)}       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: '2px' }}><X size={14} /></button>
+        </span>
+      );
+    }
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <span style={{ color: label ? '#fff' : 'rgba(255,255,255,0.2)', fontStyle: label ? 'normal' : 'italic' }}>
+          {label || 'unlabelled'}
+        </span>
+        <button
+          onClick={() => { setEditingIp(ip); setEditValue(labels[ip] || ''); }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.25)', padding: '2px', lineHeight: 1 }}
+          title="Name this source"
+        ><Edit2 size={12} /></button>
+      </span>
+    );
+  };
 
   return (
     <div>
@@ -154,7 +213,7 @@ export default function StatisticsPage() {
         ))}
       </div>
 
-      {/* Charts */}
+      {/* Charts row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
 
         {/* Live Listeners */}
@@ -192,7 +251,6 @@ export default function StatisticsPage() {
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '0.55rem' }}>
             {['a','b','c','d','e','f'].map(deck => {
               const key    = `deck-${deck}`;
-              // FIX: use listeners?.decks (from /api/listeners), not stats?.decks_summary
               const count  = listeners?.decks?.[key] ?? 0;
               const total  = listeners?.total ?? 0;
               const pct    = total > 0 ? Math.round((count / total) * 100) : 0;
@@ -201,25 +259,16 @@ export default function StatisticsPage() {
               const color  = COLORS[deck];
               return (
                 <div key={deck} style={{ display: 'grid', gridTemplateColumns: '22px 1fr 36px', alignItems: 'center', gap: '0.6rem' }}>
-                  <span style={{
-                    fontSize: '0.72rem', fontWeight: '700',
-                    color: isLive ? color : 'rgba(255,255,255,0.2)',
-                    width: '20px', textAlign: 'center',
-                  }}>{deck.toUpperCase()}</span>
+                  <span style={{ fontSize: '0.72rem', fontWeight: '700', color: isLive ? color : 'rgba(255,255,255,0.2)', width: '20px', textAlign: 'center' }}>{deck.toUpperCase()}</span>
                   <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
                     <div style={{
                       height: '100%', borderRadius: '4px',
-                      width: `${pct}%`,
-                      minWidth: isLive ? '8px' : '0',
+                      width: `${pct}%`, minWidth: isLive ? '8px' : '0',
                       background: isLive ? `linear-gradient(to right, ${color}, ${color}88)` : 'transparent',
                       transition: 'width 0.6s ease',
                     }} />
                   </div>
-                  <span style={{
-                    fontSize: '0.72rem', fontWeight: '600', textAlign: 'right',
-                    color: isLive ? color : 'rgba(255,255,255,0.2)',
-                    fontVariantNumeric: 'tabular-nums',
-                  }}>{count}</span>
+                  <span style={{ fontSize: '0.72rem', fontWeight: '600', textAlign: 'right', color: isLive ? color : 'rgba(255,255,255,0.2)', fontVariantNumeric: 'tabular-nums' }}>{count}</span>
                 </div>
               );
             })}
@@ -244,23 +293,19 @@ export default function StatisticsPage() {
               const color     = COLORS[deck];
               return (
                 <div key={deck} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  {/* Status dot */}
                   <div style={{
                     width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
                     background: isPlaying ? color : isPaused ? '#fd9644' : 'rgba(255,255,255,0.12)',
                     boxShadow: isPlaying ? `0 0 6px ${color}` : 'none',
                   }} />
-                  {/* Deck label */}
                   <span style={{ fontSize: '0.72rem', fontWeight: '700', color: isPlaying ? color : 'rgba(255,255,255,0.3)', width: '20px' }}>
                     {deck.toUpperCase()}
                   </span>
-                  {/* Track name */}
                   <span style={{
                     flex: 1, fontSize: '0.72rem',
                     color: isPlaying ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.2)',
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>{isPlaying || isPaused ? track : 'idle'}</span>
-                  {/* State badge */}
                   <span style={{
                     fontSize: '0.6rem', padding: '0.1rem 0.4rem', borderRadius: '8px',
                     background: isPlaying ? `${color}18` : isPaused ? 'rgba(253,150,68,0.15)' : 'transparent',
@@ -279,10 +324,71 @@ export default function StatisticsPage() {
         </div>
       </div>
 
-      {/* Live Listener Details Table */}
+      {/* ── RTMP Publishers Table ── */}
+      <div className="glass-panel" style={{ marginTop: '1rem' }}>
+        <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <UploadCloud size={16} /> RTMP Publishers
+          <span style={{ marginLeft: '0.5rem', fontSize: '0.72rem', padding: '0.15rem 0.5rem', borderRadius: '10px', background: 'rgba(255,107,129,0.12)', color: '#ff6b81', border: '1px solid rgba(255,107,129,0.25)', fontWeight: '600' }}>
+            {activePublishers.length} source{activePublishers.length !== 1 ? 's' : ''}
+          </span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>Click ✏️ to name a source</span>
+        </h3>
+        {activePublishers.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2rem', color: 'rgba(255,255,255,0.25)', fontSize: '0.85rem' }}>
+            No active RTMP publishers right now
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+            <thead>
+              <tr style={{ color: 'rgba(255,255,255,0.35)', textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                <th style={{ padding: '0.4rem 0.6rem' }}>IP Address</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>Protocol</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>Path</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>Name / Label</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activePublishers.map((p, i) => (
+                <tr key={`pub-${p.ip}-${i}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  {/* IP */}
+                  <td style={{ padding: '0.55rem 0.6rem' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#ff6b81', boxShadow: '0 0 5px #ff6b81', display: 'inline-block', flexShrink: 0 }} />
+                      <span style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{p.addr || p.ip}</span>
+                    </span>
+                  </td>
+                  {/* Protocol */}
+                  <td style={{ padding: '0.55rem 0.6rem' }}>
+                    <span style={{
+                      display: 'inline-block', padding: '0.15rem 0.5rem', borderRadius: '10px',
+                      fontSize: '0.7rem', fontWeight: '700',
+                      background: 'rgba(255,107,129,0.12)', color: '#ff6b81',
+                      border: '1px solid rgba(255,107,129,0.3)',
+                      textTransform: 'uppercase',
+                    }}>{p.protocol || 'rtmp'}</span>
+                  </td>
+                  {/* Path */}
+                  <td style={{ padding: '0.55rem 0.6rem', fontFamily: 'monospace', fontSize: '0.76rem', color: 'rgba(255,255,255,0.4)' }}>
+                    {p.path || '—'}
+                  </td>
+                  {/* Label */}
+                  <td style={{ padding: '0.55rem 0.6rem' }}>
+                    {renderLabelCell(p.ip, p.label)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* ── Live Listener Details Table (RTSP) ── */}
       <div className="glass-panel" style={{ marginTop: '1rem' }}>
         <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Wifi size={16} /> Live Listener Details
+          <span style={{ marginLeft: '0.5rem', fontSize: '0.72rem', padding: '0.15rem 0.5rem', borderRadius: '10px', background: 'rgba(0,212,255,0.1)', color: '#00d4ff', border: '1px solid rgba(0,212,255,0.2)', fontWeight: '600' }}>
+            {activeReaders.length} listener{activeReaders.length !== 1 ? 's' : ''}
+          </span>
           <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>Click ✏️ to name a listener</span>
         </h3>
         {activeReaders.length === 0 ? (
@@ -316,40 +422,9 @@ export default function StatisticsPage() {
                   <td style={{ padding: '0.55rem 0.6rem' }}>
                     <span style={{ color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', fontSize: '0.72rem' }}>{r.protocol}</span>
                   </td>
-                  {/* Label / Name */}
+                  {/* Label */}
                   <td style={{ padding: '0.55rem 0.6rem' }}>
-                    {editingIp === r.ip ? (
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <input
-                          autoFocus
-                          value={editValue}
-                          onChange={e => setEditValue(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter')  saveLabel(r.ip, editValue);
-                            if (e.key === 'Escape') setEditingIp(null);
-                          }}
-                          style={{
-                            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
-                            borderRadius: '6px', color: '#fff', padding: '0.2rem 0.5rem',
-                            fontSize: '0.8rem', width: '140px',
-                          }}
-                          placeholder="e.g. Pool Area"
-                        />
-                        <button onClick={() => saveLabel(r.ip, editValue)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2ed573', padding: '2px' }}><Check size={14} /></button>
-                        <button onClick={() => setEditingIp(null)}         style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: '2px' }}><X size={14} /></button>
-                      </span>
-                    ) : (
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ color: r.label ? '#fff' : 'rgba(255,255,255,0.2)', fontStyle: r.label ? 'normal' : 'italic' }}>
-                          {r.label || 'unlabelled'}
-                        </span>
-                        <button
-                          onClick={() => { setEditingIp(r.ip); setEditValue(labels[r.ip] || ''); }}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.25)', padding: '2px', lineHeight: 1 }}
-                          title="Name this listener"
-                        ><Edit2 size={12} /></button>
-                      </span>
-                    )}
+                    {renderLabelCell(r.ip, r.label)}
                   </td>
                 </tr>
               ))}
@@ -370,6 +445,11 @@ export default function StatisticsPage() {
           <div style={{ padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--panel-border)' }}>
             Uptime: {formatUptime()}
           </div>
+          {activePublishers.length > 0 && (
+            <div style={{ padding: '0.4rem 0.9rem', borderRadius: '20px', fontSize: '0.78rem', background: 'rgba(255,107,129,0.08)', color: '#ff6b81', border: '1px solid rgba(255,107,129,0.2)' }}>
+              ↑ {activePublishers.length} RTMP publisher{activePublishers.length !== 1 ? 's' : ''} live
+            </div>
+          )}
         </div>
       )}
     </div>

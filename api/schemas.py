@@ -149,6 +149,13 @@ class RecurringMixerScheduleCreateRequest(BaseModel):
     multi_tracks: List[str] = []
     enabled: bool = True
 
+    def model_post_init(self, __context):
+        # FIX: coerce empty string to None so the scheduler correctly treats
+        # a cleared stop_time field as "no stop time" instead of saving "" to
+        # the DB, which would then appear as a set (truthy) stop_time on the card.
+        if self.stop_time == '':
+            self.stop_time = None
+
 # ── Multi-deck sync schemas ─────────────────────────────────────────────────
 
 class PlaylistBroadcastRequest(BaseModel):

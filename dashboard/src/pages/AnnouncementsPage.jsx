@@ -118,6 +118,8 @@ export default function AnnouncementsPage() {
           await api.updateAnnouncement(editingId, {
             name,
             targets: selectedDecks,
+            // FIX: send null when blank so the API clears scheduled_at instead
+            // of saving "" which renders a broken ⏰ date badge on the card.
             scheduled_at: scheduledAt || null,
           });
           toast.success('Announcement updated!');
@@ -473,7 +475,7 @@ export default function AnnouncementsPage() {
                           padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.7rem',
                         }}>{a.type}</span>
                         <span>→ {a.targets?.join(', ')}</span>
-                        {a.scheduled_at && (
+                        {a.scheduled_at && a.scheduled_at.trim() !== '' && (
                           <span style={{ color: '#00d4ff' }}>
                             ⏰ {new Date(a.scheduled_at).toLocaleString()}
                           </span>

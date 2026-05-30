@@ -248,10 +248,17 @@ export default function LibraryManager() {
     const isLoaded = deck?.track === track.filename;
     try {
       if (isLoaded) {
+        // Unload: stop first so ffmpeg releases the stream, then unload
         if (deck.is_playing || deck.is_paused) await api.stop(deckId);
         await api.unloadTrack(deckId);
         toast.info(`Deck ${deckId.toUpperCase()} unloaded`);
       } else {
+        // FIX: if the deck is already playing (e.g. started by scheduler),
+        // stop it first before loading the new track — otherwise ffmpeg
+        // keeps the old stream open and both tracks play simultaneously.
+        if (deck?.is_playing || deck?.is_paused) {
+          await api.stop(deckId);
+        }
         await api.loadTrack(deckId, track.filename);
         toast.success(`"${track.filename.replace(/\.[^.]+$/, '')}" → Deck ${deckId.toUpperCase()}`);
       }

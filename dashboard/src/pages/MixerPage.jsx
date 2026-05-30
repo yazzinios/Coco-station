@@ -8,6 +8,32 @@ const DECK_COLORS = { a: '#00d4ff', b: '#a55eea', c: '#26de81', d: '#fd9644', e:
 const DECK_IDS    = ['a', 'b', 'c', 'd', 'e', 'f'];
 const VISIBLE     = 4; // decks shown at once
 
+/* ── Mobile detection hook ─────────────────────────────── */
+function useIsMobile(breakpoint = 720) {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= breakpoint);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
+    const handler = (e) => setIsMobile(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [breakpoint]);
+  return isMobile;
+}
+
+/* ── Mobile vertical deck list ──────────────────────────── */
+function DeckVerticalList() {
+  const { canViewDeck } = useApp();
+  const visibleDecks = DECK_IDS.filter(d => canViewDeck(d));
+  return (
+    <div style={{ marginBottom: '1.5rem' }}>
+      <h2 style={{ fontSize: '1.2rem', fontWeight: '500', margin: '0 0 1rem 0' }}>Mixer Deck</h2>
+      <div className="deck-vertical-list">
+        {visibleDecks.map(id => <DeckPanel key={id} id={id} />)}
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════
    DECK CAROUSEL  — 4 visible, arrow scroll, keyboard, swipe
 ═══════════════════════════════════════════════════════════ */
@@ -59,6 +85,9 @@ function DeckCarousel() {
   };
 
   const shown = visibleDecks.slice(offset, offset + VISIBLE);
+
+  const isMobile = useIsMobile();
+  if (isMobile) return <DeckVerticalList />;
 
   return (
     <div style={{ marginBottom: '1.5rem' }}>

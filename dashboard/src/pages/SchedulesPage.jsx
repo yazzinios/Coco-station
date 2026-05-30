@@ -91,33 +91,27 @@ function MixerSchedules() {
   const [form, setForm]           = useState(MIXER_DEFAULT);
   const [excludeInput, setExcludeInput] = useState('');
 
-  // Auto-fill jingles silently from first library track — not exposed in UI
-  React.useEffect(() => {
-    if (library.length > 0) {
-      setForm(f => ({
-        ...f,
-        jingle_start: f.jingle_start || library[0].filename,
-        jingle_end:   f.jingle_end   || library[0].filename,
-      }));
-    }
-  }, [library]); // eslint-disable-line
+  // FIX: do NOT auto-fill jingles from library[0] on mount — this silently
+  // injects a jingle into every new schedule even if the user never set one.
+  // Jingles should only be set explicitly by the user via the UI.
+  // The useEffect below was removed to prevent this side-effect.
 
   const reset = () => {
-    setForm({
-      ...MIXER_DEFAULT,
-      jingle_start: library[0]?.filename || null,
-      jingle_end:   library[0]?.filename || null,
-    });
+    setForm({ ...MIXER_DEFAULT });
     setEditingId(null); setIsAdding(false); setExcludeInput('');
   };
 
   const startEdit = (s) => {
     setForm({
       ...MIXER_DEFAULT, ...s,
+      // FIX: normalize stop_time — null/undefined/"" all map to '' so the
+      // time input shows empty (no stop time) and we never send a stale
+      // empty string back to the API as if a stop time was set.
       stop_time: s.stop_time || '',
       deck_ids: s.deck_ids ?? (s.deck_id ? [s.deck_id] : ['a']),
-      jingle_start: s.jingle_start || library[0]?.filename || null,
-      jingle_end:   s.jingle_end   || library[0]?.filename || null,
+      // FIX: preserve null jingles — don't fall back to library[0]
+      jingle_start: s.jingle_start ?? null,
+      jingle_end:   s.jingle_end   ?? null,
     });
     setEditingId(s.id); setIsAdding(true);
   };
@@ -476,7 +470,7 @@ function MixerCard({ s, onEdit, onDelete, onToggle, onSkipToday }) {
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
               <Clock size={11} /> {s.start_time}
             </span>
-            {s.stop_time && (
+            {s.stop_time && s.stop_time.trim() !== '' && (
               <span style={{
                 display: 'flex', alignItems: 'center', gap: '0.25rem',
                 background: 'rgba(255,71,87,0.12)', color: '#ff6b7a',
@@ -559,23 +553,11 @@ function AnnSchedules() {
   const [form, setForm]           = useState(ANN_DEFAULT);
   const [excludeInput, setExcludeInput] = useState('');
 
-  // Auto-fill jingles silently from first library track — not exposed in UI
-  React.useEffect(() => {
-    if (library.length > 0) {
-      setForm(f => ({
-        ...f,
-        jingle_start: f.jingle_start || library[0].filename,
-        jingle_end:   f.jingle_end   || library[0].filename,
-      }));
-    }
-  }, [library]); // eslint-disable-line
+  // FIX: do NOT auto-fill jingles from library[0] — same silent injection bug
+  // as in MixerSchedules. Jingles must be set explicitly.
 
   const reset = () => {
-    setForm({
-      ...ANN_DEFAULT,
-      jingle_start: library[0]?.filename || null,
-      jingle_end:   library[0]?.filename || null,
-    });
+    setForm({ ...ANN_DEFAULT });
     setEditingId(null); setIsAdding(false); setExcludeInput('');
   };
 
@@ -584,8 +566,9 @@ function AnnSchedules() {
       ...ANN_DEFAULT, ...s,
       repeat_count:    s.repeat_count    ?? 1,
       repeat_interval: s.repeat_interval ?? 0,
-      jingle_start: s.jingle_start || library[0]?.filename || null,
-      jingle_end:   s.jingle_end   || library[0]?.filename || null,
+      // FIX: preserve null jingles — don't fall back to library[0]
+      jingle_start: s.jingle_start ?? null,
+      jingle_end:   s.jingle_end   ?? null,
     });
     setEditingId(s.id); setIsAdding(true);
   };

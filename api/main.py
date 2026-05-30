@@ -266,8 +266,6 @@ async def lifespan(app: FastAPI):
     )
 
     # --- JINGLE VALIDATION & AUTO-DISCOVERY ---
-    # 1. If DB has a filename but the file is missing on disk → clear the stale setting
-    # 2. If DB has no filename → scan disk in case a file was manually added
     for jt in ["intro", "outro"]:
         key = f"jingle_{jt}"
         stored = SETTINGS.get(key)
@@ -282,7 +280,6 @@ async def lifespan(app: FastAPI):
             else:
                 print(f"[startup] {jt} jingle OK: {stored}")
         else:
-            # Auto-discover only when no setting is stored
             for ext in [".mp3", ".wav", ".ogg"]:
                 candidate = f"global_jingle_{jt}{ext}"
                 if (CHIMES_DIR / candidate).exists():
@@ -342,12 +339,6 @@ app.include_router(rbac_router)
 
 
 # ═══════════════════════════════════════════════════════════
-#  NOTE: set_auth_settings_ref(SETTINGS) is called inside
-#  lifespan() after DB settings are loaded — see above.
-# ═══════════════════════════════════════════════════════════
-
-
-# ═══════════════════════════════════════════════════════════
 #  COMPANY BRANDING ENDPOINTS  (logo upload / serve / delete)
 # ═══════════════════════════════════════════════════════════
 
@@ -361,9 +352,6 @@ LOGO_MIME_MAP = {
 @app.get("/api/settings/company/logo")
 @app.head("/api/settings/company/logo")
 async def get_company_logo(request: Request = None):
-    """Serve the company logo. Reads base64 data-URI from DB and streams it as an image.
-    No auth required — used directly as <img src=...>.
-    """
     from fastapi.responses import Response
     import base64
     try:
@@ -372,10 +360,8 @@ async def get_company_logo(request: Request = None):
         logo_mime = branding.get("logo_mime") or "image/png"
         if not logo_data:
             raise HTTPException(status_code=404, detail="No company logo uploaded")
-        # HEAD request — return headers only, no body
         if request and request.method == "HEAD":
             return Response(status_code=200, media_type=logo_mime)
-        # logo_data is stored as  "data:image/png;base64,XXXX"
         if "," in logo_data:
             raw_b64 = logo_data.split(",", 1)[1]
         else:
@@ -394,10 +380,6 @@ async def upload_company_logo(
     file: UploadFile = File(...),
     _user=Depends(verify_token),
 ):
-    """Upload (replace) the company logo.
-    Stored as a base64 data-URI in the company_branding DB table.
-    Also written to data/branding/ on disk as a backup.
-    """
     import base64
     suffix = Path(file.filename).suffix.lower()
     if suffix not in ALLOWED_LOGO_EXTS:
@@ -407,7 +389,6 @@ async def upload_company_logo(
     mime     = LOGO_MIME_MAP.get(suffix, "image/png")
     b64_data = "data:" + mime + ";base64," + base64.b64encode(content).decode()
 
-    # 1. Save to DB (primary storage — survives volume wipes)
     try:
         await asyncio.get_running_loop().run_in_executor(
             None, db.save_branding, None, b64_data, mime, len(content)
@@ -417,10 +398,8 @@ async def upload_company_logo(
         print(f"[DB] Failed to save branding logo: {e}")
         raise HTTPException(status_code=500, detail="DB write failed")
 
-    # 2. Also write to disk as fallback
     try:
         dest = BRANDING_DIR / f"company_logo{suffix}"
-        # Remove any old logo with different extension
         for ext in ALLOWED_LOGO_EXTS:
             old = BRANDING_DIR / f"company_logo{ext}"
             if old.exists() and old != dest:
@@ -429,7 +408,6 @@ async def upload_company_logo(
     except Exception as e:
         print(f"[branding] Disk write failed (non-fatal): {e}")
 
-    # 3. Update settings flag so frontend knows logo exists
     SETTINGS["company_logo"] = f"company_logo{suffix}"
     try:
         await asyncio.get_running_loop().run_in_executor(
@@ -444,18 +422,14 @@ async def upload_company_logo(
 
 @app.delete("/api/settings/company/logo")
 async def delete_company_logo(_user=Depends(verify_token)):
-    """Delete the company logo from DB and disk."""
-    # 1. Clear from DB
     try:
         await asyncio.get_running_loop().run_in_executor(None, db.clear_branding_logo)
     except Exception as e:
         print(f"[DB] Failed to clear branding logo: {e}")
-    # 2. Clear from disk
     for ext in ALLOWED_LOGO_EXTS:
         p = BRANDING_DIR / f"company_logo{ext}"
         if p.exists():
             p.unlink(missing_ok=True)
-    # 3. Clear setting
     SETTINGS["company_logo"] = None
     try:
         await asyncio.get_running_loop().run_in_executor(
@@ -475,7 +449,6 @@ ALLOWED_JINGLE_EXTS = {".mp3", ".wav", ".ogg"}
 
 @app.get("/api/settings/jingles/status")
 def jingle_status():
-    """Return which jingle files are configured and present."""
     intro_file = SETTINGS.get("jingle_intro")
     outro_file = SETTINGS.get("jingle_outro")
     return {
@@ -491,7 +464,6 @@ def jingle_status():
 
 @app.get("/api/chimes")
 async def list_chimes(_user=Depends(verify_token)):
-    """Return all chimes from the library (DB-backed)."""
     try:
         chimes = await asyncio.get_running_loop().run_in_executor(None, db.list_chimes)
         return {"chimes": chimes}
@@ -505,7 +477,6 @@ async def upload_jingle(
     file: UploadFile = File(...),
     _user=Depends(verify_token),
 ):
-    """Upload intro or outro jingle. Saved to /data/chimes/ AND registered in the chimes library DB table."""
     if jingle_type not in ("intro", "outro"):
         raise HTTPException(status_code=400, detail="jingle_type must be 'intro' or 'outro'")
     if not any(file.filename.lower().endswith(e) for e in ALLOWED_JINGLE_EXTS):
@@ -516,7 +487,6 @@ async def upload_jingle(
     content = await file.read()
     await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
 
-    # 1. Update the active-jingle setting (used by the player at runtime)
     settings_key = f"jingle_{jingle_type}"
     SETTINGS[settings_key] = safe_name
     try:
@@ -524,8 +494,7 @@ async def upload_jingle(
     except Exception as e:
         print(f"[DB] Failed to save jingle setting: {e}")
 
-    # 2. Upsert into chimes library table so the file is tracked like a library track
-    chime_id = f"jingle_{jingle_type}"  # stable ID — one row per intro/outro slot
+    chime_id = f"jingle_{jingle_type}"
     chime_row = {
         "id":       chime_id,
         "name":     file.filename,
@@ -563,7 +532,6 @@ async def delete_jingle(jingle_type: str, _user=Depends(verify_token)):
         await asyncio.get_running_loop().run_in_executor(None, db.save_settings, {settings_key: None})
     except Exception as e:
         print(f"[DB] Failed to clear jingle setting: {e}")
-    # Remove from chimes library table too
     chime_id = f"jingle_{jingle_type}"
     try:
         await asyncio.get_running_loop().run_in_executor(None, db.delete_chime, chime_id)
@@ -578,15 +546,11 @@ async def delete_jingle(jingle_type: str, _user=Depends(verify_token)):
 # ═══════════════════════════════════════════════════════════
 
 async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
-    """Play the globally-configured intro or outro jingle on the given decks.
-    Blocks until the jingle finishes (so the caller's sequence stays in order).
-    """
     filename = SETTINGS.get(f"jingle_{jingle_type}")
     if not filename:
         return
     path = CHIMES_DIR / filename
     if not path.exists():
-        # Only log once to avoid spamming the console
         if not hasattr(_play_global_jingle, "_missing_logged"):
             _play_global_jingle._missing_logged = set()
         if filename not in _play_global_jingle._missing_logged:
@@ -594,10 +558,6 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
             _play_global_jingle._missing_logged.add(filename)
         return
 
-
-    # docker-compose mounts ./data/chimes → /chimes inside the mixer container
-    # The API container sees the file at data/chimes/<name> (for ffprobe)
-    # The mixer container must receive /chimes/<name>  (NOT /data/chimes/<name>)
     filepath = f"/chimes/{filename}"
     try:
         async with httpx.AsyncClient(timeout=5) as c:
@@ -614,7 +574,6 @@ async def _play_global_jingle(jingle_type: str, deck_ids: list) -> None:
                     print(f"[jingle] Connection error to mixer for deck {did}: {r}")
                 elif r.status_code != 200:
                     print(f"[jingle] Mixer error {r.status_code} for deck {did}: {r.text}")
-
 
         duration = await get_audio_duration(path)
         print(f"[jingle] {jingle_type} playing ({filename}, {duration}s)")
@@ -664,7 +623,6 @@ async def _fade_volumes(deck_ids: list, from_pct: int, to_pct: int, step_ms: int
             tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{vol}") for did in deck_ids]
             await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.sleep(delay)
-        # Final step ensures precision
         tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{to_pct}") for did in deck_ids]
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -711,9 +669,6 @@ async def _duck_acquire(source_type: str = "announcement", level: int = None) ->
     all_playing = [did for did in DECKS if DECKS[did].get("is_playing")]
 
     if _DUCK_REFCOUNT_REF[0] == 1:
-        # First acquirer: snapshot current volumes atomically before fading.
-        # Build the snapshot first, then replace in one step so a concurrent
-        # second acquire cannot observe a half-cleared dict.
         snapshot = {did: DECKS[did]["volume"] for did in all_playing}
         _DUCK_SAVED_VOLUMES.clear()
         _DUCK_SAVED_VOLUMES.update(snapshot)
@@ -724,9 +679,6 @@ async def _duck_acquire(source_type: str = "announcement", level: int = None) ->
                 DECKS[did]["volume"] = duck_pct
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     else:
-        # Subsequent acquirer: do NOT touch _DUCK_SAVED_VOLUMES — the first
-        # acquirer owns it and will restore from it on final release.
-        # Just ensure all playing decks are at the duck level right now.
         if all_playing:
             async with httpx.AsyncClient(timeout=3) as c:
                 await asyncio.gather(
@@ -745,7 +697,14 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
     if _DUCK_REFCOUNT_REF[0] == 0:
         saved = dict(_DUCK_SAVED_VOLUMES)
         _DUCK_SAVED_VOLUMES.clear()
-        duck_pct = _duck_level(SETTINGS.get("ducking_percent"), 5)
+        # FIX: use the correct duck level for the current source type.
+        # Previously always used ducking_percent even when the mic was the active source,
+        # causing the fade-up to start from the wrong volume level.
+        source_type = _DUCK_CURRENT_TYPE_REF[0]
+        if source_type == "mic":
+            duck_pct = _duck_level(SETTINGS.get("mic_ducking_percent"), 5)
+        else:
+            duck_pct = _duck_level(SETTINGS.get("ducking_percent"), 5)
         if restore_delay_ms > 0:
             await asyncio.sleep(restore_delay_ms / 1000.0)
         to_restore = [did for did in saved if DECKS.get(did, {}).get("is_playing")]
@@ -753,12 +712,6 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
             await _restore_volumes(to_restore, duck_pct, target_volumes=saved)
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
 
-
-# ═══════════════════════════════════════════════════════════
-#  TRIGGER STATE MACHINE
-#  STATE 2: duck → STATE 3: intro jingle → STATE 4: content
-#  STATE 5: outro jingle → STATE 6: restore
-# ═══════════════════════════════════════════════════════════
 
 async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int = None):
     await ann_engine.play_announcement_sequence(deck_ids, filepath)
@@ -783,10 +736,6 @@ def health():
 
 @app.get("/api/debug/paths")
 def debug_paths():
-    """Show exactly what files are visible inside the API container.
-    Use this to confirm volume mounts are working and files are present.
-    curl http://localhost:8000/api/debug/paths
-    """
     def _ls(p: Path):
         try:
             return [
@@ -930,7 +879,6 @@ async def delete_track(filename: str, _user=Depends(require_permission("can_libr
 
 @app.get("/api/library/file/{filename}")
 async def serve_file(filename: str):
-    # FIX (Bug 3): path traversal guard
     path = (MEDIA_DIR / filename).resolve()
     if MEDIA_DIR.resolve() not in path.parents:
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -987,7 +935,6 @@ async def play_deck(deck_id: str, request: Request, _user=Depends(require_permis
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             if is_playing:
-                # Deck already has audio running — crossfade into the new track
                 DECKS[deck_id]["is_crossfading"] = True
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/crossfade",
                              json={"filepath": filepath, "loop": loop})
@@ -1032,21 +979,17 @@ async def stop_deck(deck_id: str, _user=Depends(require_permission("deck.stop"))
 
 
 class DeckCloneRequest(_PydanticBase):
-    source_deck: str   # e.g. "a"
-    target_deck: str   # e.g. "b"
+    source_deck: str
+    target_deck: str
 
 
 @app.post("/api/decks/clone")
 async def clone_deck(req: DeckCloneRequest, request: Request,
                      _user=Depends(require_permission("deck.play"))):
-    """Start the same track on target_deck at the exact same playback position as source_deck.
-    Both decks end up playing in sync (within ~1 second of network + ffmpeg seek latency).
-    """
     src, tgt = req.source_deck.lower(), req.target_deck.lower()
     if src not in DECKS: raise HTTPException(status_code=404, detail=f"Source deck '{src}' not found")
     if tgt not in DECKS: raise HTTPException(status_code=404, detail=f"Target deck '{tgt}' not found")
     if src == tgt: raise HTTPException(status_code=400, detail="Source and target deck must be different")
-    # Manual deck control check (require_deck_access can't be used here — no deck_id path param)
     if not (_user.get("role") == "admin" or _user.get("is_super_admin")):
         from db_client import db as _db
         _perms = _db.get_permissions(_user["sub"])
@@ -1063,8 +1006,6 @@ async def clone_deck(req: DeckCloneRequest, request: Request,
     is_loop  = src_state.get("is_loop", False)
     volume   = src_state.get("volume", 100)
 
-    # Use sync_probe: atomically snapshots elapsed + measures ffmpeg startup latency
-    # This eliminates the old hardcoded +0.3s guess and compensates for real startup time.
     seek_to = 0.0
     try:
         async with httpx.AsyncClient(timeout=5) as c:
@@ -1083,7 +1024,6 @@ async def clone_deck(req: DeckCloneRequest, request: Request,
     except Exception as e:
         print(f"[clone] Could not get sync_probe from mixer for deck {src}: {e}")
 
-    # Load the track state on target deck
     DECKS[tgt]["track"]      = track
     DECKS[tgt]["is_playing"] = True
     DECKS[tgt]["is_paused"]  = False
@@ -1104,25 +1044,12 @@ async def clone_deck(req: DeckCloneRequest, request: Request,
     return {"status": "ok", "source": src, "target": tgt, "track": track, "seek_seconds": seek_to}
 
 
-# ═══════════════════════════════════════════════════════════
-#  OPTION 1 — Broadcast same playlist to multiple decks
-#  POST /api/decks/playlist/broadcast
-#
-#  Loads the same playlist on every requested deck and fires
-#  all play() calls in a single asyncio.gather so they start
-#  within the same event-loop tick (~0 ms apart).
-# ═══════════════════════════════════════════════════════════
-
 @app.post("/api/decks/playlist/broadcast")
 async def playlist_broadcast(
     req: PlaylistBroadcastRequest,
     request: Request,
     _user=Depends(require_permission("deck.load_playlist")),
 ):
-    """
-    Load the same playlist on all requested decks and start them
-    simultaneously (single asyncio.gather — no sequential delays).
-    """
     playlist = PLAYLISTS.get(req.playlist_id)
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -1138,7 +1065,6 @@ async def playlist_broadcast(
     first_track = tracks[0]
     filepath    = str(Path("/library") / first_track)
 
-    # ── 1. Stop any currently playing decks (sequentially is fine — cheap) ──
     async with httpx.AsyncClient(timeout=5) as c:
         stop_tasks = [
             c.post(f"{FFMPEG_URL}/decks/{did}/stop")
@@ -1148,7 +1074,6 @@ async def playlist_broadcast(
         if stop_tasks:
             await asyncio.gather(*stop_tasks, return_exceptions=True)
 
-    # ── 2. Update in-memory state for all decks ──────────────────────────────
     for did in deck_ids:
         DECK_PLAYLISTS[did] = {
             "playlist_id": req.playlist_id,
@@ -1166,7 +1091,6 @@ async def playlist_broadcast(
             "playlist_loop":  req.loop,
         })
 
-    # ── 3. Fire all play() calls in ONE gather — simultaneous start ──────────
     async with httpx.AsyncClient(timeout=5) as c:
         play_tasks = [
             c.post(
@@ -1197,28 +1121,12 @@ async def playlist_broadcast(
     }
 
 
-# ═══════════════════════════════════════════════════════════
-#  OPTION 2 — Sync all target decks to a running master deck
-#  POST /api/decks/sync-all
-#
-#  1. sync_probe the source deck  →  get elapsed + startup latency
-#  2. compute seek_to = elapsed + startup_latency
-#  3. fire all target play() calls in ONE gather with that seek
-#
-#  Result: every target deck jumps to the exact same audio
-#  position as the source and plays in lockstep.
-# ═══════════════════════════════════════════════════════════
-
 @app.post("/api/decks/sync-all")
 async def sync_all_to_source(
     req: SyncAllRequest,
     request: Request,
     _user=Depends(require_permission("deck.play")),
 ):
-    """
-    Sync all target decks to the exact playback position of the source deck.
-    Source must already be playing.  All targets start in parallel.
-    """
     src = req.source_deck.lower()
     if src not in DECKS:
         raise HTTPException(status_code=404, detail=f"Source deck '{src}' not found")
@@ -1233,7 +1141,6 @@ async def sync_all_to_source(
     is_loop = DECKS[src].get("is_loop", False)
     volume  = DECKS[src].get("volume", 100)
 
-    # ── 1. Single sync_probe call on the source ──────────────────────────────
     seek_to        = 0.0
     startup_latency = 0.0
     elapsed        = 0.0
@@ -1245,13 +1152,7 @@ async def sync_all_to_source(
                 seek_to        = float(data.get("seek_to", 0.0))
                 elapsed        = float(data.get("elapsed", 0.0))
                 startup_latency = float(data.get("startup_latency", 0.0))
-                print(
-                    f"[sync-all] source={src} elapsed={elapsed:.3f}s "
-                    f"startup={startup_latency:.3f}s seek_to={seek_to:.3f}s "
-                    f"targets={target_ids}"
-                )
             else:
-                # Fallback: /position + hardcoded latency estimate
                 r2 = await c.get(f"{FFMPEG_URL}/decks/{src}/position")
                 if r2.status_code == 200:
                     elapsed = float(r2.json().get("elapsed", 0.0))
@@ -1261,7 +1162,6 @@ async def sync_all_to_source(
 
     filepath = str(Path("/library") / track)
 
-    # ── 2. Update in-memory state for every target deck ──────────────────────
     for did in target_ids:
         DECKS[did].update({
             "track":      track,
@@ -1270,7 +1170,6 @@ async def sync_all_to_source(
             "is_loop":    is_loop,
             "volume":     volume,
         })
-        # If source is running a playlist, mirror that playlist state too
         src_pl = DECK_PLAYLISTS.get(src)
         if src_pl:
             DECK_PLAYLISTS[did] = {
@@ -1285,7 +1184,6 @@ async def sync_all_to_source(
                 "playlist_loop":  src_pl["loop"],
             })
 
-    # ── 3. Fire play + volume for every target in ONE gather ─────────────────
     async with httpx.AsyncClient(timeout=5) as c:
         tasks = []
         for did in target_ids:
@@ -1324,11 +1222,13 @@ async def sync_all_to_source(
 async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["is_loop"] = req.loop
+    # FIX: only signal the mixer if the deck is already playing — and use the
+    # dedicated /loop endpoint if available so the track doesn't restart.
+    # Previously this called /play unconditionally, restarting the track from 0.
     if DECKS[deck_id]["is_playing"] and DECKS[deck_id]["track"]:
-        filepath = str(Path("/library") / DECKS[deck_id]["track"])
         try:
             async with httpx.AsyncClient(timeout=5) as c:
-                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": filepath, "loop": req.loop})
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/loop", json={"loop": req.loop})
         except Exception: pass
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id, "loop": req.loop}
@@ -1449,16 +1349,6 @@ async def play_announcement(ann_id: str, _user=Depends(require_permission("can_a
 
 @app.post("/api/announcements/{ann_id}/play-sync")
 async def play_announcement_sync(ann_id: str, _user=Depends(require_permission("can_announce"))):
-    """
-    Synchronized announcement play — all target decks receive audio at exactly
-    the same time by:
-      1. Fading all active decks down simultaneously (single asyncio.gather).
-      2. Firing play_announcement to every target deck in one gather call.
-         No sequential loops, no per-deck await — all HTTP calls sent in parallel.
-      3. Fading volumes back up in parallel after audio ends.
-
-    This eliminates the inter-deck delay caused by sequential HTTP round-trips.
-    """
     ann = next((a for a in ANNOUNCEMENTS if a["id"] == ann_id), None)
     if not ann:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1471,13 +1361,6 @@ async def play_announcement_sync(ann_id: str, _user=Depends(require_permission("
     deck_ids   = ["a","b","c","d","e","f"] if "ALL" in targets else [t.lower() for t in targets]
 
     async def _sync_sequence():
-        """
-        Runs the full announcement sequence with all decks fired in parallel.
-        Uses ann_engine for the fade + jingle logic (already parallel),
-        but we call play_announcement_sequence which handles everything correctly.
-        The key fix: ann_engine._play_content already uses asyncio.gather
-        so all decks get audio simultaneously.
-        """
         await ann_engine.play_announcement_sequence(deck_ids, filepath)
 
     asyncio.create_task(_sync_sequence())
@@ -1527,7 +1410,8 @@ async def delete_announcement(ann_id: str, _user=Depends(require_permission("can
     await manager.broadcast({"type": "ANNOUNCEMENTS_UPDATED", "announcements": ANNOUNCEMENTS})
     return {"status": "ok"}
 
-# ── Listener IP → friendly label mapping (edit here to rename zones) ────────
+# ── Listener IP → friendly label mapping ────────────────────
+# Shared dict for both RTSP listeners AND RTMP publishers
 LISTENER_IP_LABELS: dict = {}
 
 @app.get("/api/listener-labels")
@@ -1546,6 +1430,7 @@ async def set_listener_labels(payload: dict, _user=Depends(verify_token)):
 @app.get("/api/listeners")
 async def get_listeners():
     result = {}
+    publishers = []  # RTMP / SRT / RTSP source publishers per path
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             resp = await c.get(f"{MEDIAMTX_API}/v3/paths/list")
@@ -1556,7 +1441,8 @@ async def get_listeners():
                     readers_raw = item.get("readers", [])
                     readers_list = readers_raw if isinstance(readers_raw, list) else []
                     reader_count = len(readers_list) if readers_list else item.get("readersCount", 0)
-                    # Collect reader details (IP + protocol) when available
+
+                    # Collect reader details (RTSP/HLS listeners)
                     reader_details = []
                     for r in readers_list:
                         addr = r.get("remoteAddr") or r.get("raddr") or r.get("addr", "")
@@ -1568,18 +1454,49 @@ async def get_listeners():
                             "label":    LISTENER_IP_LABELS.get(ip, ""),
                         })
                     result[path_name] = {
-                        "path":    path_name,
+                        "path":      path_name,
                         "listeners": reader_count,
-                        "ready":   item.get("ready", False),
-                        "readers": reader_details,
+                        "ready":     item.get("ready", False),
+                        "readers":   reader_details,
                     }
+
+                    # Collect publisher (source) details — RTMP ingest IPs
+                    source = item.get("source") or {}
+                    src_addr = source.get("remoteAddr") or source.get("raddr") or source.get("addr", "")
+                    if src_addr:
+                        src_ip   = src_addr.split(":")[0] if ":" in src_addr else src_addr
+                        src_type = source.get("type", "rtmp")
+                        publishers.append({
+                            "ip":       src_ip,
+                            "addr":     src_addr,
+                            "protocol": src_type,
+                            "path":     path_name,
+                            "label":    LISTENER_IP_LABELS.get(src_ip, ""),
+                        })
+
     except Exception as e:
         print(f"[listeners] Failed to query mediamtx: {e}")
+
     decks_summary = {}; total = 0
     for deck_id in ["deck-a", "deck-b", "deck-c", "deck-d", "deck-e", "deck-f"]:
         count = sum(info["listeners"] for name, info in result.items() if name.startswith(deck_id))
         decks_summary[deck_id] = count; total += count
-    return {"total": total, "decks": decks_summary, "paths": result}
+
+    # Deduplicate publishers by IP+protocol (same ffmpeg box publishes all decks)
+    seen_pub = set()
+    unique_publishers = []
+    for p in publishers:
+        key = (p["ip"], p["protocol"])
+        if key not in seen_pub:
+            seen_pub.add(key)
+            unique_publishers.append(p)
+
+    return {
+        "total":      total,
+        "decks":      decks_summary,
+        "paths":      result,
+        "publishers": unique_publishers,   # ← NEW: RTMP source IPs
+    }
 
 # ── Playlists ───────────────────────────────────────────────
 @app.get("/api/playlists")
@@ -1640,13 +1557,6 @@ async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, request:
 
 @app.post("/api/decks/{deck_id}/dead_air")
 async def dead_air(deck_id: str):
-    """
-    Called by the mixer watchdog when a deck has been silent for DEAD_AIR_SECONDS
-    while is_playing=True.  Recovery strategy:
-      1. If a playlist is loaded → advance to the next track (crossfade).
-      2. If a single-track loop → restart the same track.
-      3. Otherwise → mark deck stopped and broadcast so the dashboard alerts.
-    """
     if deck_id not in DECKS:
         return {"status": "ignored"}
 
@@ -1659,7 +1569,6 @@ async def dead_air(deck_id: str):
 
     playlist_state = DECK_PLAYLISTS.get(deck_id)
 
-    # Case 1: active playlist → skip to next track
     if playlist_state:
         tracks     = playlist_state.get("tracks", [])
         next_index = playlist_state["index"] + 1
@@ -1683,13 +1592,11 @@ async def dead_air(deck_id: str):
             })
             return {"status": "recovered", "action": "next_track", "track": next_track}
         else:
-            # Playlist exhausted and no loop — stop cleanly
             DECK_PLAYLISTS[deck_id] = None
             DECKS[deck_id].update({"is_playing": False, "playlist_id": None, "playlist_index": None})
             await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
             return {"status": "stopped", "action": "playlist_done"}
 
-    # Case 2: single-track loop → restart
     current_track = DECKS[deck_id].get("track")
     if current_track and DECKS[deck_id].get("is_loop"):
         try:
@@ -1705,7 +1612,6 @@ async def dead_air(deck_id: str):
         })
         return {"status": "recovered", "action": "loop_restart", "track": current_track}
 
-    # Case 3: nothing to recover — mark stopped, alert dashboard
     DECKS[deck_id].update({"is_playing": False, "is_paused": False})
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     await manager.broadcast({
@@ -1751,12 +1657,11 @@ async def _play_playlist_index(deck_id: str, index: int):
     tracks = playlist_state.get("tracks", [])
     if not tracks: raise HTTPException(status_code=400, detail="Playlist is empty")
     index = max(0, min(len(tracks) - 1, index))
-    deck_is_playing = DECKS[deck_id].get("is_playing", False)  # capture BEFORE update
+    deck_is_playing = DECKS[deck_id].get("is_playing", False)
     playlist_state["index"] = index; track = tracks[index]
     DECKS[deck_id].update({"track": track, "is_playing": True, "is_paused": False, "playlist_index": index})
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            # Use crossfade if deck was playing before we updated state, plain play otherwise
             if deck_is_playing:
                 DECKS[deck_id]["is_crossfading"] = True
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/crossfade", json={"filepath": str(Path("/library") / track), "loop": False})
@@ -1958,6 +1863,11 @@ async def delete_recurring_schedule(schedule_id: str, _user=Depends(verify_token
 
 @app.post("/api/recurring-schedules/{schedule_id}/trigger")
 async def trigger_recurring_schedule(schedule_id: str, _user=Depends(verify_token)):
+    # FIX: reset last_run_date before triggering so manual triggers always fire,
+    # regardless of whether the schedule already auto-ran today.
+    rs = next((x for x in RECURRING_SCHEDULES if x["id"] == schedule_id), None)
+    if rs:
+        rs["last_run_date"] = None
     await _ap_trigger_recurring(schedule_id)
     return {"status": "ok"}
 
@@ -2017,6 +1927,10 @@ async def delete_recurring_mixer_schedule(schedule_id: str, _user=Depends(verify
 
 @app.post("/api/recurring-mixer-schedules/{schedule_id}/trigger")
 async def trigger_recurring_mixer_schedule(schedule_id: str, _user=Depends(verify_token)):
+    # FIX: reset last_run_date so manual triggers always fire even if auto-ran today.
+    rs = next((x for x in RECURRING_MIXER_SCHEDULES if x["id"] == schedule_id), None)
+    if rs:
+        rs["last_run_date"] = None
     await _ap_trigger_mixer(schedule_id)
     return {"status": "ok"}
 
@@ -2052,7 +1966,6 @@ async def submit_music_request(req: MusicRequestSubmit):
                  "requester_photo": req.requester_photo, "track": req.track, "message": req.message,
                  "target_deck": req.target_deck, "status": "pending", "created_at": datetime.now().isoformat()}
     MUSIC_REQUESTS.insert(0, music_req)
-    # FIX (Bug 9): persist new request to DB
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, db.save_music_request, music_req)
@@ -2074,7 +1987,10 @@ async def accept_music_request(request_id: str, _user=Depends(require_permission
     filename = req["track"]
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(f"{FFMPEG_URL}/decks/{deck_id}/load", json={"filepath": str(Path("/library") / filename)})
+            # FIX: stop any currently playing stream before loading the new track,
+            # otherwise both tracks play simultaneously on the same deck.
+            if DECKS[deck_id].get("is_playing") or DECKS[deck_id].get("is_paused"):
+                await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
         DECKS[deck_id]["track"] = filename; DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
         await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     except Exception as e:
@@ -2088,7 +2004,6 @@ async def dismiss_music_request(request_id: str, _user=Depends(require_permissio
     req = next((r for r in MUSIC_REQUESTS if r["id"] == request_id), None)
     if req: req["status"] = "dismissed"
     MUSIC_REQUESTS = [r for r in MUSIC_REQUESTS if r["status"] in ("pending", "accepted")]
-    # FIX (Bug 9): remove dismissed request from DB
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, db.delete_music_request, request_id)
@@ -2101,7 +2016,6 @@ async def dismiss_music_request(request_id: str, _user=Depends(require_permissio
 async def clear_all_requests(_user=Depends(require_permission("can_requests"))):
     global MUSIC_REQUESTS
     MUSIC_REQUESTS = []
-    # FIX (Bug 9): clear all requests from DB
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, db.clear_music_requests)
@@ -2267,7 +2181,6 @@ async def get_audit_logs(
     offset: int = 0,
     _user: dict = Depends(verify_token),
 ):
-    """Admins see all logs; operators only see their own."""
     if _user.get("role") != "admin" and not _user.get("is_super_admin"):
         user_id = _user.get("sub")
     loop = asyncio.get_running_loop()

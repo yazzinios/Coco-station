@@ -143,18 +143,17 @@ export default function SettingsPage() {
     if (settings?.db_mode)                    setDbMode(settings.db_mode);
     if (settings?.timezone)                   setTimezone(settings.timezone);
     if (settings?.session_hours != null)      setSessionHours(Number(settings.session_hours));
-    // LDAP
-    setLdapEnabled(settings?.ldap_enabled ?? false);
-    if (settings?.ldap_server)      setLdapServer(settings.ldap_server);
-    if (settings?.ldap_port)        setLdapPort(settings.ldap_port);
-    if (settings?.ldap_base_dn)     setLdapBaseDn(settings.ldap_base_dn);
-    if (settings?.ldap_bind_dn)     setLdapBindDn(settings.ldap_bind_dn);
-    if (settings?.ldap_bind_pw)     setLdapBindPw(settings.ldap_bind_pw);
-    if (settings?.ldap_user_filter) setLdapUserFilter(settings.ldap_user_filter);
-    if (settings?.ldap_attr_name)   setLdapAttrName(settings.ldap_attr_name);
-    if (settings?.ldap_attr_email)  setLdapAttrEmail(settings.ldap_attr_email);
-    setLdapUseSsl(settings?.ldap_use_ssl ?? false);
-    setLdapTlsVerify(settings?.ldap_tls_verify ?? true);
+    if (settings?.ldap_enabled    != null) setLdapEnabled(settings.ldap_enabled);
+    // FIX: use ?? '' not 'if (settings?.x)' so that clearing a field to empty
+    // string actually resets the input instead of keeping the old value.
+    setLdapServer(settings?.ldap_server       ?? '');
+    setLdapBaseDn(settings?.ldap_base_dn      ?? '');
+    setLdapBindDn(settings?.ldap_bind_dn      ?? '');
+    setLdapBindPw(settings?.ldap_bind_pw      ?? '');
+    setLdapUserFilter(settings?.ldap_user_filter ?? '(sAMAccountName={username})');
+    setLdapAttrName(settings?.ldap_attr_name  ?? 'cn');
+    setLdapAttrEmail(settings?.ldap_attr_email ?? 'mail');
+    if (settings?.ldap_port != null) setLdapPort(settings.ldap_port);
     // Company
     if (settings?.company_name != null) setCompanyName(settings.company_name || '');
     // Only update the logo URL when the logo presence actually changes.
