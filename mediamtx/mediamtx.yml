@@ -77,71 +77,71 @@ paths:
 
   # ── DJ Live Stream Paths ────────────────────────────────────────
   # OBS / browser → RTMP → dj-{a..f}  (one per zone-deck)
-  # runOnPublishCmd  → notify API → fade out playlist → go LIVE
-  # runOnUnpublishCmd→ notify API → fade in playlist  → AVAILABLE
+  # runOnPublish  → notify API → fade out playlist → go LIVE
+  # runOnUnpublish→ notify API → fade in playlist  → AVAILABLE
   dj-a:
     source: publisher
     sourceOnDemand: no
-    runOnPublishCmd: >-
+    runOnPublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
       -d "{\"deck\":\"a\",\"mediamtx_path\":\"dj-a\",\"stream_url\":\"rtmp://mediamtx:1935/dj-a\"}"
-    runOnUnpublishCmd: >-
+    runOnUnpublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/ended
       -H "Content-Type: application/json"
       -d "{\"deck\":\"a\"}"
   dj-b:
     source: publisher
     sourceOnDemand: no
-    runOnPublishCmd: >-
+    runOnPublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
       -d "{\"deck\":\"b\",\"mediamtx_path\":\"dj-b\",\"stream_url\":\"rtmp://mediamtx:1935/dj-b\"}"
-    runOnUnpublishCmd: >-
+    runOnUnpublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/ended
       -H "Content-Type: application/json"
       -d "{\"deck\":\"b\"}"
   dj-c:
     source: publisher
     sourceOnDemand: no
-    runOnPublishCmd: >-
+    runOnPublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
       -d "{\"deck\":\"c\",\"mediamtx_path\":\"dj-c\",\"stream_url\":\"rtmp://mediamtx:1935/dj-c\"}"
-    runOnUnpublishCmd: >-
+    runOnUnpublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/ended
       -H "Content-Type: application/json"
       -d "{\"deck\":\"c\"}"
   dj-d:
     source: publisher
     sourceOnDemand: no
-    runOnPublishCmd: >-
+    runOnPublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
       -d "{\"deck\":\"d\",\"mediamtx_path\":\"dj-d\",\"stream_url\":\"rtmp://mediamtx:1935/dj-d\"}"
-    runOnUnpublishCmd: >-
+    runOnUnpublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/ended
       -H "Content-Type: application/json"
       -d "{\"deck\":\"d\"}"
   dj-e:
     source: publisher
     sourceOnDemand: no
-    runOnPublishCmd: >-
+    runOnPublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
       -d "{\"deck\":\"e\",\"mediamtx_path\":\"dj-e\",\"stream_url\":\"rtmp://mediamtx:1935/dj-e\"}"
-    runOnUnpublishCmd: >-
+    runOnUnpublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/ended
       -H "Content-Type: application/json"
       -d "{\"deck\":\"e\"}"
   dj-f:
     source: publisher
     sourceOnDemand: no
-    runOnPublishCmd: >-
+    runOnPublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
       -d "{\"deck\":\"f\",\"mediamtx_path\":\"dj-f\",\"stream_url\":\"rtmp://mediamtx:1935/dj-f\"}"
-    runOnUnpublishCmd: >-
+    runOnUnpublish: >-
       curl -sf -X POST http://api:8000/api/dj/stream/ended
       -H "Content-Type: application/json"
       -d "{\"deck\":\"f\"}"
