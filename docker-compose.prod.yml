@@ -24,6 +24,8 @@ services:
       - "8889:8889"     # WebRTC WHEP
       - "8189:8189/udp" # WebRTC ICE UDP
       - "9997:9997"     # MediaMTX API
+    extra_hosts:
+      - "api:10.20.0.4"
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.2
@@ -71,13 +73,13 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-coco}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-coco_secret}
       - POSTGRES_DB=${POSTGRES_DB:-cocostation}
-      - POSTGRES_HOST=db
+      - POSTGRES_HOST=10.20.0.3
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY:-}
-      - FFMPEG_HOST=ffmpeg-mixer
-      - MEDIAMTX_HOST=mediamtx
+      - FFMPEG_HOST=10.20.0.5
+      - MEDIAMTX_HOST=10.20.0.2
       - JWT_SECRET=${JWT_SECRET}
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://10.20.0.7:6379/0
       - CORS_ORIGINS=${CORS_ORIGINS:-https://radio.cocopark.duckdns.org}
       - WS_PING_INTERVAL=30
       - WS_PING_TIMEOUT=20
@@ -100,6 +102,11 @@ services:
         condition: service_started
       redis:
         condition: service_started
+    extra_hosts:
+      - "db:10.20.0.3"
+      - "ffmpeg-mixer:10.20.0.5"
+      - "mediamtx:10.20.0.2"
+      - "redis:10.20.0.7"
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.4
@@ -118,9 +125,12 @@ services:
       - cocostation-recordings:/recordings
     environment:
       - TZ=Africa/Casablanca
-      - MEDIAMTX_HOST=mediamtx
-      - API_HOST=api
+      - MEDIAMTX_HOST=10.20.0.2
+      - API_HOST=10.20.0.4
       - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "api:10.20.0.4"
+      - "mediamtx:10.20.0.2"
     networks:
       cocostation-net:
         ipv4_address: 10.20.0.5
