@@ -14,44 +14,35 @@ const DAYS_OF_WEEK = [
 
 const DECK_OPTIONS = ['A', 'B', 'C', 'D', 'E'];
 
+const EMPTY_FORM = {
+  name: '',
+  type: 'Announcement',
+  announcement_id: '',
+  start_time: '09:00',
+  stop_time: '',          // ← empty = optional / no auto-stop
+  active_days: [0, 1, 2, 3, 4, 5, 6],
+  fade_duration: 5,
+  music_volume: 10,
+  target_decks: ['A'],
+  enabled: true,
+};
+
 export default function AnnouncementSchedules() {
   const { announcements, recurringSchedules, toast, api } = useApp();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
 
-  // Form State
-  const [formData, setFormData] = useState({
-    name: '',
-    type: 'Announcement', // 'Announcement' | 'Microphone'
-    announcement_id: '',
-    start_time: '09:00',
-    stop_time: '09:05',
-    active_days: [0, 1, 2, 3, 4, 5, 6],
-    fade_duration: 5,
-    music_volume: 10,
-    target_decks: ['A'],
-    enabled: true
-  });
+  const [formData, setFormData] = useState({ ...EMPTY_FORM });
 
   const handleResetForm = () => {
-    setFormData({
-      name: '',
-      type: 'Announcement',
-      announcement_id: '',
-      start_time: '09:00',
-      stop_time: '09:05',
-      active_days: [0, 1, 2, 3, 4, 5, 6],
-      fade_duration: 5,
-      music_volume: 10,
-      target_decks: ['A'],
-      enabled: true
-    });
+    setFormData({ ...EMPTY_FORM });
     setEditingId(null);
     setIsAdding(false);
   };
 
   const handleEdit = (schedule) => {
-    setFormData({ ...schedule });
+    // Normalise: if the stored stop_time is null / undefined treat it as ''
+    setFormData({ ...schedule, stop_time: schedule.stop_time ?? '' });
     setEditingId(schedule.id);
     setIsAdding(true);
   };
@@ -79,18 +70,24 @@ export default function AnnouncementSchedules() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (formData.type === 'Announcement' && !formData.announcement_id) {
       toast.error('Please select an announcement');
       return;
     }
 
+    // Send stop_time as null when the field is empty so the backend stores it cleanly
+    const payload = {
+      ...formData,
+      stop_time: formData.stop_time.trim() || null,
+    };
+
     try {
       if (editingId) {
-        await api.updateRecurringSchedule(editingId, formData);
+        await api.updateRecurringSchedule(editingId, payload);
         toast.success('Schedule updated');
       } else {
-        await api.createRecurringSchedule(formData);
+        await api.createRecurringSchedule(payload);
         toast.success('Schedule created');
       }
       handleResetForm();
@@ -145,20 +142,20 @@ export default function AnnouncementSchedules() {
       </div>
 
       {isAdding && (
-        <form onSubmit={handleSubmit} style={{ 
+        <form onSubmit={handleSubmit} style={{
           background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
           borderRadius: '12px', padding: '1.5rem', marginBottom: '1.5rem'
         }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
-            
+
             {/* Basic Info */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
                 <label style={labelStyle}>Schedule Name</label>
-                <input 
-                  type="text" value={formData.name} 
-                  onChange={e => setFormData({...formData, name: e.target.value})}
-                  placeholder="e.g. Daily Greeting" style={inputStyle} required 
+                <input
+                  type="text" value={formData.name}
+                  onChange={e => setFormData({ ...formData, name: e.target.value })}
+                  placeholder="e.g. Daily Greeting" style={inputStyle} required
                 />
               </div>
 
@@ -166,7 +163,7 @@ export default function AnnouncementSchedules() {
                 <label style={labelStyle}>Source Type</label>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   {['Announcement', 'Microphone'].map(t => (
-                    <button key={t} type="button" onClick={() => setFormData({...formData, type: t})}
+                    <button key={t} type="button" onClick={() => setFormData({ ...formData, type: t })}
                       style={{
                         flex: 1, padding: '0.5rem', borderRadius: '6px', border: 'none',
                         background: formData.type === t ? 'var(--accent-blue)' : 'rgba(255,255,255,0.05)',
@@ -183,9 +180,9 @@ export default function AnnouncementSchedules() {
               {formData.type === 'Announcement' && (
                 <div>
                   <label style={labelStyle}>Select Announcement</label>
-                  <select 
-                    value={formData.announcement_id} 
-                    onChange={e => setFormData({...formData, announcement_id: e.target.value})}
+                  <select
+                    value={formData.announcement_id}
+                    onChange={e => setFormData({ ...formData, announcement_id: e.target.value })}
                     style={inputStyle} required
                   >
                     <option value="">— Choose from library —</option>
@@ -195,23 +192,51 @@ export default function AnnouncementSchedules() {
                   </select>
                 </div>
               )}
-              
+
               <div style={{ display: 'flex', gap: '1rem' }}>
+                {/* Start Time — always required */}
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>Start Time</label>
-                  <input 
-                    type="time" value={formData.start_time} 
-                    onChange={e => setFormData({...formData, start_time: e.target.value})}
-                    style={{...inputStyle, colorScheme: 'dark'}} required 
+                  <input
+                    type="time" value={formData.start_time}
+                    onChange={e => setFormData({ ...formData, start_time: e.target.value })}
+                    style={{ ...inputStyle, colorScheme: 'dark' }} required
                   />
                 </div>
+
+                {/* Stop Time — optional; cleared by the ✕ button */}
                 <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Stop Time</label>
-                  <input 
-                    type="time" value={formData.stop_time} 
-                    onChange={e => setFormData({...formData, stop_time: e.target.value})}
-                    style={{...inputStyle, colorScheme: 'dark'}} required 
-                  />
+                  <label style={labelStyle}>
+                    Stop Time&nbsp;
+                    <span style={{ fontWeight: 400, textTransform: 'none', opacity: 0.6 }}>(optional)</span>
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type="time" value={formData.stop_time}
+                      onChange={e => setFormData({ ...formData, stop_time: e.target.value })}
+                      style={{ ...inputStyle, colorScheme: 'dark', paddingRight: formData.stop_time ? '2rem' : undefined }}
+                    />
+                    {/* Clear button — only visible when a time has been picked */}
+                    {formData.stop_time && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, stop_time: '' })}
+                        title="Clear stop time"
+                        style={{
+                          position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)',
+                          background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)',
+                          cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center',
+                        }}
+                      >
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+                  {!formData.stop_time && (
+                    <div style={{ marginTop: '0.25rem', fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)' }}>
+                      No auto-stop — runs until manually stopped
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -244,10 +269,10 @@ export default function AnnouncementSchedules() {
                       <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Fade Duration</span>
                       <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)' }}>{formData.fade_duration}s</span>
                     </div>
-                    <input 
+                    <input
                       type="range" min="0" max="30" step="1"
                       value={formData.fade_duration}
-                      onChange={e => setFormData({...formData, fade_duration: parseInt(e.target.value)})}
+                      onChange={e => setFormData({ ...formData, fade_duration: parseInt(e.target.value) })}
                       style={{ width: '100%', accentColor: 'var(--accent-blue)' }}
                     />
                   </div>
@@ -256,10 +281,10 @@ export default function AnnouncementSchedules() {
                       <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Music Volume</span>
                       <span style={{ fontSize: '0.7rem', color: 'var(--accent-blue)' }}>{formData.music_volume}%</span>
                     </div>
-                    <input 
+                    <input
                       type="range" min="0" max="100" step="1"
                       value={formData.music_volume}
-                      onChange={e => setFormData({...formData, music_volume: parseInt(e.target.value)})}
+                      onChange={e => setFormData({ ...formData, music_volume: parseInt(e.target.value) })}
                       style={{ width: '100%', accentColor: 'var(--accent-blue)' }}
                     />
                   </div>
@@ -332,7 +357,7 @@ export default function AnnouncementSchedules() {
               opacity: s.enabled ? 1 : 0.6
             }}>
               {/* Status Indicator */}
-              <div style={{ 
+              <div style={{
                 position: 'absolute', top: 0, left: 0, width: '4px', height: '100%',
                 background: s.enabled ? 'var(--accent-blue)' : '#555'
               }} />
@@ -343,8 +368,12 @@ export default function AnnouncementSchedules() {
                     {s.type === 'announcement' ? <Play size={13} fill="currentColor" /> : <Mic size={13} />}
                     {s.name}
                   </div>
+                  {/* ── Time display: show "--:--" when stop_time is absent ── */}
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <Clock size={12} /> {s.start_time} — {s.stop_time}
+                    <Clock size={12} />
+                    {s.start_time}
+                    {' — '}
+                    {s.stop_time ? s.stop_time : <span style={{ opacity: 0.4 }}>--:--</span>}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.4rem' }}>

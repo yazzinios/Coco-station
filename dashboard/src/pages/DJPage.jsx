@@ -82,33 +82,92 @@ function injectCSS() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   DEVICE TYPE HELPERS
+══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Classify a device label into a human-readable category + icon.
+ * Covers microphones, line-in, virtual cables, WASAPI loopback,
+ * USB audio, Bluetooth, HDMI, etc.
+ */
+function classifyDevice(label = '') {
+  const l = label.toLowerCase();
+
+  if (/wasapi|stereo mix|what u hear|loopback|wave out mix/i.test(l))
+    return { icon: '🔁', category: 'Loopback / System audio' };
+  if (/virtual|vb-audio|voicemeeter|blackhole|soundflower|cable|virtual cable|obs/i.test(l))
+    return { icon: '🔌', category: 'Virtual cable' };
+  if (/hdmi|displayport|dp audio/i.test(l))
+    return { icon: '🖥', category: 'HDMI / Display' };
+  if (/bluetooth|bt audio|airpods|bose|jabra|galaxy buds/i.test(l))
+    return { icon: '📶', category: 'Bluetooth' };
+  if (/usb|focusrite|scarlett|behringer|motu|steinberg|native instruments|audient|ssl|rme/i.test(l))
+    return { icon: '🎛', category: 'USB audio interface' };
+  if (/line.?in|aux|mixer|instrument|guitar/i.test(l))
+    return { icon: '🎸', category: 'Line-in / Mixer' };
+  if (/webcam|camera|logitech|c920|brio/i.test(l))
+    return { icon: '📷', category: 'Webcam' };
+  if (/mic|microphone|condenser|dynamic|headset/i.test(l))
+    return { icon: '🎤', category: 'Microphone' };
+  return { icon: '🔊', category: 'Audio input' };
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    SETUP SCREEN
 ══════════════════════════════════════════════════════════════════════════ */
 function SetupScreen({ onConnect }) {
   const { currentUser, token } = useApp() || {};
   const djName = buildDJName(currentUser);
+
   const [devices,    setDevices]    = useState([]);
   const [audioSrc,   setAudioSrc]   = useState('');
   const [audioLabel, setAudioLabel] = useState('');
   const [connecting, setConnecting] = useState(false);
-  const [permErr,    setPermErr]    = useState(false);
+  const [permState,  setPermState]  = useState('pending'); // 'granted' | 'denied' | 'pending'
   const [apiErr,     setApiErr]     = useState('');
   const C = '#e8a020';
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop());
-        const all = await navigator.mediaDevices.enumerateDevices();
-        setDevices(all.filter(d => d.kind === 'audioinput'));
-        setPermErr(false);
-      } catch { setPermErr(true); }
+  const loadDevices = useCallback(async () => {
+    // Step 1 — try to get permission so labels are populated.
+    // Use audio:true as a broad request (covers any audioinput, not just mic).
+    let granted = false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      granted = true;
+    } catch {
+      // Permission denied or not available — we'll still enumerate what the
+      // browser can see (some devices like virtual cables / WASAPI loopback
+      // may appear even without mic permission on Windows).
+      granted = false;
     }
-    load();
-    navigator.mediaDevices?.addEventListener?.('devicechange', load);
-    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', load);
+
+    // Step 2 — enumerate ALL audioinput devices.
+    // Even without permission the browser returns device entries, though
+    // labels may be empty strings. We filter those out gracefully.
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      const inputs = all
+        .filter(d => d.kind === 'audioinput')
+        .map((d, i) => ({
+          deviceId: d.deviceId,
+          groupId:  d.groupId,
+          label:    d.label || `Audio Input ${i + 1}`,
+          ...classifyDevice(d.label),
+        }));
+
+      setDevices(inputs);
+      setPermState(granted ? 'granted' : inputs.length > 0 ? 'partial' : 'denied');
+    } catch {
+      setPermState('denied');
+    }
   }, []);
+
+  useEffect(() => {
+    loadDevices();
+    navigator.mediaDevices?.addEventListener?.('devicechange', loadDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', loadDevices);
+  }, [loadDevices]);
 
   const handleConnect = async () => {
     if (!audioSrc) return;
@@ -130,13 +189,115 @@ function SetupScreen({ onConnect }) {
         audioSrc,
         audioLabel,
         token,
-        allowedDecks:  data.allowed_decks || [],
-        initialDecks:  data.deck_states   || {},
+        allowedDecks: data.allowed_decks || [],
+        initialDecks: data.deck_states   || {},
       });
     } catch (e) {
       setApiErr(e.message);
       setConnecting(false);
     }
+  };
+
+  /* ── permission banner ─────────────────────────────────────────────── */
+  const renderPermBanner = () => {
+    if (permState === 'denied' && devices.length === 0) {
+      return (
+        <div style={{ padding:14, borderRadius:9, background:'rgba(224,60,60,.08)',
+          border:'1px solid rgba(224,60,60,.3)', color:'#e03c3c',
+          fontFamily:'var(--dj-mono)', fontSize:11, marginBottom:20 }}>
+          <div style={{ marginBottom:8, fontWeight:700 }}>⚠ Audio access blocked</div>
+          <div style={{ opacity:.85, lineHeight:1.6 }}>
+            The browser could not detect any audio inputs.<br/>
+            To fix: allow audio access in your browser settings, or plug in a device, then&nbsp;
+            <span style={{ color:C, cursor:'pointer', textDecoration:'underline' }}
+              onClick={loadDevices}>retry</span>.
+          </div>
+        </div>
+      );
+    }
+    if (permState === 'partial' || permState === 'denied') {
+      // Devices found but labels may be unlabelled
+      return (
+        <div style={{ padding:10, borderRadius:8, background:'rgba(232,160,32,.07)',
+          border:'1px solid rgba(232,160,32,.25)', color:'#e8a020',
+          fontFamily:'var(--dj-mono)', fontSize:10, marginBottom:16,
+          display:'flex', alignItems:'center', gap:8 }}>
+          <span>⚠</span>
+          <span style={{ opacity:.85 }}>
+            Mic permission denied — device names may be generic.
+            Grant audio access in browser settings for full labels.&nbsp;
+            <span style={{ cursor:'pointer', textDecoration:'underline' }} onClick={loadDevices}>Retry</span>
+          </span>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  /* ── device list ───────────────────────────────────────────────────── */
+  const renderDevices = () => {
+    if (permState === 'pending') {
+      return (
+        <div style={{ padding:14, borderRadius:9, background:'rgba(255,255,255,.03)',
+          border:'1px solid var(--dj-border)', color:'var(--dj-muted)',
+          fontFamily:'var(--dj-mono)', fontSize:11, textAlign:'center', marginBottom:20 }}>
+          <span style={{ display:'inline-block', animation:'djSpin .9s linear infinite', marginRight:8 }}>⟳</span>
+          Detecting audio devices…
+        </div>
+      );
+    }
+
+    if (devices.length === 0) return null; // banner already shown
+
+    // Group by category
+    const groups = {};
+    devices.forEach(d => {
+      if (!groups[d.category]) groups[d.category] = [];
+      groups[d.category].push(d);
+    });
+
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:22 }}>
+        {Object.entries(groups).map(([cat, devs]) => (
+          <div key={cat}>
+            {/* Category header */}
+            <div style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)',
+              letterSpacing:2, textTransform:'uppercase', marginBottom:5, marginTop:4,
+              paddingLeft:2, display:'flex', alignItems:'center', gap:5 }}>
+              <span style={{ opacity:.5 }}>▸</span> {cat}
+            </div>
+            {devs.map((dev) => {
+              const sel = audioSrc === dev.deviceId;
+              return (
+                <button key={dev.deviceId}
+                  onClick={() => { setAudioSrc(dev.deviceId); setAudioLabel(dev.label); }}
+                  style={{ padding:'11px 14px', borderRadius:10, cursor:'pointer', textAlign:'left',
+                    border:`1.5px solid ${sel ? C : 'var(--dj-border)'}`,
+                    background: sel ? `${C}14` : 'rgba(255,255,255,.025)',
+                    color: sel ? C : 'var(--dj-muted)',
+                    display:'flex', alignItems:'center', gap:12, transition:'all .18s',
+                    boxShadow: sel ? `0 0 18px ${C}30` : 'none',
+                    fontFamily:'var(--dj-mono)', fontSize:11, width:'100%',
+                    marginBottom:4 }}>
+                  {/* Status dot */}
+                  <div style={{ width:8, height:8, borderRadius:'50%', flexShrink:0,
+                    background: sel ? C : 'var(--dj-border)',
+                    boxShadow: sel ? `0 0 8px ${C}` : 'none',
+                    animation: sel ? 'djLivePulse 1.4s infinite' : 'none', transition:'all .2s' }}/>
+                  {/* Device icon */}
+                  <span style={{ fontSize:14, flexShrink:0 }}>{dev.icon}</span>
+                  {/* Label */}
+                  <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {dev.label}
+                  </span>
+                  {sel && <span style={{ fontSize:8, color:C, letterSpacing:1, flexShrink:0 }}>SELECTED ✓</span>}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    );
   };
 
   return (
@@ -154,7 +315,7 @@ function SetupScreen({ onConnect }) {
         background:'linear-gradient(transparent,rgba(255,255,255,.02),transparent)',
         animation:'djScanLine 5s linear infinite', pointerEvents:'none' }}/>
 
-      <div style={{ width:480, animation:'djFadeIn .55s ease forwards', position:'relative', zIndex:2 }}>
+      <div style={{ width:520, animation:'djFadeIn .55s ease forwards', position:'relative', zIndex:2 }}>
 
         <div style={{ textAlign:'center', marginBottom:28 }}>
           <div style={{ fontFamily:'var(--dj-orb)', fontSize:30, fontWeight:900, color:C,
@@ -167,50 +328,24 @@ function SetupScreen({ onConnect }) {
           border:`1px solid ${C}33`, padding:'28px 32px 32px',
           boxShadow:'0 24px 80px rgba(0,0,0,.8)' }}>
 
-          <div style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)',
-            letterSpacing:3, marginBottom:14 }}>AUDIO INPUT</div>
+          {/* Section header */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+            marginBottom:14 }}>
+            <div style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)',
+              letterSpacing:3 }}>AUDIO INPUT</div>
+            <button onClick={loadDevices}
+              style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)',
+                background:'none', border:'none', cursor:'pointer', letterSpacing:1,
+                display:'flex', alignItems:'center', gap:4, opacity:.7,
+                transition:'opacity .15s' }}
+              onMouseEnter={e => e.currentTarget.style.opacity=1}
+              onMouseLeave={e => e.currentTarget.style.opacity=.7}>
+              ⟳ REFRESH
+            </button>
+          </div>
 
-          {permErr ? (
-            <div style={{ padding:14, borderRadius:9, background:'rgba(224,60,60,.08)',
-              border:'1px solid rgba(224,60,60,.3)', color:'#e03c3c',
-              fontFamily:'var(--dj-mono)', fontSize:11, textAlign:'center', marginBottom:20 }}>
-              Microphone access denied — allow in browser settings and refresh
-            </div>
-          ) : devices.length === 0 ? (
-            <div style={{ padding:14, borderRadius:9, background:'rgba(255,255,255,.03)',
-              border:'1px solid var(--dj-border)', color:'var(--dj-muted)',
-              fontFamily:'var(--dj-mono)', fontSize:11, textAlign:'center', marginBottom:20 }}>
-              <span style={{ display:'inline-block', animation:'djSpin .9s linear infinite', marginRight:8 }}>⟳</span>
-              Detecting audio devices…
-            </div>
-          ) : (
-            <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:22 }}>
-              {devices.map((dev, i) => {
-                const sel   = audioSrc === dev.deviceId;
-                const label = dev.label || `Audio Input ${i + 1}`;
-                return (
-                  <button key={dev.deviceId}
-                    onClick={() => { setAudioSrc(dev.deviceId); setAudioLabel(label); }}
-                    style={{ padding:'12px 16px', borderRadius:10, cursor:'pointer', textAlign:'left',
-                      border:`1.5px solid ${sel ? C : 'var(--dj-border)'}`,
-                      background: sel ? `${C}14` : 'rgba(255,255,255,.025)',
-                      color: sel ? C : 'var(--dj-muted)',
-                      display:'flex', alignItems:'center', gap:12, transition:'all .18s',
-                      boxShadow: sel ? `0 0 18px ${C}30` : 'none',
-                      fontFamily:'var(--dj-mono)', fontSize:12 }}>
-                    <div style={{ width:9, height:9, borderRadius:'50%', flexShrink:0,
-                      background: sel ? C : 'var(--dj-border)',
-                      boxShadow: sel ? `0 0 8px ${C}` : 'none',
-                      animation: sel ? 'djLivePulse 1.4s infinite' : 'none', transition:'all .2s' }}/>
-                    <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                      {label}
-                    </span>
-                    {sel && <span style={{ fontSize:8, color:C, letterSpacing:1 }}>SELECTED ✓</span>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          {renderPermBanner()}
+          {renderDevices()}
 
           {apiErr && (
             <div style={{ marginBottom:14, padding:'10px 14px', borderRadius:8,
@@ -279,21 +414,18 @@ function JogWheel({ color, status, size = 180 }) {
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, W, H);
 
-      // Outer ring glow
       ctx.beginPath(); ctx.arc(cx, cy, R + 3, 0, Math.PI * 2);
       ctx.strokeStyle = color + Math.round(glowIntensity * 255).toString(16).padStart(2, '0');
       ctx.lineWidth = 4;
       if (status === 'LIVE') { ctx.shadowBlur = 28; ctx.shadowColor = color; }
       ctx.stroke(); ctx.shadowBlur = 0;
 
-      // Disk bg
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
       const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
       grad.addColorStop(0, '#111520');
       grad.addColorStop(1, '#060810');
       ctx.fillStyle = grad; ctx.fill();
 
-      // Spinning grooves
       ctx.save(); ctx.translate(cx, cy); ctx.rotate(angleRef.current);
       for (let i = 0; i < 32; i++) {
         const a = (i / 32) * Math.PI * 2;
@@ -309,7 +441,6 @@ function JogWheel({ color, status, size = 180 }) {
       }
       ctx.restore();
 
-      // Center hub
       const hubR = R * 0.35;
       ctx.beginPath(); ctx.arc(cx, cy, hubR, 0, Math.PI * 2);
       ctx.fillStyle = '#040508'; ctx.fill();
@@ -318,7 +449,6 @@ function JogWheel({ color, status, size = 180 }) {
       if (status === 'LIVE') { ctx.shadowBlur = 12; ctx.shadowColor = color; }
       ctx.stroke(); ctx.shadowBlur = 0;
 
-      // Status dot
       ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2);
       ctx.fillStyle = status === 'LIVE'    ? color
                     : status === 'RESERVED' ? color + '99'
@@ -444,9 +574,8 @@ function DJBoothController({ session, onExit }) {
   const { token } = useApp() || {};
   const tk = token || session.token;
 
-  // ── State ──
   const [deckStates,   setDeckStates]   = useState(session.initialDecks || {});
-  const [activeDeck,   setActiveDeck]   = useState(null);   // currently selected by ME
+  const [activeDeck,   setActiveDeck]   = useState(null);
   const [recording,    setRecording]    = useState(false);
   const [activeEffect, setActiveEffect] = useState('none');
   const [announcing,   setAnnouncing]   = useState(false);
@@ -456,7 +585,6 @@ function DJBoothController({ session, onExit }) {
 
   const allowedDecks = session.allowedDecks || [];
 
-  // ── WebSocket ──
   const wsRef = useRef(null);
   useEffect(() => {
     const connect = () => {
@@ -471,18 +599,15 @@ function DJBoothController({ session, onExit }) {
         try {
           const msg = JSON.parse(e.data);
 
-          // Full state sync on connect
           if (msg.type === 'FULL_STATE' && msg.dj_decks) {
             setDeckStates(msg.dj_decks);
           }
 
-          // Individual DJ events
           if (msg.type === 'DJ_EVENT') {
             const { event, deck } = msg;
 
             if (['deck_reserved','deck_going_live','deck_live','deck_stopping',
                  'deck_released','deck_recovery','playlist_resumed'].includes(event)) {
-              // Refresh deck state for the affected deck
               setDeckStates(prev => {
                 const updated = { ...prev };
                 const statusMap = {
@@ -505,7 +630,6 @@ function DJBoothController({ session, onExit }) {
                 return updated;
               });
 
-              // If MY deck is now released/resumed, clear active
               if (event === 'deck_released' || event === 'playlist_resumed') {
                 setActiveDeck(d => d === deck ? null : d);
               }
@@ -522,7 +646,6 @@ function DJBoothController({ session, onExit }) {
     return () => wsRef.current?.close();
   }, []);
 
-  // ── Heartbeat ──
   useEffect(() => {
     if (!activeDeck) return;
     const id = setInterval(async () => {
@@ -537,11 +660,9 @@ function DJBoothController({ session, onExit }) {
     return () => clearInterval(id);
   }, [activeDeck, tk]);
 
-  // ── Deck button handler ──
   const handleDeckPress = useCallback(async (deckId) => {
     if (!allowedDecks.includes(deckId)) return;
 
-    // If clicking active deck → release it
     if (activeDeck === deckId) {
       try {
         await fetch(`${API}/api/dj/deck/release`, {
@@ -554,7 +675,6 @@ function DJBoothController({ session, onExit }) {
       return;
     }
 
-    // Reserve the new deck
     try {
       const res = await fetch(`${API}/api/dj/deck/reserve`, {
         method:  'POST',
@@ -570,7 +690,6 @@ function DJBoothController({ session, onExit }) {
     } catch (e) { console.error('[dj] reserve error', e); }
   }, [activeDeck, allowedDecks, tk]);
 
-  // ── Feature handlers ──
   const handleAnnounce = async () => {
     if (!activeDeck || announcing) return;
     await fetch(`${API}/api/dj/announce`, {
@@ -582,8 +701,8 @@ function DJBoothController({ session, onExit }) {
 
   const handleEffect = async () => {
     if (!activeDeck) return;
-    const idx    = EFFECTS_CYCLE.indexOf(activeEffect);
-    const next   = EFFECTS_CYCLE[(idx + 1) % EFFECTS_CYCLE.length];
+    const idx  = EFFECTS_CYCLE.indexOf(activeEffect);
+    const next = EFFECTS_CYCLE[(idx + 1) % EFFECTS_CYCLE.length];
     setActiveEffect(next);
     await fetch(`${API}/api/dj/effect`, {
       method:  'POST',
@@ -613,20 +732,18 @@ function DJBoothController({ session, onExit }) {
     onExit();
   };
 
-  // ── Derive current deck state ──
   const activeDeckState = activeDeck ? (deckStates[activeDeck] || {}) : {};
   const isLive     = activeDeckState.status === 'LIVE';
   const isReserved = activeDeckState.status === 'RESERVED';
 
-  // ── Status text ──
   let statusText = '● STANDBY';
   let statusColor= '#3a4462';
   if (activeDeck) {
     const st = activeDeckState.status || 'RESERVED';
-    if (st === 'LIVE')       { statusText = `● LIVE · DECK ${activeDeck.toUpperCase()}`; statusColor = '#e03c3c'; }
+    if (st === 'LIVE')            { statusText = `● LIVE · DECK ${activeDeck.toUpperCase()}`;      statusColor = '#e03c3c'; }
     else if (st === 'GOING_LIVE') { statusText = `◐ GOING LIVE · DECK ${activeDeck.toUpperCase()}`; statusColor = '#fd9644'; }
-    else if (st === 'STOPPING')   { statusText = `◑ STOPPING · DECK ${activeDeck.toUpperCase()}`; statusColor = '#fd9644'; }
-    else                          { statusText = `◎ RESERVED · DECK ${activeDeck.toUpperCase()}`; statusColor = DECK_COLORS[activeDeck]; }
+    else if (st === 'STOPPING')   { statusText = `◑ STOPPING · DECK ${activeDeck.toUpperCase()}`;   statusColor = '#fd9644'; }
+    else                          { statusText = `◎ RESERVED · DECK ${activeDeck.toUpperCase()}`;   statusColor = DECK_COLORS[activeDeck]; }
   }
 
   const accentColor = activeDeck ? DECK_COLORS[activeDeck] : '#e8a020';
@@ -662,7 +779,6 @@ function DJBoothController({ session, onExit }) {
           color:accentColor, letterSpacing:3 }}>DJ BOOTH</div>
         <div style={{ width:1, height:22, background:`${accentColor}22` }}/>
 
-        {/* DJ name tag */}
         <div style={{ display:'flex', alignItems:'center', gap:9 }}>
           <div style={{ width:28, height:28, borderRadius:'50%',
             background:`${accentColor}22`, border:`1px solid ${accentColor}44`,
@@ -681,7 +797,6 @@ function DJBoothController({ session, onExit }) {
 
         <div style={{ flex:1 }}/>
 
-        {/* WS status */}
         <div style={{ display:'flex', alignItems:'center', gap:5 }}>
           <div style={{ width:7, height:7, borderRadius:'50%',
             background: wsStatus === 'connected' ? '#2ed573' : wsStatus === 'connecting' ? '#fd9644' : '#e03c3c',
@@ -691,7 +806,6 @@ function DJBoothController({ session, onExit }) {
           </span>
         </div>
 
-        {/* Spectrum bars */}
         <div style={{ display:'flex', gap:2, alignItems:'center', height:20 }}>
           {[...Array(8)].map((_,i) => (
             <div key={i} className={`dj-sp${i}`}
@@ -717,25 +831,19 @@ function DJBoothController({ session, onExit }) {
         backgroundImage:`radial-gradient(ellipse at 50% 50%, ${accentColor}07 0%, transparent 65%)`,
         transition:'background-image .5s' }}>
 
-        {/* LEFT DECKS */}
         {renderDeckColumn(DECK_ORDER_LEFT)}
 
-        {/* LEFT JOG WHEEL */}
         <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10 }}>
-          <div style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)',
-            letterSpacing:2 }}>JOG L</div>
+          <div style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)', letterSpacing:2 }}>JOG L</div>
           <JogWheel color={accentColor} status={jogStatus} size={170}/>
-          <div style={{ fontFamily:'var(--dj-mono)', fontSize:9, color:`${accentColor}88`,
-            letterSpacing:1 }}>
+          <div style={{ fontFamily:'var(--dj-mono)', fontSize:9, color:`${accentColor}88`, letterSpacing:1 }}>
             {activeDeck ? `DECK ${activeDeck.toUpperCase()}` : '—'}
           </div>
         </div>
 
-        {/* CENTER PANEL */}
         <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:14,
           minWidth:220, animation:'djSlideUp .5s ease forwards' }}>
 
-          {/* Stream key hint */}
           {activeDeck && (
             <div style={{ background:'rgba(255,255,255,.03)', borderRadius:8,
               padding:'7px 14px', border:'1px solid var(--dj-border)',
@@ -746,38 +854,29 @@ function DJBoothController({ session, onExit }) {
             </div>
           )}
 
-          {/* Feature buttons row 1 */}
           <div style={{ display:'flex', gap:8, width:'100%' }}>
             <FeatBtn id="dj-btn-announce" label="ANNOUNCE" icon="📢"
-              active={announcing} disabled={!isLive}
-              color="#fd9644" onClick={handleAnnounce}/>
-            <FeatBtn id="dj-btn-loop"   label="LOOP"     icon="🔁"
-              active={looping} disabled={!activeDeck}
-              color="#a55eea" onClick={() => setLooping(l => !l)}/>
+              active={announcing} disabled={!isLive} color="#fd9644" onClick={handleAnnounce}/>
+            <FeatBtn id="dj-btn-loop"   label="LOOP"      icon="🔁"
+              active={looping}    disabled={!activeDeck} color="#a55eea" onClick={() => setLooping(l => !l)}/>
             <FeatBtn id="dj-btn-effect" label={activeEffect !== 'none' ? activeEffect.toUpperCase() : 'EFFECT'} icon="✨"
-              active={activeEffect !== 'none'} disabled={!activeDeck}
-              color="#3a8fff" onClick={handleEffect}/>
+              active={activeEffect !== 'none'} disabled={!activeDeck} color="#3a8fff" onClick={handleEffect}/>
           </div>
 
-          {/* Feature buttons row 2 */}
           <div style={{ display:'flex', gap:8, width:'100%' }}>
             <FeatBtn id="dj-btn-bpmsync" label="BPM SYNC" icon="🎵"
-              active={false} disabled={!activeDeck}
-              color="#2ed573" onClick={() => {}}/>
-            <FeatBtn id="dj-btn-cue" label="CUE"      icon="🎧"
-              active={cueActive} disabled={!activeDeck}
-              color="#00d4ff" onClick={() => setCueActive(c => !c)}/>
+              active={false} disabled={!activeDeck} color="#2ed573" onClick={() => {}}/>
+            <FeatBtn id="dj-btn-cue" label="CUE" icon="🎧"
+              active={cueActive} disabled={!activeDeck} color="#00d4ff" onClick={() => setCueActive(c => !c)}/>
             <FeatBtn id="dj-btn-rec" label={recording ? 'STOP REC' : 'REC'} icon={recording ? '⏹' : '⏺'}
-              active={recording} disabled={!activeDeck}
-              color="#e03c3c" onClick={handleRecord}/>
+              active={recording} disabled={!activeDeck} color="#e03c3c" onClick={handleRecord}/>
           </div>
 
-          {/* Status bar */}
           <div style={{ width:'100%', background:'rgba(0,0,0,.4)', borderRadius:10,
             border:`1px solid ${accentColor}22`, padding:'10px 16px',
             display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
             <span style={{ fontFamily:'var(--dj-mono)', fontSize:11, color:statusColor,
-              fontWeight:700, letterSpacing:1, animation: isLive ? 'none' : 'none' }}>
+              fontWeight:700, letterSpacing:1 }}>
               {statusText}
             </span>
             {activeDeck && (
@@ -790,7 +889,6 @@ function DJBoothController({ session, onExit }) {
             )}
           </div>
 
-          {/* Effect indicator */}
           {activeEffect !== 'none' && (
             <div style={{ fontFamily:'var(--dj-mono)', fontSize:9, color:'#3a8fff',
               letterSpacing:2, animation:'djLivePulse 1.5s infinite' }}>
@@ -799,22 +897,17 @@ function DJBoothController({ session, onExit }) {
           )}
         </div>
 
-        {/* RIGHT JOG WHEEL */}
         <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10 }}>
-          <div style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)',
-            letterSpacing:2 }}>JOG R</div>
+          <div style={{ fontFamily:'var(--dj-mono)', fontSize:8, color:'var(--dj-muted)', letterSpacing:2 }}>JOG R</div>
           <JogWheel color={accentColor} status={jogStatus} size={170}/>
-          <div style={{ fontFamily:'var(--dj-mono)', fontSize:9, color:`${accentColor}88`,
-            letterSpacing:1 }}>
+          <div style={{ fontFamily:'var(--dj-mono)', fontSize:9, color:`${accentColor}88`, letterSpacing:1 }}>
             {activeDeck ? `DECK ${activeDeck.toUpperCase()}` : '—'}
           </div>
         </div>
 
-        {/* RIGHT DECKS */}
         {renderDeckColumn(DECK_ORDER_RIGHT)}
       </div>
 
-      {/* ── BOTTOM STREAM INSTRUCTION ─────────────────────────────────────── */}
       {!activeDeck && (
         <div style={{ borderTop:'1px solid var(--dj-border)', padding:'8px 20px',
           display:'flex', alignItems:'center', justifyContent:'center', gap:8, flexShrink:0 }}>
@@ -835,8 +928,8 @@ export default function DJPage() {
 
   useEffect(() => { injectCSS(); }, []);
 
-  const handleConnect = useCallback(cfg  => setSession(cfg),  []);
-  const handleExit    = useCallback(()   => setSession(null), []);
+  const handleConnect = useCallback(cfg => setSession(cfg),  []);
+  const handleExit    = useCallback(()  => setSession(null), []);
 
   return (
     <div className="djp">
