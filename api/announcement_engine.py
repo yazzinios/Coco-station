@@ -205,12 +205,32 @@ async def _play_content(filepath: str, deck_ids: List[str]) -> None:
 
     - Drains stale events before registering fresh ones.
     - Registers events ONLY for the target deck_ids.
-    - Hard timeout: 120 s.
+    - Hard timeout: max(duration + 10s, 30s) — prevents infinite wait if
+      announcement_ended callback is missed (e.g. network hiccup to mixer).
 
     filepath is the MIXER-side path (e.g. /announcements/foo.mp3).
     """
     # Belt-and-suspenders drain after the jingle already drained
     _drain_all_events()
+
+    # FIX: compute a smarter timeout from the actual file duration
+    # The mixer-side path starts with /announcements/ — map to API-side path for ffprobe
+    try:
+        local_filename = Path(filepath).name
+        # Try to find the file on the API-side announcements directory
+        local_path = Path("data/announcements") / local_filename
+        if not local_path.exists():
+            local_path = Path("/app/data/announcements") / local_filename
+        if local_path.exists():
+            content_duration = await get_audio_duration(local_path)
+        else:
+            content_duration = 60.0  # safe fallback
+    except Exception:
+        content_duration = 60.0
+
+    # Wait duration = audio duration + 10s grace, minimum 30s
+    wait_timeout = max(content_duration + 10.0, 30.0)
+    print(f"[engine] Content duration={content_duration:.1f}s → timeout={wait_timeout:.1f}s")
 
     # Register fresh events for exactly the decks we're sending to
     events: List[asyncio.Event] = []
@@ -247,11 +267,11 @@ async def _play_content(filepath: str, deck_ids: List[str]) -> None:
     try:
         await asyncio.wait_for(
             asyncio.gather(*[ev.wait() for ev in events]),
-            timeout=120.0,
+            timeout=wait_timeout,
         )
         print(f"[engine] ✓ Announcement finished on decks: {deck_ids}")
     except asyncio.TimeoutError:
-        print(f"[engine] ✗ Announcement timed out (120 s) on decks {deck_ids}")
+        print(f"[engine] ✗ Announcement timed out ({wait_timeout:.0f}s) on decks {deck_ids}")
     finally:
         for did in deck_ids:
             _ANNOUNCEMENT_EVENTS.pop(did, None)

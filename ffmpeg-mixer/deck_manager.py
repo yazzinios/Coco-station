@@ -184,7 +184,7 @@ class Deck:
         self._seek_offset     = 0.0   # seconds already consumed before start
 
         self.track_q = queue.Queue(maxsize=500)
-        self.ann_q   = queue.Queue(maxsize=200)
+        self.ann_q   = queue.Queue(maxsize=2000)  # FIX: was 200 (~4.6s) → 2000 (~46s); prevents audio cutoff on long announcements
         self.mic_q   = queue.Queue(maxsize=100)
 
         # Crossfade state
@@ -408,7 +408,9 @@ class Deck:
                 try:
                     q.put(chunk, timeout=2)
                 except queue.Full:
-                    pass
+                    # FIX: log ann_q overflow so we can diagnose cutoffs
+                    if proc_name in ("ann", "jingle"):
+                        print(f"[Deck {self.name}] ⚠ ann_q FULL — chunk dropped for {proc_name}")
         except Exception:
             pass
         finally:
@@ -656,14 +658,18 @@ class Deck:
                     pass
             self.ann_proc = None
 
-            drained = 0
-            while not self.ann_q.empty():
-                try:
-                    self.ann_q.get_nowait(); drained += 1
-                except Exception:
-                    break
-            if drained:
-                print(f"[Deck {self.name}] Drained {drained} stale ann_q chunks")
+            # FIX: only drain ann_q when starting a NEW announcement (notify=True).
+            # When playing a jingle (notify=False), do NOT drain — the previous
+            # jingle's chunks may still be playing and draining them causes cutoff.
+            if notify:
+                drained = 0
+                while not self.ann_q.empty():
+                    try:
+                        self.ann_q.get_nowait(); drained += 1
+                    except Exception:
+                        break
+                if drained:
+                    print(f"[Deck {self.name}] Drained {drained} stale ann_q chunks")
 
             self._ann_generation += 1
             current_gen      = self._ann_generation

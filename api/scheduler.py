@@ -716,6 +716,25 @@ def register_recurring_job(rs: dict) -> None:
         print(f"[apscheduler] Registered '{rs.get('name')}' -> {rs.get('start_time')} on days {active_days}")
 
 
+# ── Top-level stop function (must be module-level for APScheduler to reference properly) ──
+async def _ap_stop_mixer_by_id(schedule_id: str) -> None:
+    """Stop a recurring mixer schedule by ID. Must be module-level for APScheduler."""
+    recs = _state.get("recurring_mixer_schedules", [])
+    r = next((x for x in recs if x["id"] == schedule_id), None)
+    if r:
+        await _stop_recurring_mixer_schedule(r)
+        mgr = _state.get("manager")
+        if mgr:
+            await mgr.broadcast({
+                "type": "NOTIFICATION",
+                "message": f"Mixer stopped: {r.get('name', schedule_id)}",
+                "style": "info",
+            })
+            await mgr.broadcast({"type": "DECK_STATE", "decks": list(_state.get("decks", {}).values())})
+    else:
+        print(f"[mixer-scheduler] stop: schedule {schedule_id} not found")
+
+
 def register_mixer_job(rs: dict) -> None:
     """Register or reschedule a CronTrigger job for a recurring mixer schedule.
     Also registers a stop job if stop_time is set.
@@ -762,28 +781,20 @@ def register_mixer_job(rs: dict) -> None:
         sh, sm = _parse_hhmm(stop_time)
         if sh is not None:
             stop_trigger = _make_cron_trigger(sh, sm, active_days)
-            async def _ap_stop_mixer(sid=rs["id"]):
-                recs = _state["recurring_mixer_schedules"]
-                r = next((x for x in recs if x["id"] == sid), None)
-                if r:
-                    await _stop_recurring_mixer_schedule(r)
-                    mgr = _state["manager"]
-                    await mgr.broadcast({"type": "NOTIFICATION",
-                                        "message": f"Mixer stopped: {r.get('name', sid)}",
-                                        "style": "info"})
             existing_stop = ap_scheduler.get_job(stop_job_id)
             if existing_stop:
                 ap_scheduler.reschedule_job(stop_job_id, trigger=stop_trigger)
                 print(f"[apscheduler] Rescheduled mixer stop '{rs.get('name')}' -> {stop_time}")
             else:
                 ap_scheduler.add_job(
-                    _ap_stop_mixer,
+                    _ap_stop_mixer_by_id,          # FIX: module-level fn, no closure
                     stop_trigger,
                     id=stop_job_id,
                     name=f"Mixer Stop: {rs.get('name')}",
+                    args=[rs["id"]],               # pass schedule_id as arg, not via closure
                     replace_existing=True,
                 )
-                print(f"[apscheduler] Registered mixer stop '{rs.get('name')}' -> {stop_time}")
+                print(f"[apscheduler] Registered mixer stop '{rs.get('name')}' -> {stop_time} (job {stop_job_id})")
     else:
         # No stop_time — remove any previously registered stop job
         try:
