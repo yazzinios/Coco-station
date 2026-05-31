@@ -218,8 +218,24 @@ async def _trigger_music_schedule(s: dict) -> None:
     # Using crossfade when a playlist is active causes both streams to play
     # simultaneously. A hard stop + short settle delay gives ffmpeg time to
     # fully tear down the previous process before the new one starts.
+    #
+    # IMPORTANT: we must clear the deck's playlist state BEFORE sending the
+    # stop command to ffmpeg-mixer. The stop triggers a track_ended callback
+    # from the mixer which hits /api/decks/{id}/track_ended. If a playlist is
+    # still active at that moment the track_ended handler will immediately
+    # advance to the next playlist track and start it — racing with the
+    # scheduled track we're about to play. Clearing deck_playlists and
+    # playlist_id first makes track_ended a no-op for this deck.
     deck_was_playing = decks.get(deck_id, {}).get("is_playing", False)
     if deck_was_playing:
+        # Clear playlist state atomically before stopping so the track_ended
+        # callback sees no active playlist and does nothing.
+        deck_playlists[deck_id] = None
+        decks[deck_id]["playlist_id"]    = None
+        decks[deck_id]["playlist_index"] = None
+        decks[deck_id]["playlist_loop"]  = False
+        # Mark the deck as intentionally stopping so track_ended is ignored.
+        decks[deck_id]["_scheduler_stopping"] = True
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 await c.post(f"{ffmpeg_url}/decks/{deck_id}/stop")
@@ -229,6 +245,8 @@ async def _trigger_music_schedule(s: dict) -> None:
             await asyncio.sleep(_STOP_SETTLE_SECS)
         except Exception as e:
             print(f"[scheduler] stop before play failed for {deck_id}: {e}")
+        finally:
+            decks[deck_id].pop("_scheduler_stopping", None)
 
     async def _play_on_deck(filepath: str, loop_: bool) -> None:
         try:

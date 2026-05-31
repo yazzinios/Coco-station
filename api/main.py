@@ -1728,6 +1728,13 @@ async def dead_air(deck_id: str):
 @app.post("/api/decks/{deck_id}/track_ended")
 async def track_ended(deck_id: str):
     if deck_id not in DECKS: return {"status": "ignored"}
+    # Ignore track_ended callbacks fired by the scheduler's own stop command.
+    # When the scheduler stops a deck before replacing the track it sets this
+    # flag to prevent track_ended from resuming the old playlist and creating
+    # a double-play race condition.
+    if DECKS[deck_id].get("_scheduler_stopping"):
+        print(f"[track_ended] deck {deck_id} — suppressed (scheduler stop in progress)")
+        return {"status": "ignored", "reason": "scheduler_stopping"}
     playlist_state = DECK_PLAYLISTS.get(deck_id)
     if not playlist_state:
         DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False

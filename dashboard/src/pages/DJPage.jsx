@@ -116,7 +116,8 @@ function classifyDevice(label = '') {
    SETUP SCREEN
 ══════════════════════════════════════════════════════════════════════════ */
 function SetupScreen({ onConnect }) {
-  const { currentUser, token } = useApp() || {};
+  const appCtx = useApp();
+  const { currentUser, token } = appCtx || {};
   const djName = buildDJName(currentUser);
 
   const [devices,    setDevices]    = useState([]);
@@ -173,6 +174,11 @@ function SetupScreen({ onConnect }) {
     if (!audioSrc) return;
     setConnecting(true);
     setApiErr('');
+    if (!token) {
+      setApiErr('Not authenticated — please log in again.');
+      setConnecting(false);
+      return;
+    }
     try {
       const res = await fetch(`${API}/api/dj/session/start`, {
         method:  'POST',
@@ -571,8 +577,9 @@ function LiveTimer({ startedAt }) {
    MAIN DJ BOOTH CONTROLLER
 ══════════════════════════════════════════════════════════════════════════ */
 function DJBoothController({ session, onExit }) {
-  const { token } = useApp() || {};
-  const tk = token || session.token;
+  const appCtx = useApp();
+  const { token } = appCtx || {};
+  const tk = token || session.token || '';
 
   const [deckStates,   setDeckStates]   = useState(session.initialDecks || {});
   const [activeDeck,   setActiveDeck]   = useState(null);
