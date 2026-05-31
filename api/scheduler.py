@@ -208,22 +208,22 @@ async def _trigger_music_schedule(s: dict) -> None:
         current_vol = duck_pct
         print(f"[scheduler] Ducking active; starting {deck_id} at {duck_pct}%")
 
-    # FIX: snapshot is_playing BEFORE mutating deck state below.
-    # _play_on_deck used to read is_playing from the dict AFTER the update,
-    # so every "track" schedule saw is_playing=True and incorrectly crossfaded
-    # instead of doing a clean hard-play on an idle deck.
+    # FIX: always stop the deck before playing a scheduled track.
+    # Using crossfade when a playlist is active causes both streams to play
+    # simultaneously. A hard stop + play gives a clean takeover.
     deck_was_playing = decks.get(deck_id, {}).get("is_playing", False)
+    if deck_was_playing:
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.post(f"{ffmpeg_url}/decks/{deck_id}/stop")
+        except Exception as e:
+            print(f"[scheduler] stop before play failed for {deck_id}: {e}")
 
     async def _play_on_deck(filepath: str, loop_: bool) -> None:
         try:
             async with httpx.AsyncClient(timeout=5) as c:
-                # Use the pre-mutation snapshot — not the live dict value
-                if deck_was_playing:
-                    await c.post(f"{ffmpeg_url}/decks/{deck_id}/crossfade",
-                                 json={"filepath": filepath, "loop": loop_})
-                else:
-                    await c.post(f"{ffmpeg_url}/decks/{deck_id}/play",
-                                 json={"filepath": filepath, "loop": loop_})
+                await c.post(f"{ffmpeg_url}/decks/{deck_id}/play",
+                             json={"filepath": filepath, "loop": loop_})
                 await c.post(f"{ffmpeg_url}/decks/{deck_id}/volume/{current_vol}")
         except Exception as e:
             print(f"[scheduler] HTTP error playing {deck_id}: {e}")

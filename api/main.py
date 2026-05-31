@@ -872,6 +872,40 @@ async def mic_audio_ws(websocket: WebSocket):
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
 
+# MIME types browsers wrongly use for M4A files, mapped to the correct extension
+_MIME_TO_EXT = {
+    "audio/mp4":  ".m4a",
+    "video/mp4":  ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/m4a":  ".m4a",
+}
+
+def _safe_audio_filename(filename: str, content_type: str = "") -> str:
+    """
+    Return a sanitised filename with the correct audio extension.
+    Handles the common browser bug where .m4a files are sent as .mp4
+    (because the browser assigns MIME type audio/mp4 or video/mp4).
+    """
+    p = Path(filename)
+    stem = p.stem          # e.g. 'Bienvenue arabe.m4a'  (if browser added .mp4)
+    ext  = p.suffix.lower()  # e.g. '.mp4'
+
+    # If the browser renamed .m4a → .mp4, the stem will still contain
+    # the real extension (e.g. 'track.m4a' → stem='track.m4a', ext='.mp4').
+    # Detect and unwrap that case.
+    stem_path = Path(stem)
+    if stem_path.suffix.lower() in ALLOWED_AUDIO and ext not in ALLOWED_AUDIO:
+        # Real extension is embedded in the stem — use it directly
+        return stem_path.name
+
+    # If the MIME type tells us the real format, override a wrong extension
+    if content_type and ext not in ALLOWED_AUDIO:
+        correct_ext = _MIME_TO_EXT.get(content_type.split(";")[0].strip().lower())
+        if correct_ext:
+            return stem + correct_ext
+
+    return p.name
+
 @app.get("/api/library/public")
 def list_library_public():
     items = [{"filename": f.name} for f in MEDIA_DIR.iterdir() if f.suffix.lower() in ALLOWED_AUDIO]
@@ -885,9 +919,10 @@ def list_library():
 
 @app.post("/api/library/upload")
 async def upload_track(file: UploadFile = File(...), _user=Depends(require_permission("can_library"))):
-    if not any(file.filename.lower().endswith(e) for e in ALLOWED_AUDIO):
+    if not any(file.filename.lower().endswith(e) for e in ALLOWED_AUDIO) \
+            and not any(file.content_type == ct for ct in _MIME_TO_EXT):
         raise HTTPException(status_code=400, detail="Only audio files allowed")
-    safe_name = Path(file.filename).name
+    safe_name = _safe_audio_filename(file.filename, file.content_type or "")
     dest = MEDIA_DIR / safe_name
     content = await file.read()
     await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
@@ -1344,9 +1379,10 @@ async def create_tts_announcement(req: TTSRequest, _user=Depends(require_permiss
 async def upload_announcement(file: UploadFile = File(...), name: str = "Announcement",
                                targets: str = "ALL", scheduled_at: Optional[str] = None,
                                _user=Depends(require_permission("can_announce"))):
-    if not any(file.filename.lower().endswith(e) for e in {".mp3",".wav",".ogg",".m4a",".flac",".aac"}):
+    if not any(file.filename.lower().endswith(e) for e in {".mp3",".wav",".ogg",".m4a",".flac",".aac"}) \
+            and not any(file.content_type == ct for ct in _MIME_TO_EXT):
         raise HTTPException(status_code=400, detail="Only audio files allowed (MP3, WAV, OGG, M4A, FLAC, AAC)")
-    safe_name = Path(file.filename).name
+    safe_name = _safe_audio_filename(file.filename, file.content_type or "")
     dest = ANNOUNCEMENTS_DIR / safe_name
     content = await file.read()
     await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
