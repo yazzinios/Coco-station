@@ -303,8 +303,10 @@ DO $$ BEGIN
 
     -- ── recurring_mixer_schedules ────────────────────────────────────────────
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recurring_mixer_schedules') THEN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'stop_time') THEN
-            ALTER TABLE recurring_mixer_schedules DROP COLUMN stop_time;
+        -- NOTE: stop_time was dropped in migration 007 but is now required again.
+        -- Add it back if it doesn't exist (migration 016 handles new installs too).
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'stop_time') THEN
+            ALTER TABLE recurring_mixer_schedules ADD COLUMN stop_time TEXT DEFAULT NULL;
         END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_mixer_schedules' AND column_name = 'deck_ids') THEN
             ALTER TABLE recurring_mixer_schedules ADD COLUMN deck_ids JSONB DEFAULT '[]';
