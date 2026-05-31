@@ -396,8 +396,7 @@ async def dj_announce(
                 await asyncio.sleep(6)
 
             elif req.text and _tts_fn:
-                loop     = asyncio.get_running_loop()
-                tts_path = await loop.run_in_executor(None, _tts_fn, req.text)
+                tts_path = await _tts_fn(req.text)
                 if tts_path and _audio_dur_fn:
                     duration = await _audio_dur_fn(Path(tts_path))
                     async with httpx.AsyncClient(timeout=5) as c:

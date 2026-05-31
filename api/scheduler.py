@@ -234,9 +234,13 @@ async def _trigger_music_schedule(s: dict) -> None:
         filename = s["target_id"]
         if not (media_dir / filename).exists():
             print(f"[scheduler] Track not found: {filename}"); return
+        # Clear any active playlist so track_ended / dead_air callbacks
+        # don't resume the old playlist after the scheduled track finishes.
+        deck_playlists[deck_id] = None
         decks[deck_id].update({
             "track": filename, "is_playing": True, "is_paused": False,
-            "is_loop": loop, "playlist_id": None, "playlist_index": None, "volume": current_vol,
+            "is_loop": loop, "playlist_id": None, "playlist_index": None,
+            "playlist_loop": False, "volume": current_vol,
         })
         await _play_on_deck(str(Path("/library") / filename), loop)
 

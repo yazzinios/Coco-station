@@ -362,23 +362,21 @@ export function AppProvider({ children }) {
         break;
       case 'DECK_STATE':
         if (msg.decks) {
-          const m = {};
-          // FIX: preserve existing playlist state when merging DECK_STATE.
-          // The old code only defaulted is_loop but not playlist fields, so a
-          // DECK_STATE broadcast that omits playlist_id/playlist_loop/playlist_index
-          // would silently reset them to undefined, breaking the playlist UI.
-          msg.decks.forEach(d => {
-            const prev = decks[d.id] || {};
-            m[d.id] = {
-              is_loop: false,
-              playlist_id: null,
-              playlist_index: null,
-              playlist_loop: false,
-              ...prev,   // keep existing state as base
-              ...d,      // server values win
-            };
+          setDecks(prev => {
+            const m = {};
+            msg.decks.forEach(d => {
+              const existing = prev[d.id] || {};
+              m[d.id] = {
+                is_loop: false,
+                playlist_id: null,
+                playlist_index: null,
+                playlist_loop: false,
+                ...existing,
+                ...d,
+              };
+            });
+            return m;
           });
-          setDecks(m);
         }
         break;
       case 'MIC_STATUS':            setMic({ active: msg.active, targets: msg.targets || [] }); break;
@@ -720,17 +718,19 @@ export function AppProvider({ children }) {
     },
     // ── Recurring Mixer Schedules ──
     createRecurringMixerSchedule: async (payload) => {
+      const cleaned = { ...payload, stop_time: payload.stop_time || null };
       const r = await authFetch('/api/recurring-mixer-schedules', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(cleaned),
       });
       if (!r.ok) throw new Error(await parseError(r));
       await fetchRecurringMixerSchedules(); return r.json();
     },
     updateRecurringMixerSchedule: async (id, payload) => {
+      const cleaned = { ...payload, stop_time: payload.stop_time || null };
       const r = await authFetch(`/api/recurring-mixer-schedules/${id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(cleaned),
       });
       if (!r.ok) throw new Error(await parseError(r));
       await fetchRecurringMixerSchedules(); return r.json();

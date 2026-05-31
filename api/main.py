@@ -282,7 +282,7 @@ async def lifespan(app: FastAPI):
             else:
                 print(f"[startup] {jt} jingle OK: {stored}")
         else:
-            for ext in [".mp3", ".wav", ".ogg"]:
+            for ext in [".mp3", ".wav", ".ogg", ".m4a"]:
                 candidate = f"global_jingle_{jt}{ext}"
                 if (CHIMES_DIR / candidate).exists():
                     SETTINGS[key] = candidate
@@ -316,7 +316,15 @@ async def lifespan(app: FastAPI):
                         total = 0
                         for item in resp.json().get("items", []):
                             readers = item.get("readers", [])
-                            total += len(readers) if isinstance(readers, list) else item.get("readersCount", 0)
+                            reader_list = readers if isinstance(readers, list) else []
+                            total += len(reader_list) if reader_list else item.get("readersCount", 0)
+                            path_name = item.get("name", "")
+                            for r in reader_list:
+                                addr = r.get("remoteAddr") or r.get("raddr") or r.get("addr", "")
+                                ip   = addr.split(":")[0] if ":" in addr else addr
+                                if ip:
+                                    proto = r.get("type", r.get("proto", "rtsp"))
+                                    _record_listener(ip, path_name, proto)
                         CURRENT_LISTENERS = total
                         if total > PEAK_LISTENERS:
                             PEAK_LISTENERS = total
@@ -460,7 +468,7 @@ async def delete_company_logo(_user=Depends(verify_token)):
 #  GLOBAL JINGLE ENDPOINTS  (intro + outro)
 # ═══════════════════════════════════════════════════════════
 
-ALLOWED_JINGLE_EXTS = {".mp3", ".wav", ".ogg"}
+ALLOWED_JINGLE_EXTS = {".mp3", ".wav", ".ogg", ".m4a"}
 
 @app.get("/api/settings/jingles/status")
 def jingle_status():
@@ -495,7 +503,7 @@ async def upload_jingle(
     if jingle_type not in ("intro", "outro"):
         raise HTTPException(status_code=400, detail="jingle_type must be 'intro' or 'outro'")
     if not any(file.filename.lower().endswith(e) for e in ALLOWED_JINGLE_EXTS):
-        raise HTTPException(status_code=400, detail="Only MP3, WAV, OGG allowed")
+        raise HTTPException(status_code=400, detail="Only MP3, WAV, OGG, M4A allowed")
 
     safe_name = f"global_jingle_{jingle_type}{Path(file.filename).suffix.lower()}"
     dest = CHIMES_DIR / safe_name
@@ -927,7 +935,12 @@ async def load_track(deck_id: str, req: PlayRequest, request: Request, _user=Dep
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     if not (MEDIA_DIR / req.track_id).exists(): raise HTTPException(status_code=404, detail="Track not found")
     DECKS[deck_id]["track"] = req.track_id
-    DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
+    DECKS[deck_id]["is_playing"] = False
+    DECKS[deck_id]["is_paused"] = False
+    DECKS[deck_id]["playlist_id"] = None
+    DECKS[deck_id]["playlist_index"] = None
+    DECKS[deck_id]["playlist_loop"] = False
+    DECK_PLAYLISTS[deck_id] = None
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     _audit(request, _user, "deck.load_track", {"deck": deck_id, "track": req.track_id})
     return {"status": "ok", "deck": deck_id, "track": req.track_id}
@@ -1331,8 +1344,8 @@ async def create_tts_announcement(req: TTSRequest, _user=Depends(require_permiss
 async def upload_announcement(file: UploadFile = File(...), name: str = "Announcement",
                                targets: str = "ALL", scheduled_at: Optional[str] = None,
                                _user=Depends(require_permission("can_announce"))):
-    if not any(file.filename.lower().endswith(e) for e in {".mp3",".wav",".ogg"}):
-        raise HTTPException(status_code=400, detail="Only audio files allowed")
+    if not any(file.filename.lower().endswith(e) for e in {".mp3",".wav",".ogg",".m4a",".flac",".aac"}):
+        raise HTTPException(status_code=400, detail="Only audio files allowed (MP3, WAV, OGG, M4A, FLAC, AAC)")
     safe_name = Path(file.filename).name
     dest = ANNOUNCEMENTS_DIR / safe_name
     content = await file.read()
@@ -1435,6 +1448,38 @@ async def delete_announcement(ann_id: str, _user=Depends(require_permission("can
 # ── Listener IP → friendly label mapping ────────────────────
 # Shared dict for both RTSP listeners AND RTMP publishers
 LISTENER_IP_LABELS: dict = {}
+
+# ── Listener connection history (in-memory) ──────────────────
+# key: "{ip}|{deck_path}"  →  {ip, deck, first_seen, last_seen, hit_count}
+LISTENER_HISTORY: dict = {}
+
+def _record_listener(ip: str, deck: str, protocol: str):
+    """Called from the background poller whenever an IP is seen on a path."""
+    key = f"{ip}|{deck}"
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    if key in LISTENER_HISTORY:
+        LISTENER_HISTORY[key]["last_seen"]  = now
+        LISTENER_HISTORY[key]["hit_count"] += 1
+    else:
+        LISTENER_HISTORY[key] = {
+            "ip": ip, "deck": deck, "protocol": protocol,
+            "first_seen": now, "last_seen": now, "hit_count": 1,
+        }
+
+@app.get("/api/listener-history")
+async def get_listener_history(_user=Depends(verify_token)):
+    """Return historical connection records sorted by last_seen desc."""
+    rows = list(LISTENER_HISTORY.values())
+    rows.sort(key=lambda r: r["last_seen"], reverse=True)
+    for r in rows:
+        r["label"] = LISTENER_IP_LABELS.get(r["ip"], "")
+    return rows
+
+@app.delete("/api/listener-history")
+async def clear_listener_history(_user=Depends(verify_token)):
+    """Clear all history (admin action)."""
+    LISTENER_HISTORY.clear()
+    return {"cleared": True}
 
 @app.get("/api/listener-labels")
 async def get_listener_labels(_user=Depends(verify_token)):

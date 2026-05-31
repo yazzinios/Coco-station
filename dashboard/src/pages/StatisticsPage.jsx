@@ -31,6 +31,8 @@ export default function StatisticsPage() {
   const [editingIp, setEditingIp] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [nowTs,     setNowTs]     = useState(Date.now());
+  const [history,   setHistory]   = useState([]);
+  const [histFilter, setHistFilter] = useState('');
 
   // Live uptime counter
   useEffect(() => {
@@ -61,6 +63,18 @@ export default function StatisticsPage() {
     };
     fetch_();
     const id = setInterval(fetch_, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Load saved labels once
+  useEffect(() => {
+    authFetch('/api/listener-history')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setHistory(data))
+      .catch(() => {});
+    const id = setInterval(() => {
+      authFetch('/api/listener-history').then(r => r.ok ? r.json() : []).then(setHistory).catch(() => {});
+    }, 30000);
     return () => clearInterval(id);
   }, []);
 
@@ -431,6 +445,76 @@ export default function StatisticsPage() {
             </tbody>
           </table>
         )}
+      </div>
+
+      {/* ── Listener History Table ── */}
+      <div className="glass-panel" style={{ marginTop: '1rem' }}>
+        <h3 style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <Clock size={16} /> Connection History
+          <span style={{ marginLeft: '0.5rem', fontSize: '0.72rem', padding: '0.15rem 0.5rem', borderRadius: '10px', background: 'rgba(165,94,234,0.12)', color: '#a55eea', border: '1px solid rgba(165,94,234,0.25)', fontWeight: '600' }}>
+            {history.length} unique connection{history.length !== 1 ? 's' : ''}
+          </span>
+          <input
+            value={histFilter}
+            onChange={e => setHistFilter(e.target.value)}
+            placeholder="Filter by IP or deck…"
+            style={{ marginLeft: 'auto', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#fff', padding: '0.25rem 0.6rem', fontSize: '0.76rem', width: '180px' }}
+          />
+          <button
+            onClick={async () => { try { await authFetch('/api/listener-history', { method: 'DELETE' }); setHistory([]); } catch {} }}
+            style={{ background: 'rgba(255,107,129,0.08)', border: '1px solid rgba(255,107,129,0.2)', borderRadius: '8px', color: '#ff6b81', padding: '0.25rem 0.6rem', fontSize: '0.72rem', cursor: 'pointer' }}
+          >Clear</button>
+        </h3>
+        {history.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2rem', color: 'rgba(255,255,255,0.25)', fontSize: '0.85rem' }}>
+            No connection history yet — data accumulates as listeners tune in
+          </div>
+        ) : (() => {
+          const DECK_COLORS = { 'deck-a': '#00d4ff', 'deck-b': '#26de81', 'deck-c': '#fd9644', 'deck-d': '#a55eea', 'deck-e': '#ff6b81', 'deck-f': '#45aaf2' };
+          const filtered = histFilter
+            ? history.filter(r => r.ip.includes(histFilter) || r.deck.includes(histFilter) || (r.label || '').toLowerCase().includes(histFilter.toLowerCase()))
+            : history;
+          const fmt = iso => { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+          return (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+              <thead>
+                <tr style={{ color: 'rgba(255,255,255,0.35)', textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>IP Address</th>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>Zone / Label</th>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>Deck</th>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>Protocol</th>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>First Seen</th>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>Last Seen</th>
+                  <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Sessions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r, i) => {
+                  const color = DECK_COLORS[r.deck] || '#aaa';
+                  const isLive = activeReaders.some(ar => ar.ip === r.ip && ar.deck === r.deck);
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: isLive ? 'rgba(46,213,115,0.03)' : 'transparent' }}>
+                      <td style={{ padding: '0.5rem 0.6rem' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          {isLive && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#2ed573', boxShadow: '0 0 5px #2ed573', display: 'inline-block', flexShrink: 0 }} />}
+                          <span style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{r.ip}</span>
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.5rem 0.6rem' }}>{renderLabelCell(r.ip, labels[r.ip] || r.label || '')}</td>
+                      <td style={{ padding: '0.5rem 0.6rem' }}>
+                        <span style={{ display: 'inline-block', padding: '0.15rem 0.45rem', borderRadius: '10px', fontSize: '0.7rem', fontWeight: '700', color, background: `${color}18`, border: `1px solid ${color}44` }}>{r.deck}</span>
+                      </td>
+                      <td style={{ padding: '0.5rem 0.6rem', fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase' }}>{r.protocol || 'rtsp'}</td>
+                      <td style={{ padding: '0.5rem 0.6rem', fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)' }}>{fmt(r.first_seen)}</td>
+                      <td style={{ padding: '0.5rem 0.6rem', fontSize: '0.75rem', color: isLive ? '#2ed573' : 'rgba(255,255,255,0.5)' }}>{fmt(r.last_seen)}</td>
+                      <td style={{ padding: '0.5rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#a55eea', fontWeight: '600' }}>{r.hit_count}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          );
+        })()}
       </div>
 
       {/* Status row */}

@@ -316,8 +316,8 @@ function MixerSchedules() {
                 </div>
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>Stop Time <span style={{ color: 'var(--text-secondary)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
-                  <input type="time" value={form.stop_time || ''}
-                    onChange={e => setForm({ ...form, stop_time: e.target.value || '' })}
+                  <input type="time" value={form.stop_time ?? ''}
+                    onChange={e => setForm({ ...form, stop_time: e.target.value })}
                     style={{ ...inputStyle, colorScheme: 'dark' }} />
                 </div>
               </div>
