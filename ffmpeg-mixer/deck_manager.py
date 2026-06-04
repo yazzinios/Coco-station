@@ -427,8 +427,21 @@ class Deck:
                 my_generation      = getattr(proc, "_ann_generation", None)
                 current_generation = self._ann_generation
                 if my_generation is None or my_generation == current_generation:
+                    # FIX: Wait until ann_q is fully drained before notifying.
+                    # This ensures the last audio chunks are actually played out
+                    # before the API is told the announcement ended (which would
+                    # trigger music resume / jingle crossfade and cut off the tail).
+                    def _wait_and_notify(deck_ref, gen):
+                        deadline = time.time() + 10.0  # safety timeout
+                        while time.time() < deadline:
+                            if deck_ref.ann_q.empty():
+                                break
+                            time.sleep(CHUNK_DURATION * 2)
+                        # Only notify if no newer announcement has started
+                        if gen is None or gen == deck_ref._ann_generation:
+                            _notify_announcement_ended(deck_ref.name)
                     threading.Thread(
-                        target=_notify_announcement_ended, args=(self.name,), daemon=True
+                        target=_wait_and_notify, args=(self, my_generation), daemon=True
                     ).start()
 
     def crossfade_to(self, filepath: str, loop: bool = False,

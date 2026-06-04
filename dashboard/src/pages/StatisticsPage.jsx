@@ -53,7 +53,7 @@ export default function StatisticsPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Poll /api/listeners every 10 s
+  // Poll /api/listeners every 5 s (faster for live IP tracking)
   useEffect(() => {
     const fetch_ = async () => {
       try {
@@ -62,7 +62,7 @@ export default function StatisticsPage() {
       } catch {}
     };
     fetch_();
-    const id = setInterval(fetch_, 10000);
+    const id = setInterval(fetch_, 5000);
     return () => clearInterval(id);
   }, []);
 
@@ -153,11 +153,19 @@ export default function StatisticsPage() {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   };
 
+  const uniqueConnectedIps = useMemo(() => {
+    const ips = new Set();
+    activeReaders.forEach(r => r.ip && ips.add(r.ip));
+    activePublishers.forEach(p => p.ip && ips.add(p.ip));
+    return ips.size;
+  }, [activeReaders, activePublishers]);
+
   const statCards = stats ? [
-    { label: 'Total Uptime',   value: formatUptime(),              icon: <Clock   size={22} />, color: '#00d4ff' },
-    { label: 'Tracks Played',  value: stats.tracks_played ?? 0,    icon: <Music   size={22} />, color: '#26de81' },
-    { label: 'Active Decks',   value: `${activeDeckCount} / 6`,    icon: <Layers  size={22} />, color: '#a55eea' },
-    { label: 'Library Tracks', value: stats.library_count ?? 0,    icon: <Library size={22} />, color: '#fd9644' },
+    { label: 'Total Uptime',    value: formatUptime(),              icon: <Clock   size={22} />, color: '#00d4ff' },
+    { label: 'Tracks Played',   value: stats.tracks_played ?? 0,    icon: <Music   size={22} />, color: '#26de81' },
+    { label: 'Active Decks',    value: `${activeDeckCount} / 6`,    icon: <Layers  size={22} />, color: '#a55eea' },
+    { label: 'Library Tracks',  value: stats.library_count ?? 0,    icon: <Library size={22} />, color: '#fd9644' },
+    { label: 'Connected IPs',   value: uniqueConnectedIps,          icon: <Wifi    size={22} />, color: '#2ed573' },
   ] : [];
 
   // Shared inline edit cell renderer

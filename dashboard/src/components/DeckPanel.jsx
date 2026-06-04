@@ -212,6 +212,15 @@ export default function DeckPanel({ id }) {
 
   const deck  = decks[id] || { id, name: `Deck ${id.toUpperCase()}`, track: null, volume: 100, is_playing: false, is_paused: false, is_loop: false, playlist_id: null, playlist_index: null, playlist_loop: false, is_crossfading: false };
 
+  // FIX: Keep vinyl spinning during crossfade even if is_playing briefly goes false
+  // between track_ended and the next DECK_STATE broadcast.
+  const wasPlayingRef = useRef(false);
+  useEffect(() => {
+    if (deck.is_playing) wasPlayingRef.current = true;
+    if (deck.is_paused || (!deck.is_playing && !deck.is_crossfading)) wasPlayingRef.current = false;
+  }, [deck.is_playing, deck.is_paused, deck.is_crossfading]);
+  const vinylSpinning = deck.is_playing || (deck.is_crossfading && wasPlayingRef.current);
+
   // ── Crossfade progress animation ────────────────────────────────
   const [xfadeProgress, setXfadeProgress] = useState(0); // 0→100
   const xfadeTimer = useRef(null);
@@ -439,7 +448,7 @@ export default function DeckPanel({ id }) {
           border: `2px solid ${displayWithOptimistic.is_playing ? color.accent + '60' : 'rgba(255,255,255,0.08)'}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: displayWithOptimistic.is_playing ? `0 0 20px ${color.glow}` : 'none',
-          animation: displayWithOptimistic.is_playing ? 'vinylSpin 3s linear infinite' : 'none',
+          animation: vinylSpinning ? 'vinylSpin 3s linear infinite' : 'none',
           transition: 'box-shadow 0.3s, border-color 0.3s',
         }}>
           <div style={{
