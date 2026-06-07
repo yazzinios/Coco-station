@@ -318,13 +318,22 @@ from announcement_engine import get_audio_duration as _get_audio_duration
 
 
 async def _play_library_track_on_deck(deck_id: str, filename: str) -> None:
+    # FIX: use /play (main track channel) instead of /play_announcement (overlay channel).
+    # jingle_start/jingle_end on mixer schedules are library tracks that must go through
+    # track_q so they play as the main output — not mixed on top of whatever is already
+    # playing on ann_q, which caused the library track to bleed over live music.
     ffmpeg_url = _state["ffmpeg_url"]
+    decks      = _state["decks"]
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             await c.post(
-                f"{ffmpeg_url}/decks/{deck_id}/play_announcement",
-                json={"filepath": str(Path("/library") / filename), "notify": False},
+                f"{ffmpeg_url}/decks/{deck_id}/play",
+                json={"filepath": str(Path("/library") / filename), "loop": False},
             )
+        decks[deck_id]["track"]      = filename
+        decks[deck_id]["is_playing"] = True
+        decks[deck_id]["is_paused"]  = False
+        decks[deck_id]["is_loop"]    = False
     except Exception as e:
         print(f"[jingle] error playing {filename} on {deck_id}: {e}")
 
