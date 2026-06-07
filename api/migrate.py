@@ -336,6 +336,12 @@ DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'target_decks') THEN
             ALTER TABLE recurring_schedules ADD COLUMN target_decks TEXT NOT NULL DEFAULT '[]';
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'repeat_count') THEN
+            ALTER TABLE recurring_schedules ADD COLUMN repeat_count INTEGER NOT NULL DEFAULT 1;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recurring_schedules' AND column_name = 'repeat_interval') THEN
+            ALTER TABLE recurring_schedules ADD COLUMN repeat_interval INTEGER NOT NULL DEFAULT 0;
+        END IF;
     END IF;
 
     -- ── users table ──────────────────────────────────────────────────────────

@@ -1041,6 +1041,11 @@ async def pause_deck(deck_id: str, _user=Depends(require_permission("deck.pause"
 async def stop_deck(deck_id: str, _user=Depends(require_permission("deck.stop")), _access=Depends(require_deck_access("control"))):
     if deck_id not in DECKS: raise HTTPException(status_code=404, detail="Deck not found")
     DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
+    # Clear playlist state so track_ended doesn't auto-resume after a manual stop
+    DECK_PLAYLISTS[deck_id] = None
+    DECKS[deck_id]["playlist_id"]    = None
+    DECKS[deck_id]["playlist_index"] = None
+    DECKS[deck_id]["playlist_loop"]  = False
     try:
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
     except Exception: pass
@@ -1934,6 +1939,7 @@ async def create_recurring_schedule(req: RecurringScheduleCreateRequest, _user=D
                 "start_time": req.start_time, "active_days": req.active_days, "excluded_days": req.excluded_days,
                 "fade_duration": req.fade_duration, "music_volume": req.music_volume, "target_decks": req.target_decks,
                 "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+                "repeat_count": req.repeat_count, "repeat_interval": req.repeat_interval,
                 "enabled": req.enabled, "last_run_date": None, "created_at": datetime.now().isoformat()}
     RECURRING_SCHEDULES.append(schedule)
     register_recurring_job(schedule)
@@ -1951,6 +1957,7 @@ async def update_recurring_schedule(schedule_id: str, req: RecurringScheduleCrea
                "start_time": req.start_time, "active_days": req.active_days, "excluded_days": req.excluded_days,
                "fade_duration": req.fade_duration, "music_volume": req.music_volume, "target_decks": req.target_decks,
                "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
+               "repeat_count": req.repeat_count, "repeat_interval": req.repeat_interval,
                "enabled": req.enabled, "last_run_date": None}
     RECURRING_SCHEDULES[idx] = updated
     register_recurring_job(updated)
@@ -1993,6 +2000,7 @@ async def create_recurring_mixer_schedule(req: RecurringMixerScheduleCreateReque
     sid = str(uuid.uuid4())
     schedule = {"id": sid, "name": req.name, "type": req.type, "target_id": req.target_id,
                 "deck_ids": req.deck_ids, "start_time": req.start_time,
+                "stop_time": req.stop_time or None,
                 "active_days": req.active_days, "excluded_days": req.excluded_days,
                 "fade_in": req.fade_in, "fade_out": req.fade_out, "volume": req.volume,
                 "loop": req.loop, "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,
@@ -2012,6 +2020,7 @@ async def update_recurring_mixer_schedule(schedule_id: str, req: RecurringMixerS
     if idx is None: raise HTTPException(status_code=404, detail="Schedule not found")
     updated = {**RECURRING_MIXER_SCHEDULES[idx], "name": req.name, "type": req.type, "target_id": req.target_id,
                "deck_ids": req.deck_ids, "start_time": req.start_time,
+               "stop_time": req.stop_time or None,
                "active_days": req.active_days, "excluded_days": req.excluded_days,
                "fade_in": req.fade_in, "fade_out": req.fade_out, "volume": req.volume,
                "loop": req.loop, "jingle_start": req.jingle_start, "jingle_end": req.jingle_end,

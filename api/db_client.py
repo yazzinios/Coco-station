@@ -613,6 +613,8 @@ class DBClient:
             "target_decks":    json.dumps(s.get("target_decks", [])),
             "jingle_start":    s.get("jingle_start"),
             "jingle_end":      s.get("jingle_end"),
+            "repeat_count":    s.get("repeat_count", 1),
+            "repeat_interval": s.get("repeat_interval", 0),
             "enabled":         s.get("enabled", True),
         }
         if self.mode == "cloud":
@@ -630,8 +632,9 @@ class DBClient:
                         INSERT INTO recurring_schedules
                             (id, name, type, announcement_id, start_time,
                              active_days, excluded_days, fade_duration, music_volume,
-                             target_decks, jingle_start, jingle_end, enabled)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                             target_decks, jingle_start, jingle_end,
+                             repeat_count, repeat_interval, enabled)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name, type = EXCLUDED.type,
                             announcement_id = EXCLUDED.announcement_id,
@@ -640,12 +643,14 @@ class DBClient:
                             fade_duration = EXCLUDED.fade_duration, music_volume = EXCLUDED.music_volume,
                             target_decks = EXCLUDED.target_decks,
                             jingle_start = EXCLUDED.jingle_start, jingle_end = EXCLUDED.jingle_end,
+                            repeat_count = EXCLUDED.repeat_count, repeat_interval = EXCLUDED.repeat_interval,
                             enabled = EXCLUDED.enabled
                         """,
                         (data["id"], data["name"], data["type"], data["announcement_id"],
                          data["start_time"], data["active_days"], data["excluded_days"],
                          data["fade_duration"], data["music_volume"], data["target_decks"],
-                         data["jingle_start"], data["jingle_end"], data["enabled"]),
+                         data["jingle_start"], data["jingle_end"],
+                         data["repeat_count"], data["repeat_interval"], data["enabled"]),
                     )
             except Exception as e:
                 print(f"[DB] save_recurring_schedule (local) failed: {e}")
