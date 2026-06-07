@@ -976,6 +976,7 @@ async def load_track(deck_id: str, req: PlayRequest, request: Request, _user=Dep
     DECKS[deck_id]["playlist_index"] = None
     DECKS[deck_id]["playlist_loop"] = False
     DECK_PLAYLISTS[deck_id] = None
+    DECKS[deck_id].pop("_scheduler_owner", None)
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     _audit(request, _user, "deck.load_track", {"deck": deck_id, "track": req.track_id})
     return {"status": "ok", "deck": deck_id, "track": req.track_id}
@@ -989,6 +990,7 @@ async def unload_track(deck_id: str, _user=Depends(require_deck_access("control"
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
         except Exception: pass
     DECKS[deck_id]["track"] = None; DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
+    DECKS[deck_id].pop("_scheduler_owner", None)
     await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
     return {"status": "ok", "deck": deck_id}
 
@@ -1046,6 +1048,7 @@ async def stop_deck(deck_id: str, _user=Depends(require_permission("deck.stop"))
     DECKS[deck_id]["playlist_id"]    = None
     DECKS[deck_id]["playlist_index"] = None
     DECKS[deck_id]["playlist_loop"]  = False
+    DECKS[deck_id].pop("_scheduler_owner", None)
     try:
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
     except Exception: pass

@@ -391,6 +391,9 @@ async def _trigger_recurring_mixer_schedule(rs: dict) -> None:
             "multi_tracks": rs.get("multi_tracks", []),
             "loop":         loop,
         })
+        # Tag this deck as owned by this schedule so the stop job only
+        # stops it if the user hasn't manually overridden it since.
+        decks[did]["_scheduler_owner"] = rs["id"]
 
 
 async def _stop_recurring_mixer_schedule(rs: dict) -> None:
@@ -718,21 +721,47 @@ def register_recurring_job(rs: dict) -> None:
 
 # ── Top-level stop function (must be module-level for APScheduler to reference properly) ──
 async def _ap_stop_mixer_by_id(schedule_id: str) -> None:
-    """Stop a recurring mixer schedule by ID. Must be module-level for APScheduler."""
+    """Stop a recurring mixer schedule by ID. Must be module-level for APScheduler.
+    Only stops the deck if it was actually started by this schedule — checked via
+    a _scheduler_owner tag written to the deck state on trigger.
+    """
     recs = _state.get("recurring_mixer_schedules", [])
     r = next((x for x in recs if x["id"] == schedule_id), None)
-    if r:
-        await _stop_recurring_mixer_schedule(r)
-        mgr = _state.get("manager")
-        if mgr:
-            await mgr.broadcast({
-                "type": "NOTIFICATION",
-                "message": f"Mixer stopped: {r.get('name', schedule_id)}",
-                "style": "info",
-            })
-            await mgr.broadcast({"type": "DECK_STATE", "decks": list(_state.get("decks", {}).values())})
-    else:
+    if not r:
         print(f"[mixer-scheduler] stop: schedule {schedule_id} not found")
+        return
+
+    decks    = _state.get("decks", {})
+    deck_ids = _get_deck_ids(r)
+
+    # Only stop decks that this specific schedule owns.
+    # If the user manually loaded a different track after the scheduler ran,
+    # that deck no longer belongs to this schedule and must not be stopped.
+    owned = [did for did in deck_ids
+             if decks.get(did, {}).get("_scheduler_owner") == schedule_id]
+
+    if not owned:
+        print(f"[mixer-scheduler] stop '{r.get('name')}': no owned decks — skipping "
+              f"(decks were manually overridden or already stopped)")
+        return
+
+    print(f"[mixer-scheduler] stop '{r.get('name')}': stopping owned decks {owned}")
+    # Temporarily narrow the schedule's deck list to only the owned ones
+    r_owned = {**r, "deck_ids": owned}
+    await _stop_recurring_mixer_schedule(r_owned)
+
+    # Clear ownership tags
+    for did in owned:
+        decks.get(did, {}).pop("_scheduler_owner", None)
+
+    mgr = _state.get("manager")
+    if mgr:
+        await mgr.broadcast({
+            "type": "NOTIFICATION",
+            "message": f"Mixer stopped: {r.get('name', schedule_id)}",
+            "style": "info",
+        })
+        await mgr.broadcast({"type": "DECK_STATE", "decks": list(decks.values())})
 
 
 def register_mixer_job(rs: dict) -> None:
