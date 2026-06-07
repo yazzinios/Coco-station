@@ -299,10 +299,13 @@ async def dj_stream_detected(req: DJStreamDetectedRequest):
     # Snapshot current playlist state for later restore
     decks    = _decks_ref or {}
     dk_info  = decks.get(deck_id, {})
+    prev_track_filename = dk_info.get("track")
+    # Store with the mixer-side /library/ prefix so _restore can use it directly
+    prev_track_path = f"/library/{prev_track_filename}" if prev_track_filename else None
     await dj_save_zone_state(
         deck_id,
         source        = "PLAYLIST",
-        prev_track    = dk_info.get("track"),
+        prev_track    = prev_track_path,
         prev_playlist = str(dk_info.get("playlist_id") or ""),
     )
 
@@ -356,6 +359,20 @@ async def dj_stream_ended(req: DJStreamEndedRequest):
                 except Exception as e:
                     print(f"[dj] resume track error: {e}")
             await _dj_fade(deck_id, "in", seconds=3.0)
+            # Update in-memory deck state so the dashboard reflects the restored playlist
+            decks = _decks_ref or {}
+            if deck_id in decks and prev_track:
+                from pathlib import Path as _Path
+                decks[deck_id].update({
+                    "is_playing": True,
+                    "is_paused":  False,
+                    "track":      _Path(prev_track).name,
+                })
+                if _manager_ref:
+                    await _manager_ref.broadcast({
+                        "type": "DECK_STATE",
+                        "decks": [{k: v for k, v in d.items() if not k.startswith("_")} for d in decks.values()],
+                    })
             await dj_clear_deck_state(deck_id)
             await dj_clear_zone_state(deck_id)
             await _dj_broadcast("playlist_resumed", deck=deck_id, zone=state.get("zone", ""))

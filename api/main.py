@@ -147,6 +147,11 @@ class ConnectionManager:
             except Exception: dead.append(ws)
         for d in dead: self.disconnect(d)
 
+
+def _sanitize_deck(deck: dict) -> dict:
+    """Strip internal scheduler state keys before broadcasting to clients."""
+    return {k: v for k, v in deck.items() if not k.startswith("_")}
+
 manager = ConnectionManager()
 
 
@@ -700,7 +705,7 @@ async def _duck_acquire(source_type: str = "announcement", level: int = None) ->
             await _fade_volumes(all_playing, from_vol, duck_pct, FADE_STEP_MS)
             for did in all_playing:
                 DECKS[did]["volume"] = duck_pct
-            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     else:
         if all_playing:
             async with httpx.AsyncClient(timeout=3) as c:
@@ -710,7 +715,7 @@ async def _duck_acquire(source_type: str = "announcement", level: int = None) ->
                 )
             for did in all_playing:
                 DECKS[did]["volume"] = duck_pct
-            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
 
 async def _duck_release(restore_delay_ms: int = 200) -> None:
     if _DUCK_REFCOUNT_REF[0] <= 0: return
@@ -733,11 +738,11 @@ async def _duck_release(restore_delay_ms: int = 200) -> None:
         to_restore = [did for did in saved if DECKS.get(did, {}).get("is_playing")]
         if to_restore:
             await _restore_volumes(to_restore, duck_pct, target_volumes=saved)
-            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
 
 
 async def fade_and_play_announcement(deck_ids: list, filepath: str, level: int = None):
-    await ann_engine.play_announcement_sequence(deck_ids, filepath)
+    await ann_engine.play_announcement_sequence(deck_ids, filepath, duck_level_override=level)
 
 
 async def fade_and_enable_mic(deck_ids: list):
@@ -795,7 +800,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.send_json({
         "type": "FULL_STATE",
-        "decks": list(DECKS.values()),
+        "decks": [_sanitize_deck(d) for d in DECKS.values()],
         "mic": MIC_STATE,
         "announcements": ANNOUNCEMENTS,
         "settings": _safe_settings(SETTINGS),
@@ -939,7 +944,7 @@ async def delete_track(filename: str, _user=Depends(require_permission("can_libr
         if deck["track"] == filename:
             deck["track"] = None; deck["is_playing"] = False; deck["is_paused"] = False
     await manager.broadcast({"type": "LIBRARY_UPDATED", "action": "removed", "filename": filename})
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok"}
 
 @app.get("/api/library/file/{filename}")
@@ -952,7 +957,7 @@ async def serve_file(filename: str):
 
 # ── Decks ───────────────────────────────────────────────────
 @app.get("/api/decks")
-def get_decks(): return list(DECKS.values())
+def get_decks(): return [_sanitize_deck(d) for d in DECKS.values()]
 
 @app.put("/api/decks/{deck_id}/name")
 async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(require_deck_access("control"))):
@@ -962,7 +967,7 @@ async def rename_deck(deck_id: str, req: DeckRenameRequest, _user=Depends(requir
         await asyncio.get_running_loop().run_in_executor(None, db.save_deck_name, deck_id, req.name)
     except Exception as e:
         print(f"[DB] Failed to persist deck name: {e}")
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok", "name": req.name}
 
 @app.post("/api/decks/{deck_id}/load")
@@ -977,7 +982,7 @@ async def load_track(deck_id: str, req: PlayRequest, request: Request, _user=Dep
     DECKS[deck_id]["playlist_loop"] = False
     DECK_PLAYLISTS[deck_id] = None
     DECKS[deck_id].pop("_scheduler_owner", None)
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.load_track", {"deck": deck_id, "track": req.track_id})
     return {"status": "ok", "deck": deck_id, "track": req.track_id}
 
@@ -991,7 +996,7 @@ async def unload_track(deck_id: str, _user=Depends(require_deck_access("control"
         except Exception: pass
     DECKS[deck_id]["track"] = None; DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
     DECKS[deck_id].pop("_scheduler_owner", None)
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/play")
@@ -1003,6 +1008,7 @@ async def play_deck(deck_id: str, request: Request, _user=Depends(require_permis
     loop       = DECKS[deck_id].get("is_loop", False)
     is_playing = DECKS[deck_id].get("is_playing", False)
     DECKS[deck_id]["is_playing"] = True; DECKS[deck_id]["is_paused"] = False
+    DECKS[deck_id].pop("_scheduler_owner", None)  # manual play releases scheduler ownership
     TRACKS_PLAYED += 1
     try:
         async with httpx.AsyncClient(timeout=5) as c:
@@ -1013,13 +1019,13 @@ async def play_deck(deck_id: str, request: Request, _user=Depends(require_permis
                 async def _clear_xfade(did=deck_id):
                     await asyncio.sleep(3.5)
                     DECKS[did]["is_crossfading"] = False
-                    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+                    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
                 asyncio.create_task(_clear_xfade())
             else:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play",
                              json={"filepath": filepath, "loop": loop})
     except Exception: pass
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.play", {"deck": deck_id, "track": DECKS[deck_id].get("track"), "crossfade": is_playing})
     return {"status": "ok", "deck": deck_id, "crossfade": is_playing}
 
@@ -1036,7 +1042,7 @@ async def pause_deck(deck_id: str, _user=Depends(require_permission("deck.pause"
         try:
             async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/pause")
         except Exception: pass
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok", "deck": deck_id}
 
 @app.post("/api/decks/{deck_id}/stop")
@@ -1052,7 +1058,7 @@ async def stop_deck(deck_id: str, _user=Depends(require_permission("deck.stop"))
     try:
         async with httpx.AsyncClient(timeout=5) as c: await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
     except Exception: pass
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok", "deck": deck_id}
 
 
@@ -1117,7 +1123,7 @@ async def clone_deck(req: DeckCloneRequest, request: Request,
     except Exception as e:
         print(f"[clone] Mixer play failed for deck {tgt}: {e}")
 
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.clone", {"source": src, "target": tgt, "track": track, "seek": seek_to})
     return {"status": "ok", "source": src, "target": tgt, "track": track, "seek_seconds": seek_to}
 
@@ -1185,7 +1191,7 @@ async def playlist_broadcast(
         if isinstance(err, Exception)
     ]
 
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.playlist_broadcast",
            {"playlist": playlist["name"], "decks": deck_ids, "tracks": len(tracks)})
 
@@ -1280,7 +1286,7 @@ async def sync_all_to_source(
         if isinstance(r, Exception)
     ]
 
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.sync_all",
            {"source": src, "targets": target_ids, "track": track, "seek": seek_to})
 
@@ -1308,7 +1314,7 @@ async def set_loop(deck_id: str, req: LoopRequest, _user=Depends(require_deck_ac
             async with httpx.AsyncClient(timeout=5) as c:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/loop", json={"loop": req.loop})
         except Exception: pass
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok", "deck": deck_id, "loop": req.loop}
 
 @app.post("/api/decks/{deck_id}/volume")
@@ -1323,7 +1329,7 @@ async def set_deck_volume(deck_id: str, req: VolumeRequest, _user=Depends(requir
             async with httpx.AsyncClient(timeout=5) as c:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/volume/{vol}")
         except Exception: pass
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok"}
 
 # ── Mic ─────────────────────────────────────────────────────
@@ -1662,7 +1668,7 @@ async def load_playlist_to_deck(deck_id: str, req: PlaylistLoadRequest, request:
         async with httpx.AsyncClient(timeout=5) as c:
             await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": str(Path("/library") / tracks[0]), "loop": False})
     except Exception: pass
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.load_playlist", {"deck": deck_id, "playlist": playlist["name"], "tracks": len(tracks)})
     return {"status": "ok", "deck": deck_id, "playlist": playlist["name"], "track": tracks[0]}
 
@@ -1695,7 +1701,7 @@ async def dead_air(deck_id: str):
                                  json={"filepath": str(Path("/library") / next_track), "loop": False})
             except Exception as e:
                 print(f"[dead_air] recovery play failed: {e}")
-            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
             await manager.broadcast({
                 "type": "NOTIFICATION",
                 "message": f"✅ Deck {deck_id.upper()} recovered → {next_track}",
@@ -1705,7 +1711,7 @@ async def dead_air(deck_id: str):
         else:
             DECK_PLAYLISTS[deck_id] = None
             DECKS[deck_id].update({"is_playing": False, "playlist_id": None, "playlist_index": None})
-            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
             return {"status": "stopped", "action": "playlist_done"}
 
     current_track = DECKS[deck_id].get("track")
@@ -1724,7 +1730,7 @@ async def dead_air(deck_id: str):
         return {"status": "recovered", "action": "loop_restart", "track": current_track}
 
     DECKS[deck_id].update({"is_playing": False, "is_paused": False})
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     await manager.broadcast({
         "type": "NOTIFICATION",
         "message": f"🔴 Dead air on Deck {deck_id.upper()} — no recovery source available",
@@ -1746,7 +1752,7 @@ async def track_ended(deck_id: str):
     playlist_state = DECK_PLAYLISTS.get(deck_id)
     if not playlist_state:
         DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
-        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+        await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
         return {"status": "ok", "action": "stopped"}
     tracks = playlist_state["tracks"]; next_index = playlist_state["index"] + 1
     if next_index >= len(tracks):
@@ -1754,7 +1760,7 @@ async def track_ended(deck_id: str):
         else:
             DECK_PLAYLISTS[deck_id] = None
             DECKS[deck_id].update({"is_playing": False, "is_paused": False, "playlist_id": None, "playlist_index": None})
-            await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+            await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
             return {"status": "ok", "action": "playlist_done"}
     playlist_state["index"] = next_index; next_track = tracks[next_index]
     DECKS[deck_id].update({"track": next_track, "is_playing": True, "playlist_index": next_index, "is_crossfading": True})
@@ -1764,9 +1770,9 @@ async def track_ended(deck_id: str):
     except Exception: pass
     async def _clr1(did=deck_id):
         await asyncio.sleep(3.5); DECKS[did]["is_crossfading"] = False
-        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+        await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     asyncio.create_task(_clr1())
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok", "action": "next_track", "track": next_track}
 
 async def _play_playlist_index(deck_id: str, index: int):
@@ -1785,12 +1791,12 @@ async def _play_playlist_index(deck_id: str, index: int):
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/crossfade", json={"filepath": str(Path("/library") / track), "loop": False})
                 async def _clr2(did=deck_id):
                     await asyncio.sleep(3.5); DECKS[did]["is_crossfading"] = False
-                    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+                    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
                 asyncio.create_task(_clr2())
             else:
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/play", json={"filepath": str(Path("/library") / track), "loop": False})
     except Exception: pass
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     return {"status": "ok", "deck": deck_id, "track": track, "playlist_index": index}
 
 @app.post("/api/decks/{deck_id}/next")
@@ -2114,7 +2120,7 @@ async def accept_music_request(request_id: str, _user=Depends(require_permission
             if DECKS[deck_id].get("is_playing") or DECKS[deck_id].get("is_paused"):
                 await c.post(f"{FFMPEG_URL}/decks/{deck_id}/stop")
         DECKS[deck_id]["track"] = filename; DECKS[deck_id]["is_playing"] = False; DECKS[deck_id]["is_paused"] = False
-        await manager.broadcast({"type": "DECK_STATE", "decks": list(DECKS.values())})
+        await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     except Exception as e:
         print(f"[request] Failed to load track to deck: {e}")
     await manager.broadcast({"type": "REQUESTS_UPDATED", "requests": MUSIC_REQUESTS})

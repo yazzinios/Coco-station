@@ -298,7 +298,7 @@ async def _trigger_music_schedule(s: dict) -> None:
         })
         await _play_on_deck(str(Path("/library") / tracks[0]), False)
 
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(decks.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [{k: v for k, v in d.items() if not k.startswith("_")} for d in decks.values()]})
     await manager.broadcast({"type": "MUSIC_SCHEDULES_UPDATED", "schedules": music_schedules})
     await manager.broadcast({
         "type": "NOTIFICATION",
@@ -382,6 +382,8 @@ async def _trigger_recurring_mixer_schedule(rs: dict) -> None:
         decks[did]["volume"] = volume
 
     # Step 3 — start content on each deck
+    # FIX: pass stop_time through so _trigger_music_schedule inherits the
+    # schedule id for ownership tagging even for multi-deck mixer schedules.
     for did in deck_ids:
         await _trigger_music_schedule({
             "deck_id":      did,
@@ -451,7 +453,7 @@ async def _stop_recurring_mixer_schedule(rs: dict) -> None:
     except Exception:
         pass
 
-    await manager.broadcast({"type": "DECK_STATE", "decks": list(decks.values())})
+    await manager.broadcast({"type": "DECK_STATE", "decks": [{k: v for k, v in d.items() if not k.startswith("_")} for d in decks.values()]})
 
     if rs.get("jingle_end"):
         await asyncio.gather(*[_play_jingle_and_wait(did, rs["jingle_end"]) for did in deck_ids])
@@ -761,7 +763,7 @@ async def _ap_stop_mixer_by_id(schedule_id: str) -> None:
             "message": f"Mixer stopped: {r.get('name', schedule_id)}",
             "style": "info",
         })
-        await mgr.broadcast({"type": "DECK_STATE", "decks": list(decks.values())})
+        await mgr.broadcast({"type": "DECK_STATE", "decks": [{k: v for k, v in d.items() if not k.startswith("_")} for d in decks.values()]})
 
 
 def register_mixer_job(rs: dict) -> None:

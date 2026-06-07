@@ -288,6 +288,7 @@ async def play_announcement_sequence(
     filepath: str,
     *,
     all_deck_ids: Optional[List[str]] = None,
+    duck_level_override: Optional[int] = None,
 ) -> None:
     """
     Full announcement sequence:
@@ -312,7 +313,7 @@ async def play_announcement_sequence(
         print(f"[engine] ══ Announcement START: {Path(filepath).name}")
         print(f"[engine]   Target decks : {deck_ids}")
 
-        duck_level   = _duck_pct()
+        duck_level   = duck_level_override if duck_level_override is not None else _duck_pct()
         duck_targets = all_deck_ids if all_deck_ids is not None else list(_DECKS.keys())
         active_decks = [
             did for did in duck_targets
