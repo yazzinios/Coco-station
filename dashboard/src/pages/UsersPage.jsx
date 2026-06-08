@@ -1349,7 +1349,6 @@ export default function UsersPage() {
   // ── Render ────────────────────────────────────────────────────────────────
   const PAGE_TABS = [
     { id:'users', label:'Users',        icon:<Users size={14}/> },
-    { id:'roles', label:'Roles',        icon:<Layers size={14}/> },
     { id:'logs',  label:'Activity Log', icon:<Activity size={14}/> },
   ];
 
@@ -1366,9 +1365,6 @@ export default function UsersPage() {
             style={mkBtn('blue')}><RefreshCw size={13}/> Refresh</button>
           {isAdmin && tab === 'users' && (
             <button onClick={openCreateUser} style={mkBtn('green')}><Plus size={13}/> New User</button>
-          )}
-          {isAdmin && tab === 'roles' && (
-            <button onClick={openCreateRole} style={mkBtn('purple')}><Plus size={13}/> New Role</button>
           )}
         </div>
       </div>
@@ -1529,8 +1525,8 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* ══ ROLES TAB ══════════════════════════════════════════════════════ */}
-      {tab === 'roles' && (
+      {/* roles tab moved to RolesPage.jsx */}
+      {false && (
         <>
           {!isAdmin && (
             <div style={{ marginBottom:'1rem', padding:'0.7rem 1rem', borderRadius:'8px',

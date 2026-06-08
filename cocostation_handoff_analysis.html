@@ -1,0 +1,68 @@
+
+<style>
+.sec { border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 1rem 1.25rem; margin-bottom: 1rem; background: var(--color-background-primary); }
+.sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 0.75rem; }
+.badge { font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 20px; }
+.b-blue { background: var(--color-background-info); color: var(--color-text-info); }
+.b-amber { background: var(--color-background-warning); color: var(--color-text-warning); }
+.b-green { background: var(--color-background-success); color: var(--color-text-success); }
+.b-red { background: var(--color-background-danger); color: var(--color-text-danger); }
+h3 { font-size: 15px; font-weight: 500; margin: 0; color: var(--color-text-primary); }
+p { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px; line-height: 1.6; }
+.item { display: flex; gap: 8px; margin-bottom: 4px; align-items: flex-start; }
+.dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.dot-ok { background: #27500A; }
+.dot-warn { background: #854F0B; }
+.dot-err { background: #A32D2D; }
+.obs { font-size: 12px; color: var(--color-text-secondary); }
+.tag { display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 4px; background: var(--color-background-secondary); color: var(--color-text-secondary); border: 0.5px solid var(--color-border-tertiary); margin: 1px; }
+</style>
+
+<div class="sec">
+  <div class="sec-head"><span class="badge b-blue">Log analysis</span><h3>System status from logs</h3></div>
+  <div class="item"><span class="dot dot-ok"></span><span class="obs">Announcement engine working: fade → intro jingle → content → outro jingle → fade up ✓</span></div>
+  <div class="item"><span class="dot dot-ok"></span><span class="obs">All 6 decks (a–f) receiving announcements correctly, all <code>announcement_ended</code> callbacks received ✓</span></div>
+  <div class="item"><span class="dot dot-ok"></span><span class="obs">Scheduler: 9 pending, 16 cron jobs, next events aligned correctly ✓</span></div>
+  <div class="item"><span class="dot dot-warn"></span><span class="obs"><strong>Persistent:</strong> <code>[listeners] Failed to query mediamtx</code> — mediamtx unreachable, listener count always returns 0/empty ⚠</span></div>
+  <div class="item"><span class="dot dot-warn"></span><span class="obs"><strong>Auth:</strong> <code>'MemoryStorage' object has no attribute 'hit'</code> — rate limiter broken, non-fatal but rate limiting completely disabled ⚠</span></div>
+  <div class="item"><span class="dot dot-err"></span><span class="obs"><strong>Logo thrashing:</strong> logo fetched 4–6× per page load (unique timestamps) — no cache headers causing massive redundant traffic ✗</span></div>
+  <div class="item"><span class="dot dot-warn"></span><span class="obs">Volume fade uses 21 HTTP calls per fade (10→100 in steps) — works but high overhead on mixer service ⚠</span></div>
+</div>
+
+<div class="sec">
+  <div class="sec-head"><span class="badge b-amber">Request 1</span><h3>Show connected IPs in Listeners by Deck</h3></div>
+  <p>Currently <code>GET /api/listeners</code> returns 114 bytes (empty/no listeners) because mediamtx is unreachable. Fix path:</p>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">1. Fix mediamtx connection → real listener data flows in</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">2. Extend listener response to include <code>ip</code>, <code>deck</code>, <code>connected_since</code> per listener</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">3. Dashboard: group listener rows by deck, show IP + connection time</span></div>
+  <p style="margin-top:6px">Need to see <code>api/main.py</code> listeners endpoint + mediamtx config to give exact fix.</p>
+</div>
+
+<div class="sec">
+  <div class="sec-head"><span class="badge b-amber">Request 2</span><h3>Deck B/E/F playlist sync latency</h3></div>
+  <p>Root cause: each deck gets <code>play_announcement</code> requests sequentially via HTTP — there's a measurable gap between first and last deck receiving the command. From log timing, decks receive jingle start within ~100–200ms spread. For music playlist sync this matters more.</p>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">1. Send all deck commands concurrently (<code>asyncio.gather</code>) not sequentially</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">2. Include a <code>start_at</code> timestamp in the play command so decks self-align</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">3. NTP-sync the mixer nodes if on different machines (10.20.0.4 vs 10.20.0.5)</span></div>
+  <p style="margin-top:6px">Need to see how <code>play_announcement</code> is dispatched in <code>main.py</code> to apply fix.</p>
+</div>
+
+<div class="sec">
+  <div class="sec-head"><span class="badge b-green">Request 3</span><h3>Roles page — full redesign spec</h3></div>
+  <p>Powerful RBAC UI: permissions by user AND by group (local + LDAP), with visual grant matrix. Key components:</p>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">Left panel: Roles list with create/edit/delete</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">Center: Permission matrix grid — rows=permissions, cols=roles, toggleable cells</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">Right: Assignees panel — local users + LDAP groups mapped to selected role</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">LDAP section: show synced groups with last-sync time, override individual user permissions</span></div>
+  <span class="tag">Full mockup below ↓</span>
+</div>
+
+<div class="sec">
+  <div class="sec-head"><span class="badge b-red">Request 4</span><h3>DJ Controller page — full spec</h3></div>
+  <p>Auto-detect input device → connect → animated 2-deck view + EQ + deck routing buttons. Signal flow:</p>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">Browser Web MIDI API / Web Audio API detects hardware controller</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">On connect: full-screen overlay with Deck A + Deck B platters, EQ in center</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">Bottom row: deck routing buttons (A B C left, E F G/D right) colored per deck, toggle active stream</span></div>
+  <div class="item"><span class="dot dot-blue" style="background:#185FA5"></span><span class="obs">Signal chain: DJ PC → USB/MIDI → Web Audio engine → WebSocket → CocoStation server → restream to clients</span></div>
+  <span class="tag">Full mockup below ↓</span>
+</div>

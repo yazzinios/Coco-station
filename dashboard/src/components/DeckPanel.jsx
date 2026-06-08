@@ -49,7 +49,16 @@ function DeckMonitor({ id, color }) {
         headers: { 'Content-Type': 'application/sdp' },
         body: offer.sdp,
       });
-      if (!res.ok) throw new Error(`WHEP ${res.status}`);
+      if (!res.ok) {
+        // 400 = no stream publishing yet (not a code bug — deck is idle)
+        // 404 = path doesn't exist — both are non-retryable
+        const isNoStream = res.status === 400 || res.status === 404;
+        const msg = isNoStream
+          ? `WHEP ${res.status} — deck has no active stream, falling back to HLS`
+          : `WHEP ${res.status}`;
+        console.info(`[Monitor deck-${id}]`, msg);
+        throw new Error(`WHEP ${res.status}`);
+      }
       const answerSdp = await res.text();
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
       pc.ontrack = (evt) => {
@@ -63,7 +72,6 @@ function DeckMonitor({ id, color }) {
       setProtocol('WebRTC');
       return true;
     } catch (err) {
-      console.warn(`[Monitor deck-${id}] WHEP failed:`, err.message, '— falling back to HLS');
       pc.close(); pcRef.current = null;
       return false;
     }
@@ -112,7 +120,13 @@ function DeckMonitor({ id, color }) {
     setListening(true);
   }, [startWhep, startHls]);
 
+  // Track whether we're in a retry loop to avoid hammering the server
+  const retryTimerRef = useRef(null);
+  const retryCountRef = useRef(0);
+
   const stopListening = useCallback(() => {
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+    retryCountRef.current = 0;
     if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
     const audio = audioRef.current;
