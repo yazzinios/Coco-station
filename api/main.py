@@ -3,14 +3,23 @@ import asyncio
 import uuid
 import json
 import time
+import csv
+import io
 import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from typing import List, Dict, Optional
 from pydantic import BaseModel as _PydanticBase
+
+# ── Rate limiting (slowapi) ───────────────────────────────────────────────────
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 from scheduler import (
     ap_scheduler,
@@ -50,7 +59,7 @@ import announcement_engine as ann_engine
 from db_client import db
 from auth import verify_token, hash_password, require_permission, require_deck_access, require_admin
 from rbac import router as rbac_router
-from auth_routes import auth_router, set_auth_settings_ref
+from auth_routes import auth_router, set_auth_settings_ref, set_limiter_ref
 from dj_routes import dj_router, init_dj_router
 from dj_redis import get_full_dj_state
 
@@ -299,6 +308,7 @@ async def lifespan(app: FastAPI):
                     break
 
     set_auth_settings_ref(SETTINGS)
+    set_limiter_ref(limiter)
 
     # ── Wire DJ router shared state ──────────────────────────────────────────
     init_dj_router(
@@ -316,23 +326,35 @@ async def lifespan(app: FastAPI):
         while True:
             try:
                 async with httpx.AsyncClient(timeout=5) as c:
-                    resp = await c.get(f"{MEDIAMTX_API}/v3/paths/list")
-                    if resp.status_code == 200:
-                        total = 0
-                        for item in resp.json().get("items", []):
+                    # Query both paths (for counts) and RTSP sessions (for real IPs)
+                    paths_resp    = await c.get(f"{MEDIAMTX_API}/v3/paths/list")
+                    sessions_resp = await c.get(f"{MEDIAMTX_API}/v3/rtspsessions/list")
+
+                    # Build path→count from paths API
+                    path_counts: dict = {}
+                    if paths_resp.status_code == 200:
+                        for item in paths_resp.json().get("items", []):
+                            name = item.get("name", "")
                             readers = item.get("readers", [])
                             reader_list = readers if isinstance(readers, list) else []
-                            total += len(reader_list) if reader_list else item.get("readersCount", 0)
-                            path_name = item.get("name", "")
-                            for r in reader_list:
-                                addr = r.get("remoteAddr") or r.get("raddr") or r.get("addr", "")
-                                ip   = addr.split(":")[0] if ":" in addr else addr
-                                if ip:
-                                    proto = r.get("type", r.get("proto", "rtsp"))
-                                    _record_listener(ip, path_name, proto)
-                        CURRENT_LISTENERS = total
-                        if total > PEAK_LISTENERS:
-                            PEAK_LISTENERS = total
+                            path_counts[name] = len(reader_list) if reader_list else item.get("readersCount", 0)
+
+                    # Extract real reader IPs from RTSP sessions API
+                    if sessions_resp.status_code == 200:
+                        for sess in sessions_resp.json().get("items", []):
+                            # Only reading sessions (not publishers)
+                            if sess.get("state") not in ("read", "reading"):
+                                continue
+                            path_name = sess.get("path", "")
+                            addr = sess.get("remoteAddr", "") or sess.get("raddr", "")
+                            ip   = addr.split(":")[0] if ":" in addr else addr
+                            if ip and path_name:
+                                _record_listener(ip, path_name, "rtsp")
+
+                    total = sum(path_counts.values())
+                    CURRENT_LISTENERS = total
+                    if total > PEAK_LISTENERS:
+                        PEAK_LISTENERS = total
             except Exception:
                 pass
             await asyncio.sleep(10)
@@ -342,6 +364,10 @@ async def lifespan(app: FastAPI):
     stop_scheduler()
 
 app = FastAPI(lifespan=lifespan, title="CocoStation API")
+
+# ── Rate limiter ──────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 ALLOWED_ORIGINS = os.getenv(
     "CORS_ORIGINS",
@@ -1547,38 +1573,29 @@ async def set_listener_labels(payload: dict, _user=Depends(verify_token)):
 @app.get("/api/listeners")
 async def get_listeners():
     result = {}
-    publishers = []  # RTMP / SRT / RTSP source publishers per path
+    publishers = []
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            resp = await c.get(f"{MEDIAMTX_API}/v3/paths/list")
-            if resp.status_code == 200:
-                data = resp.json()
-                for item in data.get("items", []):
+            paths_resp    = await c.get(f"{MEDIAMTX_API}/v3/paths/list")
+            sessions_resp = await c.get(f"{MEDIAMTX_API}/v3/rtspsessions/list")
+
+            # ── Step 1: Build path map from /v3/paths/list ──────────────
+            if paths_resp.status_code == 200:
+                for item in paths_resp.json().get("items", []):
                     path_name = item.get("name", "")
-                    readers_raw = item.get("readers", [])
+                    readers_raw  = item.get("readers", [])
                     readers_list = readers_raw if isinstance(readers_raw, list) else []
                     reader_count = len(readers_list) if readers_list else item.get("readersCount", 0)
 
-                    # Collect reader details (RTSP/HLS listeners)
-                    reader_details = []
-                    for r in readers_list:
-                        addr = r.get("remoteAddr") or r.get("raddr") or r.get("addr", "")
-                        ip   = addr.split(":")[0] if ":" in addr else addr
-                        reader_details.append({
-                            "ip":       ip,
-                            "addr":     addr,
-                            "protocol": r.get("type", r.get("proto", "rtsp")),
-                            "label":    LISTENER_IP_LABELS.get(ip, ""),
-                        })
                     result[path_name] = {
                         "path":      path_name,
                         "listeners": reader_count,
                         "ready":     item.get("ready", False),
-                        "readers":   reader_details,
+                        "readers":   [],   # filled below from sessions API
                     }
 
-                    # Collect publisher (source) details — RTMP ingest IPs
-                    source = item.get("source") or {}
+                    # Publisher (RTMP ingest) info
+                    source   = item.get("source") or {}
                     src_addr = source.get("remoteAddr") or source.get("raddr") or source.get("addr", "")
                     if src_addr:
                         src_ip   = src_addr.split(":")[0] if ":" in src_addr else src_addr
@@ -1591,15 +1608,48 @@ async def get_listeners():
                             "label":    LISTENER_IP_LABELS.get(src_ip, ""),
                         })
 
+            # ── Step 2: Populate reader IPs from /v3/rtspsessions/list ──
+            # This is the correct source for live listener IPs — the paths
+            # API only returns readersCount, not individual addresses.
+            if sessions_resp.status_code == 200:
+                # Group sessions by path
+                path_readers: dict = {}
+                for sess in sessions_resp.json().get("items", []):
+                    if sess.get("state") not in ("read", "reading"):
+                        continue
+                    path_name = sess.get("path", "")
+                    addr = sess.get("remoteAddr", "") or sess.get("raddr", "")
+                    ip   = addr.split(":")[0] if ":" in addr else addr
+                    if not ip or not path_name:
+                        continue
+                    path_readers.setdefault(path_name, []).append({
+                        "ip":       ip,
+                        "addr":     addr,
+                        "protocol": "rtsp",
+                        "label":    LISTENER_IP_LABELS.get(ip, ""),
+                    })
+
+                # Merge into result and update counts
+                for path_name, readers in path_readers.items():
+                    if path_name not in result:
+                        result[path_name] = {
+                            "path": path_name, "listeners": 0,
+                            "ready": True, "readers": [],
+                        }
+                    result[path_name]["readers"]   = readers
+                    result[path_name]["listeners"] = len(readers)
+
     except Exception as e:
         print(f"[listeners] Failed to query mediamtx: {e}")
 
-    decks_summary = {}; total = 0
+    decks_summary = {}
+    total = 0
     for deck_id in ["deck-a", "deck-b", "deck-c", "deck-d", "deck-e", "deck-f"]:
-        count = sum(info["listeners"] for name, info in result.items() if name.startswith(deck_id))
-        decks_summary[deck_id] = count; total += count
+        count = result.get(deck_id, {}).get("listeners", 0)
+        decks_summary[deck_id] = count
+        total += count
 
-    # Deduplicate publishers by IP+protocol (same ffmpeg box publishes all decks)
+    # Deduplicate publishers by IP+protocol
     seen_pub = set()
     unique_publishers = []
     for p in publishers:
@@ -1612,7 +1662,7 @@ async def get_listeners():
         "total":      total,
         "decks":      decks_summary,
         "paths":      result,
-        "publishers": unique_publishers,   # ← NEW: RTMP source IPs
+        "publishers": unique_publishers,
     }
 
 # ── Playlists ───────────────────────────────────────────────
@@ -2083,7 +2133,8 @@ class MusicRequestSubmit(_PydanticBase):
     target_deck: Optional[str] = None
 
 @app.post("/api/requests")
-async def submit_music_request(req: MusicRequestSubmit):
+@limiter.limit("5/minute")
+async def submit_music_request(request: Request, req: MusicRequestSubmit):
     track_path = MEDIA_DIR / req.track
     if not track_path.exists(): raise HTTPException(status_code=404, detail="Track not found in library")
     if req.requester_email:
@@ -2290,6 +2341,26 @@ async def get_user_permissions(user_id: str, _user: dict = Depends(verify_token)
 async def save_user_permissions(user_id: str, req: PermissionsRequest, request: Request, _user: dict = Depends(verify_token)):
     if not (_user.get("is_super_admin") or _user.get("role") == "admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Bug #5 fix: prevent admins from granting super_admin or admin-level
+    # access to other users, since admins cannot elevate beyond their own role.
+    if not _user.get("is_super_admin"):
+        # Fetch the target user to check their current role
+        loop = asyncio.get_running_loop()
+        target_users = await loop.run_in_executor(None, db.list_users)
+        target = next((u for u in target_users if str(u.get("id")) == user_id), None)
+        if target and target.get("role") in ("super_admin", "admin"):
+            raise HTTPException(
+                status_code=403,
+                detail="Admins cannot modify permissions of super_admin or admin accounts."
+            )
+        # Also block setting can_settings=True (reserved for super_admin)
+        if req.can_settings:
+            raise HTTPException(
+                status_code=403,
+                detail="Only super_admin can grant the settings permission."
+            )
+
     from db_client import DEFAULT_DECK_CONTROL, DEFAULT_DECK_ACTIONS, DEFAULT_PLAYLIST_PERMS
     perms = req.dict()
     if perms["deck_control"]   is None: perms["deck_control"]   = DEFAULT_DECK_CONTROL
@@ -2307,9 +2378,49 @@ async def get_audit_logs(
     limit: int = 200,
     user_id: Optional[str] = None,
     offset: int = 0,
+    format: Optional[str] = None,   # pass ?format=csv to download as spreadsheet
     _user: dict = Depends(verify_token),
 ):
+    # Non-admins can only see their own logs
     if _user.get("role") != "admin" and not _user.get("is_super_admin"):
         user_id = _user.get("sub")
+
+    # CSV export — super_admin only (handoff §8)
+    if format and format.lower() == "csv":
+        if not _user.get("is_super_admin"):
+            raise HTTPException(status_code=403, detail="CSV export is restricted to super_admin.")
+        loop = asyncio.get_running_loop()
+        rows = await loop.run_in_executor(None, db.get_logs, 10000, user_id, 0)
+
+        def _generate_csv():
+            buf = io.StringIO()
+            writer = csv.writer(buf, quoting=csv.QUOTE_ALL)
+            writer.writerow(["id", "timestamp", "username", "user_id", "action", "ip_address", "details"])
+            for row in rows:
+                details = row.get("details", {})
+                details_str = (
+                    "; ".join(f"{k}={v}" for k, v in details.items())
+                    if isinstance(details, dict) else str(details)
+                )
+                writer.writerow([
+                    row.get("id", ""),
+                    row.get("created_at", ""),
+                    row.get("username", ""),
+                    row.get("user_id", ""),
+                    row.get("action", ""),
+                    row.get("ip_address", ""),
+                    details_str,
+                ])
+            buf.seek(0)
+            yield buf.read()
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename  = f"cocostation_audit_logs_{timestamp}.csv"
+        return StreamingResponse(
+            _generate_csv(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, db.get_logs, limit, user_id, offset)

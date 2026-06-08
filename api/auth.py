@@ -6,6 +6,8 @@ Default credentials: cocoadmin / Coco@coco (seeded by migrate.py)
 """
 
 import os
+import uuid
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, List
 
@@ -25,6 +27,42 @@ JWT_ALGORITHM    = "HS256"
 DEFAULT_EXPIRY_HOURS = 8
 
 security = HTTPBearer(auto_error=False)
+
+
+# ── JWT Denylist (Bug #4 fix) ─────────────────────────────────
+# In-memory store of revoked token JTIs mapped to their expiry timestamp.
+# Tokens are automatically pruned from the store after they expire to
+# prevent unbounded memory growth.
+#
+# Note: this is process-local. In a multi-process deployment (gunicorn
+# workers, multiple containers) a shared Redis store should be used instead.
+# See §18.3 of the handoff doc for the Redis migration path.
+
+_denylist: dict = {}      # { jti: expiry_timestamp_float }
+_denylist_lock = threading.Lock()
+
+
+def revoke_token(payload: dict) -> None:
+    """Add a decoded JWT payload's jti to the denylist."""
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return
+    with _denylist_lock:
+        _denylist[jti] = float(exp)
+        # Prune expired entries while the lock is held
+        now = datetime.utcnow().timestamp()
+        expired_keys = [k for k, v in _denylist.items() if v < now]
+        for k in expired_keys:
+            del _denylist[k]
+
+
+def is_token_revoked(jti: str) -> bool:
+    """Return True if this jti has been explicitly revoked."""
+    if not jti:
+        return False
+    with _denylist_lock:
+        return jti in _denylist
 
 
 # ── Password helpers ─────────────────────────────────────────
@@ -52,6 +90,7 @@ def create_token(user: dict, expiry_hours: int = DEFAULT_EXPIRY_HOURS) -> str:
         "username":       user["username"],
         "role":           user.get("role", "operator"),
         "is_super_admin": is_super,
+        "jti":            str(uuid.uuid4()),   # unique token ID — used for denylist revocation
         "exp":            expire,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -60,9 +99,12 @@ def create_token(user: dict, expiry_hours: int = DEFAULT_EXPIRY_HOURS) -> str:
 def decode_token(token: str) -> dict:
     """Decode and validate a JWT. Raises 401 on failure."""
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except JWTError as exc:
         raise HTTPException(status_code=401, detail=f"Invalid or expired token: {exc}")
+    if is_token_revoked(payload.get("jti")):
+        raise HTTPException(status_code=401, detail="Token has been revoked. Please log in again.")
+    return payload
 
 
 # ── FastAPI dependencies ──────────────────────────────────────

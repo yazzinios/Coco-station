@@ -733,8 +733,12 @@ def register_recurring_job(rs: dict) -> None:
 # ── Top-level stop function (must be module-level for APScheduler to reference properly) ──
 async def _ap_stop_mixer_by_id(schedule_id: str) -> None:
     """Stop a recurring mixer schedule by ID. Must be module-level for APScheduler.
-    Only stops the deck if it was actually started by this schedule — checked via
-    a _scheduler_owner tag written to the deck state on trigger.
+
+    Ownership logic:
+    - Deck tagged _scheduler_owner == schedule_id → definitely ours, stop it.
+    - Deck with NO owner tag (lost after playlist track_ended/crossfade advance)
+      but still playing AND schedule ran today → treat as ours, stop it.
+    - Deck tagged with a *different* schedule_id → manually overridden, skip it.
     """
     recs = _state.get("recurring_mixer_schedules", [])
     r = next((x for x in recs if x["id"] == schedule_id), None)
@@ -742,27 +746,38 @@ async def _ap_stop_mixer_by_id(schedule_id: str) -> None:
         print(f"[mixer-scheduler] stop: schedule {schedule_id} not found")
         return
 
-    decks    = _state.get("decks", {})
-    deck_ids = _get_deck_ids(r)
+    decks     = _state.get("decks", {})
+    deck_ids  = _get_deck_ids(r)
+    today_str = _now().strftime("%Y-%m-%d")
+    ran_today = r.get("last_run_date") == today_str
 
-    # Only stop decks that this specific schedule owns.
-    # If the user manually loaded a different track after the scheduler ran,
-    # that deck no longer belongs to this schedule and must not be stopped.
-    owned = [did for did in deck_ids
-             if decks.get(did, {}).get("_scheduler_owner") == schedule_id]
+    to_stop = []
+    for did in deck_ids:
+        owner = decks.get(did, {}).get("_scheduler_owner")
+        if owner == schedule_id:
+            # Explicit ownership tag present — stop unconditionally.
+            to_stop.append(did)
+        elif owner is None and ran_today and decks.get(did, {}).get("is_playing"):
+            # Owner tag was lost after a playlist track advance (track_ended path
+            # doesn't re-stamp _scheduler_owner). The schedule ran today and the
+            # deck is still playing, so this is almost certainly still ours.
+            to_stop.append(did)
+        else:
+            print(f"[mixer-scheduler] stop '{r.get('name')}': deck {did} skipped "
+                  f"(owner={owner!r}, ran_today={ran_today}, "
+                  f"playing={decks.get(did, {}).get('is_playing')})")
 
-    if not owned:
-        print(f"[mixer-scheduler] stop '{r.get('name')}': no owned decks — skipping "
-              f"(decks were manually overridden or already stopped)")
+    if not to_stop:
+        print(f"[mixer-scheduler] stop '{r.get('name')}': no decks to stop "
+              f"(all manually overridden or already idle)")
         return
 
-    print(f"[mixer-scheduler] stop '{r.get('name')}': stopping owned decks {owned}")
-    # Temporarily narrow the schedule's deck list to only the owned ones
-    r_owned = {**r, "deck_ids": owned}
-    await _stop_recurring_mixer_schedule(r_owned)
+    print(f"[mixer-scheduler] stop '{r.get('name')}': stopping decks {to_stop}")
+    r_stop = {**r, "deck_ids": to_stop}
+    await _stop_recurring_mixer_schedule(r_stop)
 
-    # Clear ownership tags
-    for did in owned:
+    # Clear ownership tags for stopped decks
+    for did in to_stop:
         decks.get(did, {}).pop("_scheduler_owner", None)
 
     mgr = _state.get("manager")

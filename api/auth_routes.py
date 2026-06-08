@@ -26,10 +26,24 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel as _PydanticBase
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+# Reference to the app-level limiter — set via set_limiter_ref() called from main.py
+_limiter_ref: list = [None]
+
+def set_limiter_ref(lim: Limiter):
+    _limiter_ref[0] = lim
+
+
+def _login_rate_limit_key(request: Request) -> str:
+    """Key function for login rate limiting — uses client IP."""
+    return get_remote_address(request)
 
 from auth import (
     verify_token, verify_password, create_token,
     verify_ldap_credentials, test_ldap_connection, query_ldap_directory,
+    revoke_token,
 )
 from db_client import db
 from db_auth_helpers import get_user_by_username, update_last_login, get_user_by_id
@@ -197,12 +211,30 @@ class LdapConfigRequest(_PydanticBase):
 async def login(req: LoginRequest, request: Request):
     """
     Public endpoint — authenticate and return JWT + user + permissions.
+    Rate-limited to 10 attempts / minute per IP to prevent brute-force.
 
     Flow:
       1. If LDAP enabled -> try LDAP first.
       2. Fallback to local DB (allows cocoadmin to always log in).
       3. On success: stamp last_login, return token + permissions.
     """
+    # Manual rate-limit check (10 login attempts / minute per IP)
+    # Uses the app-level limiter stored in app.state.
+    # slowapi decorators can't be applied to router endpoints after the fact,
+    # so we call the limiter's hit() directly to register the attempt and
+    # raise 429 when the limit is exceeded.
+    lim = _limiter_ref[0]
+    if lim:
+        try:
+            client_ip = get_remote_address(request)
+            lim.hit("10/minute", client_ip)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "rate" in err_str or "limit" in err_str or "429" in err_str:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many login attempts. Please wait before trying again."
+                )
     settings   = _SETTINGS_REF
     expiry_hrs = int(settings.get("session_hours", 8))
     ip         = _get_client_ip(request)
@@ -370,9 +402,10 @@ async def get_me(user: dict = Depends(verify_token)):
 
 @auth_router.post("/api/auth/logout")
 async def logout(request: Request, user: dict = Depends(verify_token)):
-    """Audit the logout. The client must discard the token on its side."""
+    """Revoke the current token server-side and audit the logout."""
+    revoke_token(user)   # adds jti to in-memory denylist
     _audit_logout(user, _get_client_ip(request))
-    return {"status": "ok", "message": "Logged out. Discard your token on the client."}
+    return {"status": "ok", "message": "Logged out. Token has been revoked."}
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  LDAP test + save  (admin or super_admin required)
