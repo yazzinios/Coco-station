@@ -232,7 +232,13 @@ def _seed_roles(cur):
 
 
 def _seed_admin(cur):
-    """Insert or update default admin user (cocoadmin / Coco@coco)."""
+    """Ensure the default super-admin user exists.
+
+    IMPORTANT: password_hash is NEVER overwritten on subsequent runs.
+    The ON CONFLICT clause only updates role/is_super_admin/enabled so the
+    account cannot be accidentally locked out, but leaves the password
+    exactly as set by the administrator.
+    """
     try:
         import bcrypt
         pw_hash = bcrypt.hashpw(b"Coco@coco", bcrypt.gensalt()).decode()
@@ -245,15 +251,13 @@ def _seed_admin(cur):
         INSERT INTO users (username, display_name, password_hash, role, is_super_admin, enabled)
         VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (username) DO UPDATE SET
+            role           = 'super_admin',
             is_super_admin = TRUE,
-            password_hash = CASE
-                WHEN users.password_hash = '__NEEDS_BCRYPT__' THEN EXCLUDED.password_hash
-                ELSE users.password_hash
-            END
+            enabled        = TRUE
         """,
         ("cocoadmin", "Coco Admin", pw_hash, "super_admin", True, True),
     )
-    print("[migrate] Super-admin user 'cocoadmin' ensured.")
+    print("[migrate] Super-admin user 'cocoadmin' ensured (password preserved).")
 
 
 def run_migrations_local(db_url: str):
