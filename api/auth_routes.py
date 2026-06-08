@@ -219,22 +219,34 @@ async def login(req: LoginRequest, request: Request):
       3. On success: stamp last_login, return token + permissions.
     """
     # Manual rate-limit check (10 login attempts / minute per IP)
-    # Uses the app-level limiter stored in app.state.
-    # slowapi decorators can't be applied to router endpoints after the fact,
-    # so we call the limiter's hit() directly to register the attempt and
-    # raise 429 when the limit is exceeded.
+    # We use slowapi's internal storage directly since the @limiter.limit()
+    # decorator cannot be applied to APIRouter endpoints registered after app
+    # creation.  _limiter.hit() is the correct internal API for this.
     lim = _limiter_ref[0]
     if lim:
         try:
             client_ip = _get_client_ip(request)
-            lim.hit("10/minute", client_ip)
-        except Exception as e:
-            err_str = str(e).lower()
-            if "rate" in err_str or "limit" in err_str or "429" in err_str:
+            # Use the limiter's _storage backend to check/increment the counter.
+            # This mirrors what the @limiter.limit() decorator does internally.
+            from limits import parse as _parse_limit
+            from limits.storage import storage_from_string
+            limit_item = _parse_limit("10/minute")
+            key = f"LIMITER/{client_ip}/login/10/1/minute"
+            if not lim._storage.check():
                 raise HTTPException(
                     status_code=429,
                     detail="Too many login attempts. Please wait before trying again."
                 )
+            if not lim._storage.hit(limit_item, "login", client_ip):
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many login attempts. Please wait before trying again."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            # If storage check fails for any reason, log and continue
+            print(f"[auth] Rate limit check failed (non-fatal): {e}")
     settings   = _SETTINGS_REF
     expiry_hrs = int(settings.get("session_hours", 8))
     ip         = _get_client_ip(request)

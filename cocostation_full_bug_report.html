@@ -1,0 +1,213 @@
+<h2 class="sr-only">CocoStation full codebase bug analysis</h2>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);font-size:14px;color:var(--color-text-primary)}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.5rem}
+.stat{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:.9rem 1rem;text-align:center}
+.stat-n{font-size:26px;font-weight:500;line-height:1}
+.stat-l{font-size:12px;color:var(--color-text-secondary);margin-top:3px}
+.nc{color:#a32d2d}.nh{color:#854f0b}.nm{color:#185fa5}.nl{color:#3b6d11}
+.grp{margin-bottom:1.75rem}
+.grp-title{font-size:13px;font-weight:500;text-transform:uppercase;letter-spacing:.6px;color:var(--color-text-secondary);margin-bottom:.75rem;display:flex;align-items:center;gap:6px}
+.bug{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:.9rem 1.1rem;margin-bottom:8px}
+.brow{display:flex;align-items:flex-start;gap:8px}
+.badge{font-size:11px;font-weight:500;padding:2px 7px;border-radius:var(--border-radius-md);white-space:nowrap;flex-shrink:0;margin-top:1px}
+.bc{background:#fcebeb;color:#a32d2d}.bh{background:#faeeda;color:#854f0b}
+.bm{background:#e6f1fb;color:#185fa5}.bl{background:#eaf3de;color:#3b6d11}
+.btitle{font-size:13.5px;font-weight:500;line-height:1.4}
+.bfile{font-size:11px;color:var(--color-text-secondary);margin-top:3px}
+.bdesc{font-size:13px;color:var(--color-text-secondary);line-height:1.6;margin-top:6px}
+.bfix{font-size:12px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:7px 10px;margin-top:7px;border-left:2px solid var(--color-border-secondary)}
+.bfix b{color:var(--color-text-primary);font-weight:500}
+code{font-family:var(--font-mono);font-size:11.5px;background:var(--color-background-secondary);padding:1px 5px;border-radius:4px}
+</style>
+<div style="padding:.75rem 0 1.5rem">
+
+<div class="grid4">
+  <div class="stat"><div class="stat-n nc">4</div><div class="stat-l">Critical</div></div>
+  <div class="stat"><div class="stat-n nh">7</div><div class="stat-l">High</div></div>
+  <div class="stat"><div class="stat-n nm">8</div><div class="stat-l">Medium</div></div>
+  <div class="stat"><div class="stat-n nl">4</div><div class="stat-l">Low</div></div>
+</div>
+
+<div class="grp">
+<div class="grp-title"><i class="ti ti-shield-x" style="font-size:15px;color:#a32d2d" aria-hidden="true"></i> Critical</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bc">CRITICAL</span><span class="btitle">asyncio.get_event_loop() crashes on Python 3.12</span></div>
+  <div class="bfile">auth_routes.py (×14 calls) · rbac.py (×8 calls)</div>
+  <div class="bdesc"><code>asyncio.get_event_loop()</code> raises <code>RuntimeError: There is no current event loop</code> on Python 3.12+ when called from a thread that doesn't own a running loop. Every auth endpoint, every RBAC endpoint, and every LDAP operation uses this pattern. On Python 3.12 the entire auth system would stop working.</div>
+  <div class="bfix"><b>Fix:</b> Replace every <code>asyncio.get_event_loop()</code> with <code>asyncio.get_running_loop()</code>. Already done correctly in main.py — apply the same pattern to both files.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bc">CRITICAL</span><span class="btitle">DJ stream/detected and stream/ended have no IP allowlist</span></div>
+  <div class="bfile">dj_routes.py · mediamtx.yml</div>
+  <div class="bdesc">Both MediaMTX webhook endpoints (<code>POST /api/dj/stream/detected</code> and <code>stream/ended</code>) are completely unauthenticated AND publicly reachable. Anyone who sends a POST to these endpoints can instantly trigger a "DJ is live" sequence — fading out all music, switching all decks to an empty stream.</div>
+  <div class="bfix"><b>Fix:</b> Add an IP allowlist check: only accept requests from <code>10.20.0.2</code> (MediaMTX container). Add a FastAPI dependency: <code>if request.client.host != "10.20.0.2": raise HTTPException(403)</code>. Or add a shared secret header in MediaMTX's runOnReady curl and check it server-side.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bc">CRITICAL</span><span class="btitle">Trigger lock never released if mic_open_sequence raises after acquire</span></div>
+  <div class="bfile">announcement_engine.py · main.py — mic_on</div>
+  <div class="bdesc">In <code>mic_open_sequence()</code> the lock is acquired with <code>await _TRIGGER_LOCK.acquire()</code>. The try/except does release the lock on error — however if the error occurs BEFORE the try block (e.g. during <code>_mic_duck_pct()</code>), or if <code>mic_close_sequence()</code> is never called because the client disconnects silently, the lock stays held forever. The station freezes: no more announcements, no more scheduled plays, nothing goes through the trigger lock again until a manual reset API call.</div>
+  <div class="bfix"><b>Fix:</b> In <code>mic_on</code> endpoint (main.py), wrap the entire flow in a try/finally that calls <code>fade_restore_after_mic()</code> and forcibly releases the lock if it's still held. Also add a watchdog: if the mic is still "active" after <code>session_hours * 60</code> minutes, auto-call mic_off.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bc">CRITICAL</span><span class="btitle">LISTENER_HISTORY lost on every container restart</span></div>
+  <div class="bfile">main.py — _record_listener / LISTENER_HISTORY</div>
+  <div class="bdesc">The entire RTSP connection history is in a plain Python dict. Every restart wipes it. Given nightly restarts or deploys, the analytics history page is always empty. Already flagged in the security report — still not fixed.</div>
+  <div class="bfix"><b>Fix:</b> On startup, load from a <code>listener_history</code> DB table. Flush to DB every 5 minutes via a background task. Same pattern used for music_requests already.</div>
+</div>
+
+</div>
+
+<div class="grp">
+<div class="grp-title"><i class="ti ti-alert-triangle" style="font-size:15px;color:#854f0b" aria-hidden="true"></i> High</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bh">HIGH</span><span class="btitle">_scheduler_owner tag never re-stamped on track_ended advances</span></div>
+  <div class="bfile">main.py — track_ended · scheduler.py — _trigger_recurring_mixer_schedule</div>
+  <div class="bdesc">When a playlist advances via <code>track_ended</code>, the new track starts without <code>_scheduler_owner</code> being set. The mixer stop job's fallback logic (last_run_date) was patched but the root cause remains — ownership is only ever set in <code>_trigger_recurring_mixer_schedule</code> on first play, not on subsequent advances.</div>
+  <div class="bfix"><b>Fix:</b> In <code>track_ended</code> (main.py), after setting the new track, check if the deck has an active scheduler context and re-stamp the owner. Or, in <code>_trigger_recurring_mixer_schedule</code>, add a hook that persists the owner ID through all track_ended callbacks for that deck.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bh">HIGH</span><span class="btitle">DJ announce endpoint uses hardcoded 6-second sleep for file playback</span></div>
+  <div class="bfile">dj_routes.py — dj_announce</div>
+  <div class="bdesc">When a DJ plays a pre-recorded file announcement, the code does <code>await asyncio.sleep(6)</code> regardless of the actual file duration. A 30-second announcement file would restore volume after 6 seconds while the file is still playing. The TTS path correctly uses <code>audio_dur_fn</code> to get the real duration — the file path does not.</div>
+  <div class="bfix"><b>Fix:</b> Use <code>_audio_dur_fn</code> to measure the file duration before sleeping. Same pattern as the TTS branch directly below it in the same function.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bh">HIGH</span><span class="btitle">Duck engine refcount mismatch when announcement fails mid-sequence</span></div>
+  <div class="bfile">announcement_engine.py — play_announcement_sequence</div>
+  <div class="bdesc">If the sequence raises an exception between the fade-down and the fade-up, the finally block correctly fades back up. However, <code>_DUCK_REFCOUNT_REF</code> in <code>main.py</code> (the separate ducking engine) is not decremented. On the next announcement the engine thinks ducking is already active and skips the fade-down, leaving music permanently at duck level.</div>
+  <div class="bfix"><b>Fix:</b> The announcement engine and the main.py duck engine are two separate systems that both touch volume. They need to be unified — or <code>play_announcement_sequence</code> should always call <code>_duck_release()</code> on any exit path, not just manage volumes directly.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bh">HIGH</span><span class="btitle">Redis connection singleton is never closed or reconnected on failure</span></div>
+  <div class="bfile">dj_redis.py — get_redis</div>
+  <div class="bdesc">The module-level <code>_redis</code> singleton is created once and reused forever. If Redis drops and reconnects, the stale client object may be in a broken state — all subsequent calls silently fail with no reconnection attempt. A Redis restart during a DJ session would freeze the entire DJ engine.</div>
+  <div class="bfix"><b>Fix:</b> Add error handling: catch <code>redis.exceptions.ConnectionError</code> in each call site, reset <code>_redis = None</code>, and retry once. Or use <code>aioredis.from_url(..., retry_on_error=[redis.exceptions.ConnectionError])</code>.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bh">HIGH</span><span class="btitle">TTS files accumulate in /announcements with no cleanup</span></div>
+  <div class="bfile">tts.py · main.py — create_tts_announcement</div>
+  <div class="bdesc">Every TTS call generates a new <code>tts_&lt;uuid&gt;.mp3</code> file. These are never deleted — not when the announcement is deleted, not on restart. Over time (especially with recurring schedules that auto-play TTS) the announcements volume fills up, and eventually ffmpeg fails to write new files.</div>
+  <div class="bfix"><b>Fix:</b> In <code>delete_announcement</code>, also unlink the file from <code>ANNOUNCEMENTS_DIR</code> if the type is TTS. Already done for MP3 uploads — apply the same logic to TTS. Also add a startup sweep that removes orphaned TTS files not referenced by any announcement in the DB.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bh">HIGH</span><span class="btitle">Heartbeat runs while decks dict may not be initialised</span></div>
+  <div class="bfile">scheduler.py — _ap_heartbeat / _ap_check_oneoffs</div>
+  <div class="bdesc">The scheduler starts 10 seconds after startup and begins calling <code>_ap_check_oneoffs</code> and <code>_ap_heartbeat</code>. Both functions access <code>_state["announcements"]</code> and <code>_state["music_schedules"]</code> directly. If the DB is slow and <code>init_scheduler</code> is called before those lists are populated (they default to empty lists only if the DB succeeds), a KeyError or empty list causes the first few poll cycles to silently miss due triggers.</div>
+  <div class="bfix"><b>Fix:</b> Guard all <code>_state</code> accesses with <code>.get(key, [])</code> defaults. Already done in some places — apply consistently throughout the heartbeat and oneoff checker.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bh">HIGH</span><span class="btitle">update_last_login fails silently — users table missing last_login column</span></div>
+  <div class="bfile">db_auth_helpers.py — update_last_login · migrate.py</div>
+  <div class="bdesc">Every login calls <code>UPDATE users SET last_login = NOW()</code>, but the <code>last_login</code> column is never created in <code>BASE_SCHEMA_SQL</code> or any migration. The UPDATE silently fails on every login with a psycopg2 error caught and swallowed. The column simply doesn't exist.</div>
+  <div class="bfix"><b>Fix:</b> Add to the REPAIR_SQL block in migrate.py: <code>IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='last_login') THEN ALTER TABLE users ADD COLUMN last_login TIMESTAMP WITH TIME ZONE; END IF;</code></div>
+</div>
+
+</div>
+
+<div class="grp">
+<div class="grp-title"><i class="ti ti-alert-circle" style="font-size:15px;color:#185fa5" aria-hidden="true"></i> Medium</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">RecurringMixerScheduleCreateRequest.model_post_init uses wrong hook name</span></div>
+  <div class="bfile">schemas.py</div>
+  <div class="bdesc">The model uses <code>model_post_init(self, __context)</code> which is a Pydantic v2 hook. The project appears to use Pydantic v1-style validation elsewhere (BaseModel without model_config). If the version is v1, this hook is silently ignored — stop_time="" is never coerced to None, and the DB stores an empty string that later reads as a truthy stop_time.</div>
+  <div class="bfix"><b>Fix:</b> Use a Pydantic v1 validator: <code>@validator('stop_time', always=True) def _coerce_stop_time(cls, v): return None if v == '' else v</code>. Or confirm Pydantic v2 is installed and <code>model_post_init</code> is actually firing.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">DJ deck auto-expire on RESERVED status can stop a live stream</span></div>
+  <div class="bfile">dj_redis.py — reserve_deck</div>
+  <div class="bdesc"><code>await r.expire(_k_deck(deck_id), RESERVE_TTL)</code> sets a 120-second TTL on the deck hash. But <code>set_stream_detected</code> calls <code>await r.persist(_k_deck(deck_id))</code> to remove it. If the stream takes more than 2 minutes to connect (slow OBS start, network delay), the deck key expires and reverts to AVAILABLE — then another DJ could reserve the same deck mid-stream.</div>
+  <div class="bfix"><b>Fix:</b> Increase RESERVE_TTL to at least 300 seconds, or track reservation time separately from the deck key TTL.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">One-off announcement checker fires the same announcement multiple times</span></div>
+  <div class="bfile">scheduler.py — _ap_check_oneoffs</div>
+  <div class="bdesc">The checker runs every 10 seconds. It sets <code>ann["status"] = "Played"</code> in memory then fires an async task. If the DB <code>update_announcement_status</code> is slow (takes >10s), the next poll cycle sees the in-memory status already as "Played" — but if the API container restarts between the status set and the DB write, the announcement fires again on the next boot.</div>
+  <div class="bfix"><b>Fix:</b> Write the status to DB first (synchronously, not as a background task) before firing the play task. This is more critical for one-offs than for recurring — the current order should be reversed.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">TTS path uses /app/data/announcements — fails outside Docker</span></div>
+  <div class="bfile">tts.py</div>
+  <div class="bdesc"><code>TTS_DIR = "/app/data/announcements"</code> is hardcoded to the Docker container path. Running the API locally (dev mode, without Docker) creates files in the wrong place and the <code>ANNOUNCEMENTS_DIR</code> path in main.py (<code>data/announcements</code> relative) points somewhere else. The announcement engine then can't find the TTS file.</div>
+  <div class="bfix"><b>Fix:</b> Use the same env-driven path: <code>TTS_DIR = os.getenv("ANNOUNCEMENTS_DIR", "/app/data/announcements")</code>. Or import the path from main.py's ANNOUNCEMENTS_DIR constant.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">Deck F missing from DB seed — all schedule/mixer operations skip it</span></div>
+  <div class="bfile">migrate.py — BASE_SCHEMA_SQL</div>
+  <div class="bdesc">The <code>INSERT INTO decks</code> seed and the <code>INSERT INTO deck_names</code> seed both only insert decks a–e. Deck F is defined in <code>DECKS</code> in main.py and works at runtime, but any DB query that joins on the <code>decks</code> table (e.g. foreign key checks) will fail for deck F. This also means deck F's name is never persisted.</div>
+  <div class="bfix"><b>Fix:</b> Add <code>('f', 'Deck F', 100, false)</code> to both INSERT statements in migrate.py and add to the REPAIR_SQL block: <code>INSERT INTO decks (id, name, volume, is_playing) VALUES ('f','Deck F',100,false) ON CONFLICT (id) DO NOTHING;</code></div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">multi_tracks field ignored in RecurringScheduleCreateRequest</span></div>
+  <div class="bfile">schemas.py · main.py — create_recurring_schedule</div>
+  <div class="bdesc"><code>RecurringScheduleCreateRequest</code> includes a <code>multi_tracks</code> field, but the schedule dict built in <code>create_recurring_schedule</code> in main.py never includes it. The field is accepted by the API but silently dropped — any multi-track announcement schedule created via the UI loses its track list.</div>
+  <div class="bfix"><b>Fix:</b> Add <code>"multi_tracks": req.multi_tracks</code> to the schedule dict in <code>create_recurring_schedule</code> and <code>update_recurring_schedule</code>, and ensure <code>db.save_recurring_schedule</code> persists it.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">AppContext.jsx WS reconnect fires even after logout</span></div>
+  <div class="bfile">dashboard/src/context/AppContext.jsx</div>
+  <div class="bdesc">The <code>connectWS</code> function checks the <code>destroyed</code> flag at the start, but <code>destroyed</code> is set in the cleanup closure from <code>useEffect</code>. On logout, <code>setCurrentUser(null)</code> triggers a re-render before the cleanup runs. The WS close in the <code>logout</code> callback fires after the new render has already scheduled a new <code>useEffect</code> — creating a brief window where a new WS connection opens for a null user, gets a 4001 close, and calls <code>logout()</code> again.</div>
+  <div class="bfix"><b>Fix:</b> In the <code>logout</code> callback, set a module-level "logging out" flag that <code>connectWS</code> checks before opening. Or move the WS close into the <code>useEffect</code> cleanup only, not in <code>logout</code> directly.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bm">MEDIUM</span><span class="btitle">_play_content uses local path fallback that silently returns 60s timeout</span></div>
+  <div class="bfile">announcement_engine.py — _play_content</div>
+  <div class="bdesc">The duration lookup tries <code>data/announcements/{filename}</code> and <code>/app/data/announcements/{filename}</code>. If neither exists (e.g. the file was deleted between upload and playback), it falls back to <code>content_duration = 60.0</code> and proceeds — sending the play command for a missing file and then waiting 70 seconds for an announcement_ended event that will never come.</div>
+  <div class="bfix"><b>Fix:</b> Check if the mixer-side path file exists before sending the play command. If it doesn't, log an error and return early — don't send the play command and wait 70 seconds.</div>
+</div>
+
+</div>
+
+<div class="grp">
+<div class="grp-title"><i class="ti ti-info-circle" style="font-size:15px;color:#3b6d11" aria-hidden="true"></i> Low / Polish</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bl">LOW</span><span class="btitle">DeckState schema missing is_crossfading field</span></div>
+  <div class="bfile">schemas.py</div>
+  <div class="bdesc">The <code>DeckState</code> Pydantic model doesn't include <code>is_crossfading</code>, but the runtime DECKS dict uses it. Not a crash — FastAPI just won't validate it — but if a response ever uses the DeckState model directly the field would be dropped.</div>
+  <div class="bfix"><b>Fix:</b> Add <code>is_crossfading: bool = False</code> to DeckState in schemas.py.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bl">LOW</span><span class="btitle">Announcement content duration lookup not cached</span></div>
+  <div class="bfile">announcement_engine.py — _play_content · main.py — get_audio_duration</div>
+  <div class="bdesc">Every announcement playback calls ffprobe to measure duration. For recurring announcements that play every 30 minutes this is a fresh subprocess call every time. Not a crash, just unnecessary overhead — especially on a Raspberry Pi or low-spec server.</div>
+  <div class="bfix"><b>Fix:</b> Cache durations in a module-level dict keyed by file path + mtime. Invalidate on mtime change.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bl">LOW</span><span class="btitle">Scheduler heartbeat logs "next" times using future-next-day calculation</span></div>
+  <div class="bfile">scheduler.py — _ap_heartbeat</div>
+  <div class="bdesc">When a recurring schedule has already run today, <code>_get_seconds_until_hhmm</code> adds a full day and reports "in 23h 45m" in the heartbeat. The log says "Recurring: Greeting Ghita AR in 23h 45m" right after it just ran, which is technically correct but visually confusing — looks like it failed.</div>
+  <div class="bfix"><b>Fix:</b> Skip the "upcoming" entry for schedules whose <code>last_run_date == today_str</code>, or add "(ran today)" suffix to the label.</div>
+</div>
+
+<div class="bug">
+  <div class="brow"><span class="badge bl">LOW</span><span class="btitle">Library file serve endpoint has no Content-Disposition or Range support</span></div>
+  <div class="bfile">main.py — GET /api/library/file/{filename}</div>
+  <div class="bdesc">The file serve endpoint uses <code>FileResponse</code> without <code>content_disposition_type</code> or HTTP Range support. Browsers that request audio files with <code>Range: bytes=...</code> (e.g. seeking in the request page audio preview) receive a 200 with the full file instead of a 206 partial — breaking seek in the public request page's audio preview player.</div>
+  <div class="bfix"><b>Fix:</b> FastAPI's <code>FileResponse</code> does support Range requests natively — just ensure <code>media_type</code> is set correctly per file extension rather than always <code>"audio/mpeg"</code>.</div>
+</div>
+
+</div>
+</div>
