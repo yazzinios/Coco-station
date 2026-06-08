@@ -23,6 +23,12 @@ if not JWT_SECRET:
         "JWT_SECRET environment variable is not set. "
         "Add it to your .env file before starting the server."
     )
+# Security fix: reject placeholder and weak secrets at startup
+if len(JWT_SECRET) < 32 or "replace" in JWT_SECRET.lower() or JWT_SECRET.lower() in ("secret", "jwt_secret", "change_me"):
+    raise RuntimeError(
+        "JWT_SECRET appears to be a placeholder or is too short (min 32 chars). "
+        "Generate a strong secret with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
 JWT_ALGORITHM    = "HS256"
 DEFAULT_EXPIRY_HOURS = 8
 
@@ -30,39 +36,111 @@ security = HTTPBearer(auto_error=False)
 
 
 # ── JWT Denylist (Bug #4 fix) ─────────────────────────────────
-# In-memory store of revoked token JTIs mapped to their expiry timestamp.
-# Tokens are automatically pruned from the store after they expire to
-# prevent unbounded memory growth.
+# Redis-backed store of revoked token JTIs.
+# Each key is stored with a TTL equal to the remaining token lifetime,
+# so Redis evicts entries automatically — no manual pruning needed.
 #
-# Note: this is process-local. In a multi-process deployment (gunicorn
-# workers, multiple containers) a shared Redis store should be used instead.
-# See §18.3 of the handoff doc for the Redis migration path.
+# Falls back to an in-process dict if Redis is unavailable (e.g. dev
+# environment without Redis, or a transient connection error). The
+# fallback is process-local and does not survive restarts, but it is
+# safe and does not block startup.
+#
+# Redis key format: "jwt_denylist:{jti}"
+# Redis TTL: seconds until token expiry (so the key self-destructs)
 
-_denylist: dict = {}      # { jti: expiry_timestamp_float }
-_denylist_lock = threading.Lock()
+_REDIS_URL         = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+_DENYLIST_PREFIX   = "jwt_denylist:"
+
+# Lazy-initialised Redis client — created on first use
+_redis_client      = None
+_redis_client_lock = threading.Lock()
+
+# In-memory fallback used when Redis is unreachable
+_fallback_denylist: dict = {}   # { jti: expiry_timestamp_float }
+_fallback_lock = threading.Lock()
+
+
+def _get_redis():
+    """Return a connected Redis client, or None if unavailable."""
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    with _redis_client_lock:
+        if _redis_client is not None:
+            return _redis_client
+        try:
+            import redis as _redis_lib
+            client = _redis_lib.Redis.from_url(
+                _REDIS_URL,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+                decode_responses=True,
+            )
+            client.ping()           # fail fast if Redis is down
+            _redis_client = client
+            print(f"[auth] JWT denylist: connected to Redis at {_REDIS_URL}")
+            return _redis_client
+        except Exception as e:
+            print(f"[auth] JWT denylist: Redis unavailable ({e}) — falling back to in-memory store")
+            return None
 
 
 def revoke_token(payload: dict) -> None:
-    """Add a decoded JWT payload's jti to the denylist."""
+    """
+    Add a decoded JWT payload's jti to the denylist.
+    TTL is set to the token's remaining lifetime so the entry self-expires.
+    """
     jti = payload.get("jti")
     exp = payload.get("exp")
     if not jti or not exp:
         return
-    with _denylist_lock:
-        _denylist[jti] = float(exp)
-        # Prune expired entries while the lock is held
-        now = datetime.utcnow().timestamp()
-        expired_keys = [k for k, v in _denylist.items() if v < now]
-        for k in expired_keys:
-            del _denylist[k]
+
+    now        = datetime.utcnow().timestamp()
+    ttl_secs   = max(1, int(float(exp) - now))
+    redis_key  = f"{_DENYLIST_PREFIX}{jti}"
+
+    r = _get_redis()
+    if r is not None:
+        try:
+            r.setex(redis_key, ttl_secs, "1")
+            return
+        except Exception as e:
+            print(f"[auth] Redis revoke_token failed ({e}), falling back to memory")
+
+    # Fallback: in-memory dict with manual pruning
+    with _fallback_lock:
+        _fallback_denylist[jti] = float(exp)
+        _prune_fallback()
 
 
 def is_token_revoked(jti: str) -> bool:
     """Return True if this jti has been explicitly revoked."""
     if not jti:
         return False
-    with _denylist_lock:
-        return jti in _denylist
+
+    r = _get_redis()
+    if r is not None:
+        try:
+            return r.exists(f"{_DENYLIST_PREFIX}{jti}") == 1
+        except Exception as e:
+            print(f"[auth] Redis is_token_revoked failed ({e}), falling back to memory")
+
+    # Fallback check
+    with _fallback_lock:
+        if jti not in _fallback_denylist:
+            return False
+        if _fallback_denylist[jti] < datetime.utcnow().timestamp():
+            del _fallback_denylist[jti]
+            return False
+        return True
+
+
+def _prune_fallback() -> None:
+    """Remove expired entries from the fallback dict (call with lock held)."""
+    now = datetime.utcnow().timestamp()
+    expired = [k for k, v in _fallback_denylist.items() if v < now]
+    for k in expired:
+        del _fallback_denylist[k]
 
 
 # ── Password helpers ─────────────────────────────────────────

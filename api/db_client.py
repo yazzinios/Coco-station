@@ -52,9 +52,10 @@ class DBClient:
 
         if self._pool is None:
             self._pool = pg_pool.SimpleConnectionPool(
-                1, 3, self.db_url,
+                2, 10, self.db_url,   # min=2, max=10 (increased from 1,3 for concurrent scheduler+API load)
                 cursor_factory=RealDictCursor,
                 options="-c statement_timeout=5000",
+                connect_timeout=5,
             )
 
         conn = self._pool.getconn()

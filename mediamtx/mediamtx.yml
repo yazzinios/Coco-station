@@ -1,7 +1,7 @@
 ###############################################
 # Global settings
 api: yes
-apiAddress: :9997
+apiAddress: 127.0.0.1:9997   # Security fix: bind to loopback only — not exposed outside the container
 
 ###############################################
 # RTSP
@@ -38,39 +38,54 @@ webrtcICEUDPMuxAddress: :8189
 # Paths
 
 paths:
+  # Security fix: publisher restricted to ffmpeg-mixer container (10.20.0.5)
+  # Readers restricted to internal network ranges seen in production
+  # (172.22.x.x = AV receivers, 10.20.x.x = Docker internal)
   deck-a:
     source: publisher
     sourceOnDemand: no
+    publishIPs: [10.20.0.5]
+    readIPs: [172.22.0.0/16, 10.20.0.0/24]
   deck-a-opus:
     source: rtsp://localhost:8554/deck-a
     sourceOnDemand: yes
   deck-b:
     source: publisher
     sourceOnDemand: no
+    publishIPs: [10.20.0.5]
+    readIPs: [172.22.0.0/16, 10.20.0.0/24]
   deck-b-opus:
     source: rtsp://localhost:8554/deck-b
     sourceOnDemand: yes
   deck-c:
     source: publisher
     sourceOnDemand: no
+    publishIPs: [10.20.0.5]
+    readIPs: [172.22.0.0/16, 10.20.0.0/24]
   deck-c-opus:
     source: rtsp://localhost:8554/deck-c
     sourceOnDemand: yes
   deck-d:
     source: publisher
     sourceOnDemand: no
+    publishIPs: [10.20.0.5]
+    readIPs: [172.22.0.0/16, 10.20.0.0/24]
   deck-d-opus:
     source: rtsp://localhost:8554/deck-d
     sourceOnDemand: yes
   deck-e:
     source: publisher
     sourceOnDemand: no
+    publishIPs: [10.20.0.5]
+    readIPs: [172.22.0.0/16, 10.20.0.0/24]
   deck-e-opus:
     source: rtsp://localhost:8554/deck-e
     sourceOnDemand: yes
   deck-f:
     source: publisher
     sourceOnDemand: no
+    publishIPs: [10.20.0.5]
+    readIPs: [172.22.0.0/16, 10.20.0.0/24]
   deck-f-opus:
     source: rtsp://localhost:8554/deck-f
     sourceOnDemand: yes
@@ -79,9 +94,15 @@ paths:
   # OBS / browser → RTMP → dj-{a..f}  (one per zone-deck)
   # runOnReady   → notify API → fade out playlist → go LIVE
   # runOnNotReady → notify API → fade in playlist  → AVAILABLE
+  #
+  # Security fix: DJ paths require credentials to publish.
+  # Set MEDIAMTX_DJ_USER and MEDIAMTX_DJ_PASS in your .env and
+  # configure the same credentials in your OBS stream key.
   dj-a:
     source: publisher
     sourceOnDemand: no
+    publishUser: ${MEDIAMTX_DJ_USER}
+    publishPass: ${MEDIAMTX_DJ_PASS}
     runOnReady: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
@@ -93,6 +114,8 @@ paths:
   dj-b:
     source: publisher
     sourceOnDemand: no
+    publishUser: ${MEDIAMTX_DJ_USER}
+    publishPass: ${MEDIAMTX_DJ_PASS}
     runOnReady: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
@@ -104,6 +127,8 @@ paths:
   dj-c:
     source: publisher
     sourceOnDemand: no
+    publishUser: ${MEDIAMTX_DJ_USER}
+    publishPass: ${MEDIAMTX_DJ_PASS}
     runOnReady: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
@@ -115,6 +140,8 @@ paths:
   dj-d:
     source: publisher
     sourceOnDemand: no
+    publishUser: ${MEDIAMTX_DJ_USER}
+    publishPass: ${MEDIAMTX_DJ_PASS}
     runOnReady: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
@@ -126,6 +153,8 @@ paths:
   dj-e:
     source: publisher
     sourceOnDemand: no
+    publishUser: ${MEDIAMTX_DJ_USER}
+    publishPass: ${MEDIAMTX_DJ_PASS}
     runOnReady: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"
@@ -137,6 +166,8 @@ paths:
   dj-f:
     source: publisher
     sourceOnDemand: no
+    publishUser: ${MEDIAMTX_DJ_USER}
+    publishPass: ${MEDIAMTX_DJ_PASS}
     runOnReady: >-
       curl -sf -X POST http://api:8000/api/dj/stream/detected
       -H "Content-Type: application/json"

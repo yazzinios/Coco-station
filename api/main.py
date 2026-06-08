@@ -16,10 +16,15 @@ from pydantic import BaseModel as _PydanticBase
 
 # ── Rate limiting (slowapi) ───────────────────────────────────────────────────
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+def get_client_ip(request: Request) -> str:
+    return (
+        request.headers.get("X-Forwarded-For", "")
+        or (request.client.host if request.client else "127.0.0.1")
+    ).split(",")[0].strip()
+
+limiter = Limiter(key_func=get_client_ip, default_limits=["200/minute"])
 
 from scheduler import (
     ap_scheduler,
@@ -440,6 +445,8 @@ async def upload_company_logo(
         raise HTTPException(status_code=400, detail="Only PNG, JPG, GIF, SVG, WEBP allowed")
 
     content  = await file.read()
+    if len(content) > MAX_LOGO_BYTES:
+        raise HTTPException(status_code=413, detail="Logo too large (max 5 MB)")
     mime     = LOGO_MIME_MAP.get(suffix, "image/png")
     b64_data = "data:" + mime + ";base64," + base64.b64encode(content).decode()
 
@@ -539,6 +546,8 @@ async def upload_jingle(
     safe_name = f"global_jingle_{jingle_type}{Path(file.filename).suffix.lower()}"
     dest = CHIMES_DIR / safe_name
     content = await file.read()
+    if len(content) > MAX_JINGLE_BYTES:
+        raise HTTPException(status_code=413, detail="Jingle too large (max 20 MB)")
     await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
 
     settings_key = f"jingle_{jingle_type}"
@@ -789,7 +798,7 @@ def health():
             "library_count": len(list(MEDIA_DIR.glob("*.*"))), "announcements_count": len(ANNOUNCEMENTS)}
 
 @app.get("/api/debug/paths")
-def debug_paths():
+def debug_paths(_user=Depends(require_admin)):
     def _ls(p: Path):
         try:
             return [
@@ -816,7 +825,18 @@ def debug_paths():
 
 # ── WebSocket ───────────────────────────────────────────────
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
+    # Security fix: require a valid JWT before accepting the connection.
+    # The frontend passes it as ?token=<jwt> in the WebSocket URL.
+    if not token:
+        await websocket.close(code=4001)
+        return
+    try:
+        from auth import decode_token
+        decode_token(token)  # raises 401 on invalid/expired/revoked token
+    except HTTPException:
+        await websocket.close(code=4001)
+        return
     await manager.connect(websocket)
     try:
         dj_state = await get_full_dj_state()
@@ -900,6 +920,12 @@ async def mic_audio_ws(websocket: WebSocket):
             deck_ids = ["a","b","c","d","e","f"] if not prev_targets or "ALL" in prev_targets else [t.lower() for t in prev_targets]
             asyncio.create_task(fade_restore_after_mic(deck_ids))
 
+# ── Upload size limits ──────────────────────────────────────────────────────
+MAX_LIBRARY_BYTES      = 500 * 1024 * 1024   # 500 MB
+MAX_ANNOUNCEMENT_BYTES =  50 * 1024 * 1024   #  50 MB
+MAX_LOGO_BYTES         =   5 * 1024 * 1024   #   5 MB
+MAX_JINGLE_BYTES       =  20 * 1024 * 1024   #  20 MB
+
 # ── Library ─────────────────────────────────────────────────
 ALLOWED_AUDIO = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
 
@@ -956,6 +982,8 @@ async def upload_track(file: UploadFile = File(...), _user=Depends(require_permi
     safe_name = _safe_audio_filename(file.filename, file.content_type or "")
     dest = MEDIA_DIR / safe_name
     content = await file.read()
+    if len(content) > MAX_LIBRARY_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 500 MB)")
     await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
     item = LibraryItem(filename=safe_name, size=dest.stat().st_size)
     await manager.broadcast({"type": "LIBRARY_UPDATED", "action": "added", "item": item.model_dump()})
@@ -1425,6 +1453,8 @@ async def upload_announcement(file: UploadFile = File(...), name: str = "Announc
     safe_name = _safe_audio_filename(file.filename, file.content_type or "")
     dest = ANNOUNCEMENTS_DIR / safe_name
     content = await file.read()
+    if len(content) > MAX_ANNOUNCEMENT_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
     await asyncio.get_running_loop().run_in_executor(None, dest.write_bytes, content)
     ann_id = str(uuid.uuid4())
     norm_targets = targets.split(",") if isinstance(targets, str) else list(targets)
@@ -2135,7 +2165,10 @@ class MusicRequestSubmit(_PydanticBase):
 @app.post("/api/requests")
 @limiter.limit("5/minute")
 async def submit_music_request(request: Request, req: MusicRequestSubmit):
-    track_path = MEDIA_DIR / req.track
+    # Security fix: prevent path traversal (e.g. ../announcements/private.mp3)
+    track_path = (MEDIA_DIR / req.track).resolve()
+    if not track_path.is_relative_to(MEDIA_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid track path")
     if not track_path.exists(): raise HTTPException(status_code=404, detail="Track not found in library")
     if req.requester_email:
         existing = [r for r in MUSIC_REQUESTS if r.get("requester_email") == req.requester_email and r["status"] == "pending"]

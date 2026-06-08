@@ -1,4 +1,6 @@
 .env
+CREDENTIALS.md
+rotate_db_password.sh
 data/db/
 data/library/
 data/announcements/

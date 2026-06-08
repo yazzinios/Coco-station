@@ -17,13 +17,16 @@ services:
     build: ./mediamtx
     container_name: cc_mediamtx
     restart: always
+    environment:
+      - MEDIAMTX_DJ_USER=${MEDIAMTX_DJ_USER:-dj}
+      - MEDIAMTX_DJ_PASS=${MEDIAMTX_DJ_PASS:?MEDIAMTX_DJ_PASS must be set in .env}
     ports:
       - "8554:8554"     # RTSP
       - "1935:1935"     # RTMP
       - "8888:8888"     # HLS
       - "8889:8889"     # WebRTC WHEP
       - "8189:8189/udp" # WebRTC ICE UDP
-      - "9997:9997"     # MediaMTX API
+      # 9997 (MediaMTX API) intentionally NOT exposed — internal only (security fix)
     extra_hosts:
       - "api:10.20.0.4"
     networks:
@@ -47,7 +50,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-coco}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coco_secret}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-J3CUCjIV6Ek8Z5LiaPWJtfAxaxc0XzBC}
       POSTGRES_DB: ${POSTGRES_DB:-cocostation}
     volumes:
       - cocostation-db-data:/var/lib/postgresql/data
@@ -71,7 +74,7 @@ services:
       - TZ=Africa/Casablanca
       - DB_MODE=${DB_MODE:-local}
       - POSTGRES_USER=${POSTGRES_USER:-coco}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-coco_secret}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-J3CUCjIV6Ek8Z5LiaPWJtfAxaxc0XzBC}
       - POSTGRES_DB=${POSTGRES_DB:-cocostation}
       - POSTGRES_HOST=10.20.0.3
       - SUPABASE_URL=${SUPABASE_URL:-}

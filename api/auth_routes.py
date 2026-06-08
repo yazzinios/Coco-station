@@ -38,7 +38,7 @@ def set_limiter_ref(lim: Limiter):
 
 def _login_rate_limit_key(request: Request) -> str:
     """Key function for login rate limiting — uses client IP."""
-    return get_remote_address(request)
+    return _get_client_ip(request)
 
 from auth import (
     verify_token, verify_password, create_token,
@@ -226,7 +226,7 @@ async def login(req: LoginRequest, request: Request):
     lim = _limiter_ref[0]
     if lim:
         try:
-            client_ip = get_remote_address(request)
+            client_ip = _get_client_ip(request)
             lim.hit("10/minute", client_ip)
         except Exception as e:
             err_str = str(e).lower()
