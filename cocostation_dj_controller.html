@@ -1,0 +1,265 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+.dj{background:#111;border-radius:var(--border-radius-lg);padding:16px;color:#fff;font-family:var(--font-sans);user-select:none}
+.dj-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.dj-title{font-size:13px;font-weight:500;color:#aaa;letter-spacing:.04em}
+.detect-bar{background:#1a1a1a;border:0.5px solid #333;border-radius:8px;padding:6px 12px;display:flex;align-items:center;gap:8px;font-size:11px;color:#888}
+.detect-dot{width:7px;height:7px;border-radius:50%;background:#27a843;box-shadow:0 0 6px #27a843}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.detect-dot.scanning{background:#854F0B;animation:pulse 1.2s ease-in-out infinite}
+.decks-row{display:grid;grid-template-columns:1fr 200px 1fr;gap:12px;align-items:start}
+.deck-unit{background:#1a1a1a;border:0.5px solid #2a2a2a;border-radius:10px;padding:12px}
+.deck-label{font-size:11px;font-weight:500;color:#888;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+.deck-label .dl-name{font-size:13px;font-weight:500;color:#fff}
+/* Platter */
+.platter-wrap{display:flex;justify-content:center;margin:8px 0}
+.platter{width:120px;height:120px;border-radius:50%;border:3px solid #333;background:radial-gradient(circle at 50% 50%, #2a2a2a 0%, #1a1a1a 40%, #111 55%, #222 70%, #333 85%, #2a2a2a 100%);position:relative;overflow:hidden}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.platter.playing{animation:spin 2.8s linear infinite}
+.platter-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:#444;border:1.5px solid #555}
+.platter-groove{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);border-radius:50%;border:1px solid rgba(255,255,255,.05)}
+.track-info{font-size:11px;color:#888;text-align:center;margin:4px 0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.track-info .tname{font-size:12px;color:#ccc;font-weight:500}
+/* Waveform bar */
+.waveform{display:flex;align-items:flex-end;gap:2px;height:28px;padding:0 4px;margin-bottom:8px}
+.wv-bar{flex:1;border-radius:1px;background:#333;transition:height .1s}
+.wv-bar.active{background:#3B8BD4}
+/* BPM + time */
+.deck-meta{display:flex;justify-content:space-between;font-size:10px;color:#666;margin-bottom:8px}
+.deck-meta .bpm{color:#27a843}
+/* Pitch slider */
+.pitch-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.pitch-row label{font-size:10px;color:#666;min-width:28px}
+.pitch-row input[type=range]{flex:1;accent-color:#378ADD}
+.pitch-val{font-size:10px;color:#aaa;min-width:28px;text-align:right}
+/* Transport buttons */
+.transport{display:flex;gap:6px;justify-content:center}
+.tbtn{background:#222;border:0.5px solid #333;border-radius:6px;padding:5px 10px;font-size:11px;color:#aaa;cursor:pointer;transition:background .15s}
+.tbtn:hover{background:#2a2a2a;color:#fff}
+.tbtn.cue{border-color:#854F0B;color:#EF9F27}
+.tbtn.play{background:#27a843;border-color:#27a843;color:#fff}
+.tbtn.play:hover{background:#1d8033}
+
+/* CENTER: EQ + master */
+.eq-panel{background:#1a1a1a;border:0.5px solid #2a2a2a;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.eq-title{font-size:11px;color:#666;text-align:center;font-weight:500;letter-spacing:.04em}
+.eq-band{display:flex;flex-direction:column;align-items:center;gap:4px}
+.eq-band label{font-size:9px;color:#555}
+.eq-band input[type=range]{writing-mode:vertical-lr;direction:rtl;width:20px;height:80px;accent-color:#378ADD;cursor:pointer}
+.eq-knob-row{display:flex;gap:10px;justify-content:center}
+.crossfader{margin-top:4px}
+.crossfader label{font-size:9px;color:#555;display:block;text-align:center;margin-bottom:4px}
+.crossfader input{width:100%;accent-color:#888;cursor:pointer}
+.xf-labels{display:flex;justify-content:space-between;font-size:9px;color:#555}
+.level-meter{display:flex;gap:2px;justify-content:center;margin-top:6px}
+.lm-bar{width:6px;border-radius:1px;background:#222}
+.lm-bar.on-g{background:#27a843}
+.lm-bar.on-y{background:#EF9F27}
+.lm-bar.on-r{background:#E24B4A}
+
+/* Bottom: Deck routing */
+.routing-row{display:flex;gap:8px;margin-top:14px;align-items:center}
+.routing-label{font-size:10px;color:#555;min-width:50px}
+.deck-btn{padding:6px 12px;border-radius:6px;font-size:11px;font-weight:500;cursor:pointer;border:0.5px solid transparent;transition:all .15s;letter-spacing:.03em}
+.deck-btn.active{color:#fff;box-shadow:0 0 10px currentColor}
+.deck-btn.inactive{background:#1a1a1a;border-color:#2a2a2a;color:#555}
+.deck-btn.inactive:hover{border-color:#444;color:#888}
+/* Signal chain */
+.signal-chain{background:#1a1a1a;border:0.5px solid #2a2a2a;border-radius:8px;padding:8px 12px;margin-top:10px;display:flex;align-items:center;gap:6px;font-size:10px;color:#555}
+.sc-node{background:#222;border:0.5px solid #333;border-radius:5px;padding:3px 8px;white-space:nowrap}
+.sc-arrow{color:#378ADD;flex-shrink:0}
+.sc-node.active{border-color:#27a843;color:#27a843}
+.sc-node.warn{border-color:#854F0B;color:#EF9F27}
+</style>
+
+<h2 class="sr-only">DJ controller interface with dual decks, EQ mixer, and deck routing</h2>
+
+<div class="dj">
+  <div class="dj-top">
+    <div class="dj-title"><i class="ti ti-device-gamepad-2" style="font-size:14px;margin-right:6px;color:#378ADD" aria-hidden="true"></i>DJ controller</div>
+    <div class="detect-bar">
+      <div class="detect-dot" id="detdot"></div>
+      <span id="detlabel">Pioneer DDJ-400 — connected</span>
+      <span style="color:#444;margin:0 4px">|</span>
+      <span id="latency-label" style="color:#27a843">Latency: <strong>4ms</strong></span>
+    </div>
+  </div>
+
+  <!-- Main deck layout -->
+  <div class="decks-row">
+
+    <!-- Deck A (left) -->
+    <div class="deck-unit">
+      <div class="deck-label">
+        <span class="dl-name">Deck A — Castle</span>
+        <span style="font-size:10px;background:#185FA5;color:#B5D4F4;padding:2px 7px;border-radius:10px">LIVE</span>
+      </div>
+      <div class="platter-wrap">
+        <div class="platter playing" id="platterA">
+          <div class="platter-groove" style="width:110px;height:110px"></div>
+          <div class="platter-groove" style="width:90px;height:90px"></div>
+          <div class="platter-groove" style="width:70px;height:70px"></div>
+          <div class="platter-groove" style="width:50px;height:50px"></div>
+          <div class="platter-center"></div>
+        </div>
+      </div>
+      <div class="track-info"><div class="tname">Roller coaster arabe.mp3</div>18:54 / 03:12</div>
+      <div class="waveform" id="wfA"></div>
+      <div class="deck-meta"><span class="bpm">128 BPM</span><span>♪ in key: Am</span><span>–0:32 remain</span></div>
+      <div class="pitch-row"><label style="color:#666">Pitch</label><input type="range" min="-8" max="8" value="0" step="0.1" oninput="this.nextElementSibling.textContent=(+this.value>=0?'+':'')+parseFloat(this.value).toFixed(1)+'%'"><span class="pitch-val">0.0%</span></div>
+      <div class="transport">
+        <button class="tbtn cue">CUE</button>
+        <button class="tbtn play" id="playA" onclick="toggleDeck('A')"><i class="ti ti-player-pause" aria-hidden="true"></i></button>
+        <button class="tbtn">SYNC</button>
+        <button class="tbtn">LOOP</button>
+      </div>
+    </div>
+
+    <!-- CENTER: EQ -->
+    <div class="eq-panel">
+      <div class="eq-title">MIXER</div>
+
+      <!-- Level meters -->
+      <div style="display:flex;justify-content:space-between">
+        <div class="level-meter" id="meterL"></div>
+        <div class="level-meter" id="meterR"></div>
+      </div>
+
+      <div class="eq-knob-row">
+        <div class="eq-band"><label>HIGH</label><input type="range" min="0" max="100" value="75"></div>
+        <div class="eq-band"><label>MID</label><input type="range" min="0" max="100" value="70"></div>
+        <div class="eq-band"><label>LOW</label><input type="range" min="0" max="100" value="80"></div>
+      </div>
+
+      <div class="crossfader">
+        <label>Crossfade A ← → B</label>
+        <input type="range" min="0" max="100" value="50">
+        <div class="xf-labels"><span>A</span><span>B</span></div>
+      </div>
+
+      <div style="margin-top:8px">
+        <div style="font-size:9px;color:#555;text-align:center;margin-bottom:4px">Master vol</div>
+        <input type="range" min="0" max="100" value="85" style="width:100%;accent-color:#888">
+      </div>
+
+      <div style="text-align:center;margin-top:6px">
+        <div style="font-size:9px;color:#555;margin-bottom:3px">Stream latency</div>
+        <div style="font-size:16px;font-weight:500;color:#27a843">4ms</div>
+      </div>
+    </div>
+
+    <!-- Deck B (right) -->
+    <div class="deck-unit">
+      <div class="deck-label">
+        <span class="dl-name">Deck B</span>
+        <span style="font-size:10px;background:#1a1a1a;color:#555;padding:2px 7px;border-radius:10px;border:0.5px solid #333">READY</span>
+      </div>
+      <div class="platter-wrap">
+        <div class="platter" id="platterB">
+          <div class="platter-groove" style="width:110px;height:110px"></div>
+          <div class="platter-groove" style="width:90px;height:90px"></div>
+          <div class="platter-groove" style="width:70px;height:70px"></div>
+          <div class="platter-groove" style="width:50px;height:50px"></div>
+          <div class="platter-center"></div>
+        </div>
+      </div>
+      <div class="track-info"><div class="tname">Summer mix vol.3.mp3</div>00:00 / 04:45</div>
+      <div class="waveform" id="wfB"></div>
+      <div class="deck-meta"><span class="bpm">124 BPM</span><span>♪ in key: C</span><span>–4:45 remain</span></div>
+      <div class="pitch-row"><label style="color:#666">Pitch</label><input type="range" min="-8" max="8" value="0" step="0.1" oninput="this.nextElementSibling.textContent=(+this.value>=0?'+':'')+parseFloat(this.value).toFixed(1)+'%'"><span class="pitch-val">0.0%</span></div>
+      <div class="transport">
+        <button class="tbtn cue">CUE</button>
+        <button class="tbtn play" id="playB" onclick="toggleDeck('B')" style="background:#222;border-color:#333;color:#aaa"><i class="ti ti-player-play" aria-hidden="true"></i></button>
+        <button class="tbtn">SYNC</button>
+        <button class="tbtn">LOOP</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Deck routing row -->
+  <div class="routing-row">
+    <span class="routing-label">Stream to →</span>
+    <button class="deck-btn active" style="background:#0C447C;border-color:#185FA5;color:#B5D4F4">A Castle</button>
+    <button class="deck-btn active" style="background:#3C3489;border-color:#534AB7;color:#CECBF6">B Deck B</button>
+    <button class="deck-btn active" style="background:#0F6E56;border-color:#1D9E75;color:#9FE1CB">C Karting</button>
+    <div style="flex:1"></div>
+    <button class="deck-btn inactive" id="btnE">E</button>
+    <button class="deck-btn active" style="background:#633806;border-color:#BA7517;color:#FAC775">F Deck F</button>
+    <button class="deck-btn inactive" id="btnG">G</button>
+  </div>
+
+  <!-- Signal chain -->
+  <div class="signal-chain">
+    <span class="sc-node active"><i class="ti ti-device-gamepad-2" style="font-size:10px" aria-hidden="true"></i> DDJ-400</span>
+    <span class="sc-arrow">→</span>
+    <span class="sc-node active">USB/MIDI</span>
+    <span class="sc-arrow">→</span>
+    <span class="sc-node active">Web Audio engine</span>
+    <span class="sc-arrow">→</span>
+    <span class="sc-node active">WebSocket</span>
+    <span class="sc-arrow">→</span>
+    <span class="sc-node active">CocoStation server</span>
+    <span class="sc-arrow">→</span>
+    <span class="sc-node active">RTMP/HLS restream</span>
+    <span class="sc-arrow">→</span>
+    <span class="sc-node active" style="color:#B5D4F4;border-color:#185FA5">6 decks · 3 live</span>
+  </div>
+</div>
+
+<script>
+const states = {A: true, B: false};
+function toggleDeck(d){
+  states[d] = !states[d];
+  const pl = document.getElementById('platter'+d);
+  const btn = document.getElementById('play'+d);
+  if(states[d]){
+    pl.classList.add('playing');
+    btn.innerHTML='<i class="ti ti-player-pause"></i>';
+    btn.style.background='#27a843'; btn.style.borderColor='#27a843'; btn.style.color='#fff';
+  } else {
+    pl.classList.remove('playing');
+    btn.innerHTML='<i class="ti ti-player-play"></i>';
+    btn.style.background='#222'; btn.style.borderColor='#333'; btn.style.color='#aaa';
+  }
+}
+
+// Build waveform bars
+function buildWf(id, active){
+  const el=document.getElementById(id);
+  for(let i=0;i<32;i++){
+    const b=document.createElement('div');
+    b.className='wv-bar'+(i<(active||0)?' active':'');
+    b.style.height=Math.round(6+Math.random()*22)+'px';
+    el.appendChild(b);
+  }
+}
+buildWf('wfA',18); buildWf('wfB',0);
+
+// Level meters
+function buildMeter(id, levels){
+  const el=document.getElementById(id);
+  levels.forEach(l=>{
+    const b=document.createElement('div');
+    b.className='lm-bar '+l; b.style.height='8px'; el.appendChild(b);
+  });
+}
+buildMeter('meterL',['on-g','on-g','on-g','on-g','on-g','on-g','on-y','on-y','on-r']);
+buildMeter('meterR',['on-g','on-g','on-g','on-g','on-g','on-y','lm-bar','lm-bar','lm-bar']);
+
+// Animate meter
+setInterval(()=>{
+  document.querySelectorAll('#meterL .lm-bar, #meterR .lm-bar').forEach((b,i)=>{
+    if(Math.random()>.7) b.style.height=(6+Math.random()*10).toFixed(0)+'px';
+  });
+},250);
+
+// Toggle routing buttons
+document.querySelectorAll('.deck-btn.inactive').forEach(b=>{
+  b.addEventListener('click',()=>{
+    const on=b.classList.toggle('active-route');
+    if(on){b.style.background='#1a3a2a';b.style.borderColor='#1D9E75';b.style.color='#9FE1CB';}
+    else{b.style.background='';b.style.borderColor='';b.style.color='';}
+  });
+});
+</script>

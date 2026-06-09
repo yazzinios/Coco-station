@@ -1,0 +1,191 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans)}
+.layout{display:grid;grid-template-columns:220px 1fr 260px;gap:0;height:600px;border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;background:var(--color-background-primary)}
+.panel{display:flex;flex-direction:column;overflow:hidden}
+.panel+.panel{border-left:0.5px solid var(--color-border-tertiary)}
+.ph{padding:12px 14px 10px;border-bottom:0.5px solid var(--color-border-tertiary);font-size:12px;font-weight:500;color:var(--color-text-secondary);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.ph-btn{background:none;border:0.5px solid var(--color-border-secondary);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;color:var(--color-text-primary)}
+.ph-btn:hover{background:var(--color-background-secondary)}
+.pscroll{overflow-y:auto;flex:1}
+.role-item{padding:9px 14px;cursor:pointer;border-bottom:0.5px solid var(--color-border-tertiary);transition:background .1s;font-size:13px}
+.role-item:hover{background:var(--color-background-secondary)}
+.role-item.active{background:var(--color-background-info);color:var(--color-text-info)}
+.role-item .rname{font-weight:500;font-size:13px}
+.role-item .rmeta{font-size:11px;color:var(--color-text-secondary);margin-top:2px}
+.role-item.active .rmeta{color:var(--color-text-info);opacity:.75}
+.role-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
+.perm-table{width:100%;border-collapse:collapse;font-size:12px}
+.perm-table th{padding:8px 10px;text-align:left;font-weight:500;font-size:11px;color:var(--color-text-secondary);border-bottom:0.5px solid var(--color-border-tertiary);background:var(--color-background-secondary);position:sticky;top:0;z-index:2}
+.perm-table th.col-role{text-align:center;min-width:70px;font-size:11px;max-width:80px;overflow:hidden}
+.perm-table td{padding:6px 10px;border-bottom:0.5px solid var(--color-border-tertiary);vertical-align:middle}
+.perm-table tr:hover td{background:var(--color-background-secondary)}
+.perm-group td{background:var(--color-background-secondary) !important;font-size:11px;font-weight:500;color:var(--color-text-secondary);padding:5px 10px 4px}
+.perm-name{font-size:12px;color:var(--color-text-primary);font-weight:500}
+.perm-desc{font-size:11px;color:var(--color-text-secondary);margin-top:1px}
+.ck{display:flex;align-items:center;justify-content:center}
+.ck input[type=checkbox]{width:14px;height:14px;cursor:pointer;accent-color:var(--color-text-info)}
+.check-on{color:#27500A;font-size:13px;text-align:center}
+.check-off{color:var(--color-border-secondary);font-size:13px;text-align:center}
+.assignee-section{padding:10px 14px}
+.as-title{font-size:11px;font-weight:500;color:var(--color-text-secondary);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.as-title .cnt{background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:10px;padding:1px 7px;font-size:10px}
+.user-chip{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:0.5px solid var(--color-border-tertiary)}
+.user-chip:last-child{border-bottom:none}
+.avatar{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;flex-shrink:0}
+.av-blue{background:var(--color-background-info);color:var(--color-text-info)}
+.av-green{background:var(--color-background-success);color:var(--color-text-success)}
+.av-amber{background:var(--color-background-warning);color:var(--color-text-warning)}
+.av-purple{background:#EEEDFE;color:#534AB7}
+.uname{font-size:12px;font-weight:500;color:var(--color-text-primary)}
+.utag{font-size:10px;color:var(--color-text-secondary)}
+.ldap-chip{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:0.5px solid var(--color-border-tertiary)}
+.ldap-chip:last-child{border-bottom:none}
+.ldap-icon{width:26px;height:26px;border-radius:6px;background:var(--color-background-warning);color:var(--color-text-warning);display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0}
+.sync-badge{font-size:9px;padding:1px 5px;border-radius:8px;background:var(--color-background-success);color:var(--color-text-success)}
+.add-btn{width:100%;border:0.5px dashed var(--color-border-secondary);background:none;border-radius:6px;padding:6px;font-size:11px;cursor:pointer;color:var(--color-text-secondary);margin-top:8px}
+.add-btn:hover{background:var(--color-background-secondary);color:var(--color-text-primary)}
+.divider{height:0.5px;background:var(--color-border-tertiary);margin:10px 0}
+.override-chip{display:flex;align-items:center;gap:6px;padding:4px 0}
+.ov-label{font-size:11px;color:var(--color-text-secondary);flex:1}
+.ov-badge{font-size:10px;padding:1px 6px;border-radius:8px}
+.ov-yes{background:var(--color-background-success);color:var(--color-text-success)}
+.ov-no{background:var(--color-background-danger);color:var(--color-text-danger)}
+</style>
+
+<h2 class="sr-only">Roles and permissions management page</h2>
+
+<div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px 12px">
+  <div>
+    <div style="font-size:16px;font-weight:500;color:var(--color-text-primary)">Roles &amp; permissions</div>
+    <div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px">Manage access control for local users and LDAP groups</div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="ph-btn" style="font-size:12px;padding:5px 12px"><i class="ti ti-refresh" aria-hidden="true"></i> Sync LDAP</button>
+    <button class="ph-btn" style="font-size:12px;padding:5px 12px;background:var(--color-background-info);color:var(--color-text-info);border-color:var(--color-border-info)"><i class="ti ti-plus" aria-hidden="true"></i> New role</button>
+  </div>
+</div>
+
+<div class="layout">
+
+  <!-- LEFT: Role list -->
+  <div class="panel">
+    <div class="ph">Roles <span style="font-size:10px;background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:10px;padding:1px 7px">5</span></div>
+    <div class="pscroll">
+      <div class="role-item">
+        <div class="rname"><span class="role-dot" style="background:#A32D2D"></span>Super admin</div>
+        <div class="rmeta">Full access · 1 user</div>
+      </div>
+      <div class="role-item active">
+        <div class="rname"><span class="role-dot" style="background:#185FA5"></span>Admin</div>
+        <div class="rmeta">All except system · 2 users</div>
+      </div>
+      <div class="role-item">
+        <div class="rname"><span class="role-dot" style="background:#27500A"></span>Operator</div>
+        <div class="rmeta">Decks + announcements · 5 users · 2 groups</div>
+      </div>
+      <div class="role-item">
+        <div class="rname"><span class="role-dot" style="background:#854F0B"></span>DJ</div>
+        <div class="rmeta">Decks only · 3 users · 1 group</div>
+      </div>
+      <div class="role-item">
+        <div class="rname"><span class="role-dot" style="background:#888780"></span>Viewer</div>
+        <div class="rmeta">Read-only · 2 users</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER: Permission matrix -->
+  <div class="panel">
+    <div class="ph">
+      <span>Permission matrix — <strong style="color:var(--color-text-primary)">Admin</strong></span>
+      <button class="ph-btn"><i class="ti ti-edit" aria-hidden="true"></i> Edit</button>
+    </div>
+    <div class="pscroll">
+      <table class="perm-table">
+        <thead>
+          <tr>
+            <th style="width:200px">Permission</th>
+            <th class="col-role" style="color:#A32D2D">Super<br>admin</th>
+            <th class="col-role" style="color:#185FA5;background:var(--color-background-info);border-bottom:2px solid var(--color-border-info)">Admin</th>
+            <th class="col-role" style="color:#27500A">Operator</th>
+            <th class="col-role" style="color:#854F0B">DJ</th>
+            <th class="col-role" style="color:#888780">Viewer</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="perm-group"><td colspan="6">Deck control</td></tr>
+          <tr><td><div class="perm-name">deck.play / pause / stop</div><div class="perm-desc">Transport controls</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="ck"><input type="checkbox" checked></td><td class="ck"><input type="checkbox" checked></td><td class="check-off">–</td></tr>
+          <tr><td><div class="perm-name">deck.volume</div><div class="perm-desc">Adjust fader level</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="ck"><input type="checkbox" checked></td><td class="ck"><input type="checkbox" checked></td><td class="check-off">–</td></tr>
+          <tr><td><div class="perm-name">deck.load_playlist</div><div class="perm-desc">Load content to deck</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="ck"><input type="checkbox" checked></td><td class="ck"><input type="checkbox"></td><td class="check-off">–</td></tr>
+          <tr class="perm-group"><td colspan="6">Announcements</td></tr>
+          <tr><td><div class="perm-name">can_announce</div><div class="perm-desc">Play announcements</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="ck"><input type="checkbox" checked></td><td class="ck"><input type="checkbox"></td><td class="check-off">–</td></tr>
+          <tr><td><div class="perm-name">can_schedule</div><div class="perm-desc">Create/edit schedules</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="ck"><input type="checkbox" checked></td><td class="ck"><input type="checkbox"></td><td class="check-off">–</td></tr>
+          <tr class="perm-group"><td colspan="6">Library &amp; requests</td></tr>
+          <tr><td><div class="perm-name">can_library</div><div class="perm-desc">Upload / manage files</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="ck"><input type="checkbox" checked></td><td class="ck"><input type="checkbox"></td><td class="check-off">–</td></tr>
+          <tr><td><div class="perm-name">can_requests</div><div class="perm-desc">Handle music requests</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="ck"><input type="checkbox" checked></td><td class="ck"><input type="checkbox"></td><td class="check-off">–</td></tr>
+          <tr class="perm-group"><td colspan="6">System</td></tr>
+          <tr><td><div class="perm-name">can_settings</div><div class="perm-desc">System configuration</div></td><td class="check-on">✓</td><td class="check-off" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">–</td><td class="check-off">–</td><td class="check-off">–</td><td class="check-off">–</td></tr>
+          <tr><td><div class="perm-name">user management</div><div class="perm-desc">Create/edit users</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="check-off">–</td><td class="check-off">–</td><td class="check-off">–</td></tr>
+          <tr><td><div class="perm-name">audit logs</div><div class="perm-desc">View activity history</div></td><td class="check-on">✓</td><td class="check-on" style="background:color-mix(in srgb, var(--color-background-info) 25%, transparent)">✓</td><td class="check-off">–</td><td class="check-off">–</td><td class="check-off">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- RIGHT: Assignees panel -->
+  <div class="panel">
+    <div class="ph">Assigned to <strong style="color:var(--color-text-primary)">Admin</strong></div>
+    <div class="pscroll" style="padding:0 14px 14px">
+      <div class="assignee-section" style="padding:10px 0 0">
+        <div class="as-title">Local users <span class="cnt">2</span></div>
+        <div class="user-chip">
+          <div class="avatar av-blue">CA</div>
+          <div><div class="uname">cocoadmin</div><div class="utag">super_admin · active</div></div>
+        </div>
+        <div class="user-chip">
+          <div class="avatar av-purple">RO</div>
+          <div><div class="uname">root</div><div class="utag">admin · active</div></div>
+        </div>
+        <button class="add-btn"><i class="ti ti-user-plus" aria-hidden="true"></i> Assign user</button>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="assignee-section" style="padding:0">
+        <div class="as-title"><i class="ti ti-server" style="font-size:13px" aria-hidden="true"></i> LDAP groups <span class="cnt">1</span></div>
+        <div class="ldap-chip">
+          <div class="ldap-icon"><i class="ti ti-users" style="font-size:13px" aria-hidden="true"></i></div>
+          <div style="flex:1">
+            <div class="uname">CN=RadioAdmins,DC=cocopark</div>
+            <div class="utag" style="display:flex;align-items:center;gap:5px;margin-top:2px">
+              <span class="sync-badge">synced 2m ago</span>
+              <span>· 4 members</span>
+            </div>
+          </div>
+        </div>
+        <button class="add-btn"><i class="ti ti-circle-plus" aria-hidden="true"></i> Map LDAP group</button>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="assignee-section" style="padding:0">
+        <div class="as-title"><i class="ti ti-shield-lock" style="font-size:13px" aria-hidden="true"></i> Per-user overrides</div>
+        <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:6px">Override individual permissions regardless of role</div>
+        <div class="override-chip">
+          <div class="avatar av-amber" style="width:22px;height:22px;font-size:9px">JD</div>
+          <span class="ov-label">jdupont (LDAP)</span>
+          <span class="ov-badge ov-no">–can_library</span>
+        </div>
+        <div class="override-chip">
+          <div class="avatar av-green" style="width:22px;height:22px;font-size:9px">SM</div>
+          <span class="ov-label">sarah.m (local)</span>
+          <span class="ov-badge ov-yes">+can_settings</span>
+        </div>
+        <button class="add-btn"><i class="ti ti-adjustments-horizontal" aria-hidden="true"></i> Add override</button>
+      </div>
+    </div>
+  </div>
+
+</div>
