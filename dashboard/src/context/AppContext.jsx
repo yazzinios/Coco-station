@@ -303,19 +303,20 @@ export function AppProvider({ children }) {
   function buildWsUrl(path = '/ws') {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const host     = window.location.host;
-    if (import.meta.env.VITE_WS_URL) {
+    const hostname = window.location.hostname;
+    const isCurrentHostInternal = hostname.includes('172.') || hostname.includes('192.') || hostname.includes('10.') || hostname === 'localhost' || hostname === '127.0.0.1';
+
+    if (import.meta.env.VITE_WS_URL && !isCurrentHostInternal) {
       const envUrl    = import.meta.env.VITE_WS_URL;
-      const isInternal = envUrl.includes('172.') || envUrl.includes('192.') || envUrl.includes('10.') || envUrl.includes('localhost');
-      if (!isInternal) {
-        const base = envUrl.replace(/\/+$/, '');
-        if (base.startsWith('ws://') || base.startsWith('wss://')) return `${base}${path}`;
-        if (base.startsWith('http://'))  return `ws://${base.slice(7)}${path}`;
-        if (base.startsWith('https://')) return `wss://${base.slice(8)}${path}`;
-        return `wss://${base}${path}`;
-      }
+      const base = envUrl.replace(/\/+$/, '');
+      if (base.startsWith('ws://') || base.startsWith('wss://')) return `${base}${path}`;
+      if (base.startsWith('http://'))  return `ws://${base.slice(7)}${path}`;
+      if (base.startsWith('https://')) return `wss://${base.slice(8)}${path}`;
+      return `wss://${base}${path}`;
     }
     return `${protocol}://${host}${path}`;
   }
+
 
   // ── Data fetchers ───────────────────────────────────────────
   const fetchLibrary = useCallback(async () => {
