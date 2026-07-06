@@ -115,6 +115,22 @@ SETTINGS: dict = {
     "company_logo": None,    # filename in /data/branding/ (set on upload)
     "timezone": "Africa/Casablanca",
     "session_hours": 8,
+    # Multi-zone sync (see MULTIZONE_SYNC_PLAN.md)
+    "sync": {
+        "enabled": True,
+        "mode": "manual",          # "manual" | "automatic" | "hybrid" (Phase 2+)
+        "tolerance_ms": 20,
+        "safety_margin_ms": 50,
+        "missing_deck_timeout_s": 2.0,
+    },
+    "deck_offsets": {
+        "a": {"manual_ms": 0, "auto_ms": 0},
+        "b": {"manual_ms": 0, "auto_ms": 0},
+        "c": {"manual_ms": 0, "auto_ms": 0},
+        "d": {"manual_ms": 0, "auto_ms": 0},
+        "e": {"manual_ms": 0, "auto_ms": 0},
+        "f": {"manual_ms": 0, "auto_ms": 0},
+    },
     # LDAP
     "ldap_enabled":        False,
     "ldap_server":         "",
@@ -175,6 +191,42 @@ def _safe_settings(settings: dict) -> dict:
     """
     SENSITIVE_KEYS = {"ldap_bind_pw"}
     return {k: ("" if k in SENSITIVE_KEYS else v) for k, v in settings.items()}
+
+
+def _effective_deck_offsets_ms() -> Dict[str, int]:
+    """Flatten SETTINGS['deck_offsets'] into {deck_id: manual_ms + auto_ms},
+    clamped to ±1000ms. See MULTIZONE_SYNC_PLAN.md §4."""
+    raw = SETTINGS.get("deck_offsets", {}) or {}
+    out: Dict[str, int] = {}
+    for did, cfg in raw.items():
+        try:
+            total = int(cfg.get("manual_ms", 0)) + int(cfg.get("auto_ms", 0))
+        except (TypeError, ValueError, AttributeError):
+            total = 0
+        out[did] = max(-1000, min(1000, total))
+    return out
+
+
+def _clamp_deck_offsets(value: dict) -> dict:
+    """If a settings update includes 'deck_offsets', clamp manual_ms/auto_ms
+    to ±1000ms server-side so a UI typo can't produce bizarre release timing."""
+    if "deck_offsets" not in value or not isinstance(value["deck_offsets"], dict):
+        return value
+    clamped = {}
+    for did, cfg in value["deck_offsets"].items():
+        if not isinstance(cfg, dict):
+            continue
+        c = dict(cfg)
+        for key in ("manual_ms", "auto_ms"):
+            if key in c:
+                try:
+                    c[key] = max(-1000, min(1000, int(c[key])))
+                except (TypeError, ValueError):
+                    c[key] = 0
+        clamped[did] = c
+    value = dict(value)
+    value["deck_offsets"] = clamped
+    return value
 
 
 @asynccontextmanager
@@ -1229,21 +1281,23 @@ async def playlist_broadcast(
             "playlist_loop":  req.loop,
         })
 
-    async with httpx.AsyncClient(timeout=5) as c:
-        play_tasks = [
-            c.post(
-                f"{FFMPEG_URL}/decks/{did}/play",
-                json={"filepath": filepath, "loop": False, "seek_seconds": 0.0},
+    # Synchronized group start (see MULTIZONE_SYNC_PLAN.md) — all target
+    # decks are meant to play the SAME track at the SAME moment, so route
+    # through /play/sync instead of independent per-deck /play calls.
+    try:
+        async with httpx.AsyncClient(timeout=8) as c:
+            r = await c.post(
+                f"{FFMPEG_URL}/play/sync",
+                json={
+                    "deck_ids": deck_ids,
+                    "filepath": filepath,
+                    "loop": False,
+                    "offsets_ms": _effective_deck_offsets_ms(),
+                },
             )
-            for did in deck_ids
-        ]
-        results = await asyncio.gather(*play_tasks, return_exceptions=True)
-
-    errors = [
-        {"deck": did, "error": str(err)}
-        for did, err in zip(deck_ids, results)
-        if isinstance(err, Exception)
-    ]
+        errors = [] if r.status_code == 200 else [{"deck": "group", "error": r.text}]
+    except Exception as e:
+        errors = [{"deck": "group", "error": str(e)}]
 
     await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.playlist_broadcast",
@@ -1322,23 +1376,27 @@ async def sync_all_to_source(
                 "playlist_loop":  src_pl["loop"],
             })
 
-    async with httpx.AsyncClient(timeout=5) as c:
-        tasks = []
-        for did in target_ids:
-            tasks.append(
-                c.post(
-                    f"{FFMPEG_URL}/decks/{did}/play",
-                    json={"filepath": filepath, "loop": is_loop, "seek_seconds": seek_to},
-                )
+    async with httpx.AsyncClient(timeout=8) as c:
+        try:
+            r = await c.post(
+                f"{FFMPEG_URL}/play/sync",
+                json={
+                    "deck_ids": target_ids,
+                    "filepath": filepath,
+                    "loop": is_loop,
+                    "seek_seconds": {did: seek_to for did in target_ids},
+                    "offsets_ms": _effective_deck_offsets_ms(),
+                },
             )
-            tasks.append(c.post(f"{FFMPEG_URL}/decks/{did}/volume/{volume}"))
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            vol_tasks = [c.post(f"{FFMPEG_URL}/decks/{did}/volume/{volume}") for did in target_ids]
+            vol_results = await asyncio.gather(*vol_tasks, return_exceptions=True)
+        except Exception as e:
+            r = None
+            vol_results = [e]
 
-    errors = [
-        {"error": str(r)}
-        for r in results
-        if isinstance(r, Exception)
-    ]
+    errors = [{"error": str(v)} for v in vol_results if isinstance(v, Exception)]
+    if r is not None and r.status_code != 200:
+        errors.append({"error": f"/play/sync returned {r.status_code}: {r.text}"})
 
     await manager.broadcast({"type": "DECK_STATE", "decks": [_sanitize_deck(d) for d in DECKS.values()]})
     _audit(request, _user, "deck.sync_all",
@@ -1904,13 +1962,69 @@ def get_settings(): return SETTINGS
 
 @app.post("/api/settings")
 async def update_settings(req: SettingUpdateRequest, _user=Depends(require_admin)):
-    SETTINGS.update(req.value)
+    value = _clamp_deck_offsets(req.value)
+    SETTINGS.update(value)
     try:
-        await asyncio.get_running_loop().run_in_executor(None, db.save_settings, req.value)
+        await asyncio.get_running_loop().run_in_executor(None, db.save_settings, value)
     except Exception as e:
         print(f"[DB] Failed to persist settings: {e}")
     await manager.broadcast({"type": "SETTINGS_UPDATED", "settings": _safe_settings(SETTINGS)})
     return {"status": "ok", "settings": _safe_settings(SETTINGS)}
+
+
+# ── Multi-zone sync calibration (see MULTIZONE_SYNC_PLAN.md) ────────────────
+
+class SyncTestToneRequest(_PydanticBase):
+    deck_ids: Optional[List[str]] = None
+    offsets_ms: Optional[Dict[str, int]] = None   # pass unsaved slider values to preview before committing
+
+TEST_TONE_FILENAME = "_sync_test_tone.wav"
+
+async def _ensure_test_tone() -> Path:
+    """Generate a short calibration click once and cache it in CHIMES_DIR
+    (shared volume, read-only-mounted into ffmpeg-mixer at /chimes/)."""
+    path = CHIMES_DIR / TEST_TONE_FILENAME
+    if not path.exists():
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.3",
+            str(path),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+    return path
+
+@app.post("/api/settings/sync/test-tone")
+async def play_sync_test_tone(req: SyncTestToneRequest, _user=Depends(require_admin)):
+    """
+    Play a short click on the given decks (default: all) using either the
+    supplied offsets (for previewing unsaved slider values) or the currently
+    saved deck_offsets. Used to calibrate per-deck sync offsets by ear —
+    stand at a zone boundary, fire this repeatedly, nudge whichever zone
+    sounds ahead. See MULTIZONE_SYNC_PLAN.md §7.
+    """
+    await _ensure_test_tone()
+    deck_ids = [d.lower() for d in (req.deck_ids or list(DECKS.keys())) if d.lower() in DECKS]
+    if not deck_ids:
+        raise HTTPException(status_code=400, detail="No valid deck_ids")
+    offsets = req.offsets_ms if req.offsets_ms is not None else _effective_deck_offsets_ms()
+    try:
+        async with httpx.AsyncClient(timeout=8) as c:
+            r = await c.post(
+                f"{FFMPEG_URL}/announce/sync",
+                json={
+                    "deck_ids": deck_ids,
+                    "filepath": "/chimes/" + TEST_TONE_FILENAME,
+                    "notify": False,
+                    "offsets_ms": offsets,
+                },
+            )
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Mixer error: {r.text}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Mixer unreachable: {e}")
+    return {"status": "ok", "decks": deck_ids, "offsets_ms": offsets}
 
 # ── Scheduler ──────────────────────────────────────────────
 @app.get("/api/scheduler/status")

@@ -101,6 +101,20 @@ def _mic_duck_pct() -> int:
         return 5
 
 
+def _effective_offsets_ms() -> Dict[str, int]:
+    """Flatten SETTINGS['deck_offsets'] into {deck_id: manual_ms + auto_ms},
+    clamped to ±1000ms. See MULTIZONE_SYNC_PLAN.md §4."""
+    raw = _SETTINGS.get("deck_offsets", {}) or {}
+    out: Dict[str, int] = {}
+    for did, cfg in raw.items():
+        try:
+            total = int(cfg.get("manual_ms", 0)) + int(cfg.get("auto_ms", 0))
+        except (TypeError, ValueError, AttributeError):
+            total = 0
+        out[did] = max(-1000, min(1000, total))
+    return out
+
+
 async def _set_volume(deck_id: str, vol: int, client: httpx.AsyncClient) -> None:
     try:
         await client.post(f"{_FFMPEG_URL}/decks/{deck_id}/volume/{vol}")
@@ -175,20 +189,21 @@ async def _play_jingle(jingle_type: str, deck_ids: List[str]) -> None:
     print(f"[engine]   API path : {local_path}")
     print(f"[engine]   Mixer path: {mixer_path}")
 
-    async with httpx.AsyncClient(timeout=5) as c:
-        tasks = [
-            c.post(
-                f"{_FFMPEG_URL}/decks/{did}/play_announcement",
-                json={"filepath": mixer_path, "notify": False},
+    async with httpx.AsyncClient(timeout=8) as c:
+        try:
+            r = await c.post(
+                f"{_FFMPEG_URL}/announce/sync",
+                json={
+                    "deck_ids": deck_ids,
+                    "filepath": mixer_path,
+                    "notify": False,
+                    "offsets_ms": _effective_offsets_ms(),
+                },
             )
-            for did in deck_ids
-        ]
-        resps = await asyncio.gather(*tasks, return_exceptions=True)
-        for did, r in zip(deck_ids, resps):
-            if isinstance(r, Exception):
-                print(f"[engine] jingle send error deck {did}: {r}")
-            elif r.status_code != 200:
-                print(f"[engine] jingle mixer {r.status_code} deck {did}: {r.text}")
+            if r.status_code != 200:
+                print(f"[engine] jingle sync mixer {r.status_code}: {r.text}")
+        except Exception as e:
+            print(f"[engine] jingle sync send error: {e}")
 
     duration = await get_audio_duration(local_path)
     wait_for = max(0.5, min(duration + 0.2, 60.0))
@@ -242,21 +257,22 @@ async def _play_content(filepath: str, deck_ids: List[str]) -> None:
     print(f"[engine] Sending announcement to decks {deck_ids}: {Path(filepath).name}")
 
     try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            tasks = [
-                c.post(
-                    f"{_FFMPEG_URL}/decks/{did}/play_announcement",
-                    json={"filepath": filepath, "notify": True},
-                )
-                for did in deck_ids
-            ]
-            resps = await asyncio.gather(*tasks, return_exceptions=True)
-            for did, r in zip(deck_ids, resps):
-                if not (isinstance(r, httpx.Response) and r.status_code == 200):
+        async with httpx.AsyncClient(timeout=8) as c:
+            r = await c.post(
+                f"{_FFMPEG_URL}/announce/sync",
+                json={
+                    "deck_ids": deck_ids,
+                    "filepath": filepath,
+                    "notify": True,
+                    "offsets_ms": _effective_offsets_ms(),
+                },
+            )
+            if r.status_code != 200:
+                print(f"[engine] content sync mixer {r.status_code}: {r.text}")
+                for did in deck_ids:
                     ev = _ANNOUNCEMENT_EVENTS.pop(did, None)
                     if ev and not ev.is_set():
                         ev.set()
-                    print(f"[engine] content send failed deck {did}: {r}")
     except Exception as e:
         print(f"[engine] content send error: {e}")
         for did in deck_ids:

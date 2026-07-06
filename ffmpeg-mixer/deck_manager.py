@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 import uvicorn
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
 RTMP_BASE_URL  = f"rtmp://{MEDIAMTX_HOST}:1935"
@@ -389,7 +389,7 @@ class Deck:
             print(f"[Deck {self.name}] Crossfade complete — promoted new track "
                   f"(drained {drained} old, moved {moved} new chunks)")
 
-    def _reader_thread(self, proc, q, proc_name):
+    def _reader_thread(self, proc, q, proc_name, ready_event=None, release_event=None, release_at_map=None):
         first_chunk = True
         try:
             while proc and proc.poll() is None:
@@ -398,13 +398,34 @@ class Deck:
                     break
                 if len(chunk) < CHUNK_SIZE:
                     chunk += b'\x00' * (CHUNK_SIZE - len(chunk))
-                # ── Precise start timestamp: record when first audio arrives ──
-                if first_chunk and proc_name == "track":
+                if first_chunk:
                     first_chunk = False
-                    with self.lock:
-                        # Overwrite the estimate set in play() with the real
-                        # monotonic time when PCM actually started flowing.
-                        self._play_started_at = time.monotonic()
+                    if ready_event is not None or release_event is not None:
+                        # ── Multi-deck synchronized start ────────────────
+                        # This deck's decode pipeline just produced its first PCM
+                        # chunk — past subprocess spawn + codec init, the real
+                        # source of cross-deck skew. Signal we're primed, wait
+                        # for the group to be ready, then hold for this deck's
+                        # own calibrated release instant (release_at_map) so
+                        # zones with slower downstream paths (fiber length,
+                        # decoder chain, speaker distance) start earlier than
+                        # faster ones — see MULTIZONE_SYNC_PLAN.md.
+                        if ready_event is not None:
+                            ready_event.set()
+                        if release_event is not None:
+                            release_event.wait(timeout=2.0)
+                        if release_at_map is not None:
+                            target = release_at_map.get(self.name)
+                            if target is not None:
+                                remaining = target - time.monotonic()
+                                if remaining > 0:
+                                    time.sleep(remaining)
+                    # ── Precise start timestamp: record when audio actually
+                    # starts flowing (after any sync gating above, not at
+                    # Popen time) ──
+                    if proc_name == "track":
+                        with self.lock:
+                            self._play_started_at = time.monotonic()
                 try:
                     q.put(chunk, timeout=2)
                 except queue.Full:
@@ -511,7 +532,8 @@ class Deck:
         print(f"[Deck {self.name}] Crossfade → {filepath} "
               f"(duration={duration:.1f}s, chunks={total_chunks})")
 
-    def play(self, filepath, loop: bool = False, seek_seconds: float = 0.0):
+    def play(self, filepath, loop: bool = False, seek_seconds: float = 0.0,
+             ready_event=None, release_event=None, release_at_map=None):
         self.stop()
         self._stop_requested = False
 
@@ -520,7 +542,7 @@ class Deck:
             self.is_loop          = loop
             self.current_track    = filepath
             # Conservative estimate — _reader_thread overwrites with real value
-            # once first PCM chunk arrives.
+            # once first PCM chunk arrives (after any sync gating).
             self._play_started_at = time.monotonic()
             self._seek_offset     = seek_seconds
 
@@ -536,7 +558,7 @@ class Deck:
         self.track_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         threading.Thread(
             target=self._reader_thread,
-            args=(self.track_proc, self.track_q, "track"),
+            args=(self.track_proc, self.track_q, "track", ready_event, release_event, release_at_map),
             daemon=True,
         ).start()
         print(f"[Deck {self.name}] Playing: {filepath} (loop={loop}, seek={seek_seconds:.4f}s)")
@@ -659,7 +681,7 @@ class Deck:
 
         print(f"[Deck {self.name}] Crossfade cancelled — outgoing track continues")
 
-    def play_announcement(self, filepath, notify: bool = True):
+    def play_announcement(self, filepath, notify: bool = True, ready_event=None, release_event=None, release_at_map=None):
         self.cancel_xfade()
 
         with self.lock:
@@ -710,7 +732,7 @@ class Deck:
 
         threading.Thread(
             target=self._reader_thread,
-            args=(proc, self.ann_q, proc_name),
+            args=(proc, self.ann_q, proc_name, ready_event, release_event, release_at_map),
             daemon=True,
         ).start()
         threading.Thread(
@@ -768,6 +790,21 @@ class PlayRequest(BaseModel):
 class PlayAnnouncementRequest(BaseModel):
     filepath: str
     notify: bool = True
+
+class SyncAnnounceRequest(BaseModel):
+    """Start the same announcement/jingle on multiple decks at the same instant."""
+    deck_ids: List[str]
+    filepath: str
+    notify: bool = True
+    offsets_ms: Dict[str, int] = {}   # deck_id -> calibration offset, see MULTIZONE_SYNC_PLAN.md
+
+class SyncPlayRequest(BaseModel):
+    """Start plain track playback on multiple decks at the same calibrated instant."""
+    deck_ids: List[str]
+    filepath: str
+    loop: bool = False
+    seek_seconds: Dict[str, float] = {}   # deck_id -> per-deck seek position
+    offsets_ms: Dict[str, int] = {}       # deck_id -> calibration offset
 
 class CrossfadeRequest(BaseModel):
     filepath: str
@@ -902,6 +939,98 @@ def play_announcement(deck_id: str, req: PlayAnnouncementRequest):
         raise HTTPException(status_code=404, detail="Deck not found")
     decks[deck_id].play_announcement(req.filepath, notify=req.notify)
     return {"status": "ok"}
+
+
+@app.post("/announce/sync")
+def play_announcement_sync_group(req: SyncAnnounceRequest):
+    """
+    Start the same announcement/jingle on multiple decks at the same instant,
+    corrected for each deck's calibrated downstream latency (offsets_ms).
+
+    Two-phase release:
+      1. Coarse — every target deck primes its decode pipeline and signals
+         readiness; we wait (bounded) for all of them.
+      2. Fine — once the group is ready, compute one shared anchor instant
+         and each deck's own release time = anchor - offsets_ms[deck], so a
+         deck with a slower downstream path (longer fiber, slower decoder,
+         farther speaker) is released earlier and arrives in sync anyway.
+
+    See MULTIZONE_SYNC_PLAN.md.
+    """
+    valid_ids = [d for d in req.deck_ids if d in decks]
+    if not valid_ids:
+        raise HTTPException(status_code=400, detail="No valid deck_ids")
+
+    ready_events   = {did: threading.Event() for did in valid_ids}
+    release_event  = threading.Event()
+    release_at_map: Dict[str, float] = {}
+
+    for did in valid_ids:
+        decks[did].play_announcement(
+            req.filepath,
+            notify=req.notify,
+            ready_event=ready_events[did],
+            release_event=release_event,
+            release_at_map=release_at_map,
+        )
+
+    # Wait for every deck's decode pipeline to produce its first chunk.
+    # Bounded — if a file is missing/broken on one deck, don't hold the
+    # rest of the group hostage past this deadline.
+    deadline = time.monotonic() + 2.0
+    for ev in ready_events.values():
+        remaining = max(0.0, deadline - time.monotonic())
+        ev.wait(timeout=remaining)
+
+    # Fine-grained per-deck release: small safety margin gives every thread
+    # time to wake from release_event and read its own target before anchor
+    # passes.
+    anchor = time.monotonic() + 0.05
+    for did in valid_ids:
+        release_at_map[did] = anchor - (req.offsets_ms.get(did, 0) / 1000.0)
+
+    release_event.set()
+    print(f"[sync] Released announcement group on decks {valid_ids}: {os.path.basename(req.filepath)}")
+    return {"status": "ok", "decks": valid_ids, "synced": True}
+
+
+@app.post("/play/sync")
+def play_sync_group(req: SyncPlayRequest):
+    """
+    Start plain track playback on multiple decks at the same calibrated
+    instant — same mechanism as /announce/sync, applied to ordinary deck
+    playback (Playlist Broadcast, Sync-All). See MULTIZONE_SYNC_PLAN.md.
+    """
+    valid_ids = [d for d in req.deck_ids if d in decks]
+    if not valid_ids:
+        raise HTTPException(status_code=400, detail="No valid deck_ids")
+
+    ready_events   = {did: threading.Event() for did in valid_ids}
+    release_event  = threading.Event()
+    release_at_map: Dict[str, float] = {}
+
+    for did in valid_ids:
+        decks[did].play(
+            req.filepath,
+            loop=req.loop,
+            seek_seconds=req.seek_seconds.get(did, 0.0),
+            ready_event=ready_events[did],
+            release_event=release_event,
+            release_at_map=release_at_map,
+        )
+
+    deadline = time.monotonic() + 2.0
+    for ev in ready_events.values():
+        remaining = max(0.0, deadline - time.monotonic())
+        ev.wait(timeout=remaining)
+
+    anchor = time.monotonic() + 0.05
+    for did in valid_ids:
+        release_at_map[did] = anchor - (req.offsets_ms.get(did, 0) / 1000.0)
+
+    release_event.set()
+    print(f"[sync] Released play group on decks {valid_ids}: {os.path.basename(req.filepath)}")
+    return {"status": "ok", "decks": valid_ids, "synced": True}
 
 @app.post("/decks/{deck_id}/crossfade")
 def crossfade_track(deck_id: str, req: CrossfadeRequest):

@@ -168,6 +168,7 @@ def create_token(user: dict, expiry_hours: int = DEFAULT_EXPIRY_HOURS) -> str:
         "username":       user["username"],
         "role":           user.get("role", "operator"),
         "is_super_admin": is_super,
+        "source":         user.get("source", "local"),   # 'local' | 'ldap' — used for permission resolution
         "jti":            str(uuid.uuid4()),   # unique token ID — used for denylist revocation
         "exp":            expire,
     }
@@ -498,6 +499,112 @@ def verify_ldap_credentials(username: str, password: str, ldap_cfg: dict) -> Opt
             "role":         role,
             "is_super_admin": role == "super_admin",
             "source":       "ldap",
+        }
+
+    except Exception as e:
+        print(f"[ldap] Authentication error for '{username}': {e}")
+        return None
+
+
+def ldap_authenticate_only(username: str, password: str, ldap_cfg: dict) -> Optional[dict]:
+    """
+    USER_ROLE_REDESIGN_PLAN.md §5.2 steps 1-2 ONLY: bind to LDAP, find the
+    user, verify their password by binding as them. Does NOT resolve a role —
+    that's now the job of db.sync_ldap_user() / db.resolve_role_from_group_map(),
+    which look at ldap_group_role_map instead of the legacy ldap_cfg group DNs.
+
+    Returns {dn, member_of, display_name, email, username} on success, None
+    on auth failure or any LDAP error.
+    """
+    try:
+        from ldap3 import Server, Connection, ALL, Tls
+        import ssl
+
+        server_url = ldap_cfg.get("server", "")
+        if not server_url or not server_url.strip():
+            print(f"[ldap] No LDAP server configured, skipping")
+            return None
+        port        = int(ldap_cfg.get("port", 389))
+        base_dn     = ldap_cfg.get("base_dn", "")
+        bind_dn     = ldap_cfg.get("bind_dn", "")
+        bind_pw     = ldap_cfg.get("bind_pw", "")
+        user_filter = ldap_cfg.get("user_filter", "(sAMAccountName={username})").replace("{username}", username)
+        attr_name   = ldap_cfg.get("attr_name",  "cn")
+        attr_email  = ldap_cfg.get("attr_email", "mail")
+        use_tls     = ldap_cfg.get("use_ssl", False)
+        tls_verify  = ldap_cfg.get("tls_verify", True)
+
+        tls = None
+        if use_tls and not tls_verify:
+            tls = Tls(validate=ssl.CERT_NONE)
+
+        srv = Server(server_url, port=port, get_info=ALL, tls=tls, connect_timeout=5)
+
+        # ── Step 1: bind with service account to find the user DN + groups ──
+        if bind_dn and bind_pw:
+            conn = Connection(srv, user=bind_dn, password=bind_pw, auto_bind=True)
+        else:
+            conn = Connection(srv, auto_bind=True)
+
+        conn.search(
+            search_base=base_dn,
+            search_filter=user_filter,
+            attributes=[attr_name, attr_email, "memberOf", "userAccountControl",
+                        "sAMAccountName", "distinguishedName"],
+        )
+
+        if not conn.entries:
+            print(f"[ldap] User '{username}' not found in directory")
+            conn.unbind()
+            return None
+
+        entry   = conn.entries[0]
+        user_dn = entry.entry_dn
+
+        # ── collect memberOf BEFORE unbinding the service account ──
+        try:
+            raw_member_of = entry["memberOf"].values if hasattr(entry["memberOf"], "values") else []
+            member_of = [str(g) for g in raw_member_of]
+        except Exception:
+            member_of = []
+
+        # ── fallback direct group membership query if memberOf came back empty ──
+        if not member_of:
+            try:
+                escaped_dn = user_dn.replace('\\', '\\\\').replace(')', '\\)').replace('(', '\\(').replace('*', '\\*')
+                conn.search(
+                    search_base=base_dn,
+                    search_filter=f"(&(objectClass=group)(member={escaped_dn}))",
+                    attributes=["distinguishedName", "cn"],
+                    paged_size=200,
+                )
+                member_of = [str(e.entry_dn) for e in conn.entries]
+                print(f"[ldap] memberOf fallback query found {len(member_of)} groups for '{username}'")
+            except Exception as _ge:
+                print(f"[ldap] memberOf fallback query failed: {_ge}")
+
+        conn.unbind()
+
+        # ── Step 2: verify password by binding as the user ──
+        user_conn = Connection(srv, user=user_dn, password=password, auto_bind=True)
+        user_conn.unbind()
+
+        try:
+            display_name = str(entry[attr_name]) if attr_name in entry else username
+        except Exception:
+            display_name = username
+        try:
+            email = str(entry[attr_email]) if attr_email in entry else ""
+        except Exception:
+            email = ""
+
+        print(f"[ldap] Authenticated '{username}' from LDAP ({len(member_of)} groups) — role resolution deferred to sync_ldap_user")
+        return {
+            "dn":            user_dn,
+            "member_of":     member_of,
+            "display_name":  display_name,
+            "email":         email,
+            "username":      username,
         }
 
     except Exception as e:

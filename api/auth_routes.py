@@ -42,7 +42,8 @@ def _login_rate_limit_key(request: Request) -> str:
 
 from auth import (
     verify_token, verify_password, create_token,
-    verify_ldap_credentials, test_ldap_connection, query_ldap_directory,
+    verify_ldap_credentials, ldap_authenticate_only,
+    test_ldap_connection, query_ldap_directory,
     revoke_token,
 )
 from db_client import db
@@ -98,57 +99,41 @@ _UUID_RE = re.compile(
     re.IGNORECASE,
 )
 
-async def _fetch_permissions(user_id: str, role: str = None) -> dict:
+async def _fetch_permissions(user_id: str, role: str = None, source: str = None, permission_overrides: dict = None) -> dict:
     """
     Fetch permissions for a user.
 
-    For LDAP users (non-UUID ids like 'ldap-username'), the DB lookup is
-    skipped because those IDs cannot match the UUID-typed user_permissions
-    primary key.  In that case we resolve permissions from the role's
-    defaults stored in the roles table so that admin / super_admin LDAP
-    users receive full permissions instead of the restricted viewer-level
-    defaults that were previously returned.
+    Unified-identity LDAP users (USER_ROLE_REDESIGN_PLAN.md) are real rows in
+    `users` with a real UUID id, so they can't be distinguished from local
+    users by id shape anymore — `source` (carried in the JWT / passed by the
+    caller) is what selects the resolution path:
 
-    For regular local users (UUID ids) we read their stored row from
-    user_permissions as before.
+      source == 'ldap' -> role defaults from the `roles` table, merged with
+                           the user's `permission_overrides` (plan §6).
+      source == 'local' (default) -> the existing per-user `user_permissions`
+                           table, as before.
     """
-    is_ldap_user = not _UUID_RE.match(str(user_id or ""))
-
-    if is_ldap_user and role:
-        # ── LDAP path: look up permissions from the role definition ──────────
+    if source == "ldap" and role:
         try:
             loop = asyncio.get_event_loop()
             role_obj = await loop.run_in_executor(None, db.get_role_by_name, role)
             if role_obj:
                 from rbac import _role_to_perms
                 perms = _role_to_perms(role_obj)
-                print(f"[auth] LDAP user '{user_id}' — resolved permissions from role '{role}'")
-                return perms
             else:
-                print(f"[auth] LDAP user '{user_id}' — role '{role}' not found in DB, using SYSTEM_ROLES fallback")
+                print(f"[auth] LDAP user '{user_id}' — role '{role}' not found in roles table, using zero-access defaults")
+                perms = {
+                    "allowed_decks": [], "deck_control": {}, "deck_actions": [], "playlist_perms": [],
+                    "can_announce": False, "can_schedule": False, "can_library": False,
+                    "can_requests": False, "can_settings": False,
+                }
+            # USER_ROLE_REDESIGN_PLAN.md §6: effective = role_defaults merged with permission_overrides
+            if permission_overrides:
+                perms.update(permission_overrides)
+            return perms
         except Exception as e:
             print(f"[auth] _fetch_permissions LDAP role lookup failed: {e}")
-
-        # Fallback: role not found in DB yet — use hardcoded SYSTEM_ROLES definition
-        try:
-            from rbac import DECK_IDS, ALL_DECK_ACTIONS, ALL_PLAYLIST_PERMS, _full_deck_control, SYSTEM_ROLES
-            sys_role = next((r for r in SYSTEM_ROLES if r["name"] == role), None)
-            if sys_role:
-                return {
-                    "allowed_decks":  sys_role.get("default_allowed_decks",  DECK_IDS),
-                    "deck_control":   sys_role.get("default_deck_control",   _full_deck_control(True, True)),
-                    "deck_actions":   sys_role.get("default_deck_actions",   ALL_DECK_ACTIONS),
-                    "playlist_perms": sys_role.get("default_playlist_perms", []),
-                    "can_announce":   sys_role.get("default_can_announce",   False),
-                    "can_schedule":   sys_role.get("default_can_schedule",   False),
-                    "can_library":    sys_role.get("default_can_library",    False),
-                    "can_requests":   sys_role.get("default_can_requests",   False),
-                    "can_settings":   sys_role.get("default_can_settings",   False),
-                }
-        except Exception as e:
-            print(f"[auth] _fetch_permissions SYSTEM_ROLES fallback failed: {e}")
-
-        return {}
+            return {}
 
     # ── Local DB path ────────────────────────────────────────────────────────
     try:
@@ -255,42 +240,42 @@ async def login(req: LoginRequest, request: Request):
     # 1. LDAP attempt (skip if method=local)
     if method != "local" and settings.get("ldap_enabled") and settings.get("ldap_server", "").strip():
         ldap_cfg = {
-            "server":                 settings.get("ldap_server", ""),
-            "port":                   settings.get("ldap_port", 389),
-            "base_dn":                settings.get("ldap_base_dn", ""),
-            "bind_dn":                settings.get("ldap_bind_dn", ""),
-            "bind_pw":                settings.get("ldap_bind_pw", ""),
-            "user_filter":            settings.get("ldap_user_filter", "(sAMAccountName={username})"),
-            "attr_name":              settings.get("ldap_attr_name", "cn"),
-            "attr_email":             settings.get("ldap_attr_email", "mail"),
-            # built-in role group DNs (priority order in auth.py)
-            "role_super_admin_group": settings.get("ldap_role_super_admin_group", ""),
-            "role_admin_group":       settings.get("ldap_role_admin_group", ""),
-            "role_operator_group":    settings.get("ldap_role_operator_group", ""),
-            "role_viewer_group":      settings.get("ldap_role_viewer_group", ""),
-            # custom group->role list
-            "role_custom_groups":     settings.get("ldap_role_custom_groups", []),
-            "use_ssl":                settings.get("ldap_use_ssl", False),
-            "tls_verify":             settings.get("ldap_tls_verify", True),
+            "server":      settings.get("ldap_server", ""),
+            "port":        settings.get("ldap_port", 389),
+            "base_dn":     settings.get("ldap_base_dn", ""),
+            "bind_dn":     settings.get("ldap_bind_dn", ""),
+            "bind_pw":     settings.get("ldap_bind_pw", ""),
+            "user_filter": settings.get("ldap_user_filter", "(sAMAccountName={username})"),
+            "attr_name":   settings.get("ldap_attr_name", "cn"),
+            "attr_email":  settings.get("ldap_attr_email", "mail"),
+            "use_ssl":     settings.get("ldap_use_ssl", False),
+            "tls_verify":  settings.get("ldap_tls_verify", True),
         }
-        loop      = asyncio.get_event_loop()
-        ldap_user = await loop.run_in_executor(
-            None, verify_ldap_credentials, req.username, req.password, ldap_cfg
+        loop    = asyncio.get_event_loop()
+        ldap_id = await loop.run_in_executor(
+            None, ldap_authenticate_only, req.username, req.password, ldap_cfg
         )
-        if ldap_user:
-            token = create_token(ldap_user, expiry_hours=expiry_hrs)
-            _audit_login(ldap_user["id"], ldap_user["username"], "ldap", ip)
-            # Stamp last_login for LDAP users if they exist in local DB
-            try:
-                loop = asyncio.get_event_loop()
-                local = await loop.run_in_executor(None, get_user_by_username, db, req.username)
-                if local:
-                    await loop.run_in_executor(None, update_last_login, db, local["id"])
-            except Exception:
-                pass
-            # KEY FIX: pass the resolved role so LDAP users get role-appropriate permissions
-            perms = await _fetch_permissions(ldap_user["id"], role=ldap_user.get("role"))
-            return _login_response(token, ldap_user, perms, expiry_hrs, source="ldap")
+        if ldap_id:
+            # USER_ROLE_REDESIGN_PLAN.md §5.2 steps 3-5: sync (don't recompute)
+            # a real `users` row for this LDAP identity.
+            user_row = await loop.run_in_executor(
+                None, db.sync_ldap_user,
+                ldap_id["username"], ldap_id["display_name"], ldap_id["email"],
+                ldap_id["dn"], ldap_id["member_of"],
+            )
+            user_row["source"] = "ldap"
+
+            if not user_row.get("enabled", True):
+                raise HTTPException(status_code=403, detail="Account is disabled. Contact your administrator.")
+
+            token = create_token(user_row, expiry_hours=expiry_hrs)
+            _audit_login(user_row["id"], user_row["username"], "ldap", ip)
+
+            perms = await _fetch_permissions(
+                user_row["id"], role=user_row.get("role"),
+                source="ldap", permission_overrides=user_row.get("permission_overrides"),
+            )
+            return _login_response(token, user_row, perms, expiry_hrs, source="ldap")
 
         print(f"[auth] LDAP auth failed for '{req.username}' — falling back to local DB")
 

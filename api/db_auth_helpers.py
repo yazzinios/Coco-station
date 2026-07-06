@@ -24,6 +24,8 @@ def get_user_by_username(db_instance, username: str) -> Optional[dict]:
                 SELECT
                     id::text, username, display_name,
                     password_hash, role, is_super_admin,
+                    COALESCE(source, 'local') AS source,
+                    permission_overrides,
                     COALESCE(enabled, TRUE) AS enabled
                 FROM users
                 WHERE username = %s
@@ -34,7 +36,13 @@ def get_user_by_username(db_instance, username: str) -> Optional[dict]:
             row = cur.fetchone()
             if row is None:
                 return None
-            return dict(row)
+            d = dict(row)
+            if isinstance(d.get("permission_overrides"), str):
+                try:
+                    d["permission_overrides"] = json.loads(d["permission_overrides"])
+                except Exception:
+                    pass
+            return d
     except Exception as e:
         print(f"[db_auth] get_user_by_username({username!r}) failed: {e}")
         return None
@@ -75,6 +83,8 @@ def get_user_by_id(db_instance, user_id: str) -> Optional[dict]:
                 SELECT
                     id::text, username, display_name,
                     role, is_super_admin,
+                    COALESCE(source, 'local') AS source,
+                    permission_overrides,
                     COALESCE(enabled, TRUE) AS enabled
                 FROM users
                 WHERE id = %s
@@ -85,7 +95,13 @@ def get_user_by_id(db_instance, user_id: str) -> Optional[dict]:
             row = cur.fetchone()
             if row is None:
                 return None
-            return dict(row)
+            d = dict(row)
+            if isinstance(d.get("permission_overrides"), str):
+                try:
+                    d["permission_overrides"] = json.loads(d["permission_overrides"])
+                except Exception:
+                    pass
+            return d
     except Exception as e:
         print(f"[db_auth] get_user_by_id({user_id!r}) failed: {e}")
         return None
