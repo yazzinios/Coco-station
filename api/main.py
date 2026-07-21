@@ -2486,15 +2486,15 @@ async def delete_user(user_id: str, request: Request, _user: dict = Depends(veri
 # ── Permissions ─────────────────────────────────────────────
 
 class PermissionsRequest(_PydanticBase):
-    allowed_decks:  List[str]            = ["a","b","c","d","e","f"]
+    allowed_decks:  Optional[List[str]]  = ["a","b","c","d","e","f"]
     deck_control:   Optional[dict]       = None
     deck_actions:   Optional[List[str]]  = None
     playlist_perms: Optional[List[str]]  = None
-    can_announce:  bool = True
-    can_schedule:  bool = True
-    can_library:   bool = True
-    can_requests:  bool = True
-    can_settings:  bool = False
+    can_announce:   Optional[bool]       = True
+    can_schedule:   Optional[bool]       = True
+    can_library:    Optional[bool]       = True
+    can_requests:   Optional[bool]       = True
+    can_settings:   Optional[bool]       = False
 
 @app.get("/api/users/{user_id}/permissions")
 async def get_user_permissions(user_id: str, _user: dict = Depends(verify_token)):
@@ -2530,12 +2530,18 @@ async def save_user_permissions(user_id: str, req: PermissionsRequest, request: 
 
     from db_client import DEFAULT_DECK_CONTROL, DEFAULT_DECK_ACTIONS, DEFAULT_PLAYLIST_PERMS
     perms = req.dict()
-    if perms["deck_control"]   is None: perms["deck_control"]   = DEFAULT_DECK_CONTROL
-    if perms["deck_actions"]   is None: perms["deck_actions"]   = DEFAULT_DECK_ACTIONS
-    if perms["playlist_perms"] is None: perms["playlist_perms"] = DEFAULT_PLAYLIST_PERMS
+    if perms.get("allowed_decks") is None:  perms["allowed_decks"]  = ["a","b","c","d","e","f"]
+    if perms.get("deck_control")   is None:  perms["deck_control"]   = DEFAULT_DECK_CONTROL
+    if perms.get("deck_actions")   is None:  perms["deck_actions"]   = DEFAULT_DECK_ACTIONS
+    if perms.get("playlist_perms") is None:  perms["playlist_perms"] = DEFAULT_PLAYLIST_PERMS
+    perms["can_announce"] = bool(perms.get("can_announce", True))
+    perms["can_schedule"] = bool(perms.get("can_schedule", True))
+    perms["can_library"]  = bool(perms.get("can_library", True))
+    perms["can_requests"] = bool(perms.get("can_requests", True))
+    perms["can_settings"] = bool(perms.get("can_settings", False))
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, db.save_permissions, user_id, perms)
-    _audit(request, _user, "user.permissions", {"target_id": user_id, "decks": req.allowed_decks})
+    _audit(request, _user, "user.permissions", {"target_id": user_id, "decks": perms["allowed_decks"]})
     return {"status": "ok"}
 
 # ── Audit Logs ───────────────────────────────────────────────

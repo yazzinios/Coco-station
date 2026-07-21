@@ -490,10 +490,21 @@ export default function UsersPage() {
   const savePerms = async () => {
     setPermSaving(true);
     const allowed_decks = (perms.allowed_decks || DECK_IDS).filter(d => DECK_IDS.includes(d));
+    const payload = {
+      allowed_decks,
+      deck_control:   perms.deck_control   || DEFAULT_DECK_CONTROL,
+      deck_actions:   perms.deck_actions   || DEFAULT_DECK_ACTIONS,
+      playlist_perms: perms.playlist_perms || DEFAULT_PLAYLIST_PERMS,
+      can_announce:  !!perms.can_announce,
+      can_schedule:  !!perms.can_schedule,
+      can_library:   !!perms.can_library,
+      can_requests:  !!perms.can_requests,
+      can_settings:  !!perms.can_settings,
+    };
     try {
       const res = await api.authFetch(`/api/users/${permModal.id}/permissions`, {
         method: 'PUT',
-        body: JSON.stringify({ ...perms, allowed_decks }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) { const d = await res.json().catch(()=>{}); throw new Error(d?.detail || 'Failed'); }
       toast.success(`Permissions saved for @${permModal.username}`);
