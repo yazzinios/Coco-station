@@ -1543,38 +1543,16 @@ class DBClient:
                 self._put_conn(conn)
 
 
-    # ── Unified LDAP user sync (USER_ROLE_REDESIGN_PLAN.md §5.2) ───────────────
+    # ── Unified LDAP user sync ─────────────────────────────────────────────────
 
     def resolve_role_from_group_map(self, member_of: list) -> Optional[str]:
         """
-        Walk ldap_group_role_map in priority order and return the role of the
-        first enabled mapping whose group_dn matches the user's memberOf list.
-        Matching: case-insensitive exact match, falling back to substring
-        match (so a short CN like "RadioAdmins" matches a full DN).
-        Returns None if nothing matches (caller should fall back to 'pending').
+        DEPRECATED: Group-based role resolution has been removed.
+        New LDAP users always default to 'viewer'. This stub exists
+        only for backward compatibility with any callers still in code.
+        Always returns None so callers fall back to 'viewer'.
         """
-        conn = None
-        try:
-            conn = self._get_conn()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT group_dn, role FROM ldap_group_role_map "
-                    "WHERE enabled = TRUE ORDER BY priority ASC"
-                )
-                rows = cur.fetchall()
-            member_of_lower = [g.lower().strip() for g in (member_of or [])]
-            for row in rows:
-                needle = (row["group_dn"] or "").strip().lower()
-                if not needle:
-                    continue
-                if needle in member_of_lower or any(needle in g for g in member_of_lower):
-                    return row["role"]
-            return None
-        except Exception as e:
-            print(f"[DB] resolve_role_from_group_map failed: {e}")
-            return None
-        finally:
-            self._put_conn(conn)
+        return None
 
     def get_user_by_username_source(self, username: str, source: str) -> Optional[dict]:
         """Fetch a unified-identity user row by (username, source)."""
@@ -1609,13 +1587,16 @@ class DBClient:
     def sync_ldap_user(self, username: str, display_name: str, email: str,
                         ldap_dn: str, member_of: list) -> dict:
         """
-        Implements USER_ROLE_REDESIGN_PLAN.md §5.2 steps 3-5.
-
         Upserts a real `users` row for this LDAP identity (source='ldap').
-        Role is only re-resolved from ldap_group_role_map when the user's
-        memberOf list has changed since the last sync (tracked via
-        ldap_groups_hash) — so a manual admin role/override edit survives
-        subsequent logins as long as group membership is unchanged.
+
+        NEW BEHAVIOUR (Migration 019):
+          - New LDAP users are always created with role='viewer' and enabled=TRUE.
+            They will appear in the User Manager where the super-admin can
+            promote them to a higher role.
+          - Existing LDAP users keep their current role/permissions unchanged
+            on every subsequent login — admin edits are NEVER overwritten.
+          - Group-based role resolution (resolve_role_from_group_map) has been
+            removed. The member_of list is stored only for auditing.
 
         Returns the persisted row with a real UUID id.
         """
@@ -1631,7 +1612,7 @@ class DBClient:
             conn = self._get_conn()
             with conn.cursor() as cur:
                 if existing is None:
-                    role = self.resolve_role_from_group_map(member_of) or "pending"
+                    # First login — provision with minimum 'viewer' role
                     new_id = str(_uuid.uuid4())
                     cur.execute(
                         """
@@ -1639,28 +1620,23 @@ class DBClient:
                             (id, username, source, display_name, email, role,
                              ldap_dn, ldap_groups_hash, enabled, last_login,
                              created_at, updated_at)
-                        VALUES (%s, %s, 'ldap', %s, %s, %s, %s, %s, TRUE, NOW(), NOW(), NOW())
+                        VALUES (%s, %s, 'ldap', %s, %s, 'viewer', %s, %s, TRUE, NOW(), NOW(), NOW())
                         RETURNING id::text, username, display_name, email, role, source,
                                   ldap_dn, ldap_groups_hash, permission_overrides,
                                   COALESCE(enabled, TRUE) AS enabled,
                                   COALESCE(is_super_admin, FALSE) AS is_super_admin
                         """,
-                        (new_id, username, display_name, email, role, ldap_dn, groups_hash),
+                        (new_id, username, display_name, email, ldap_dn, groups_hash),
                     )
                     row = dict(cur.fetchone())
-                    print(f"[DB] sync_ldap_user: created new LDAP user '{username}' role={role}")
+                    print(f"[DB] sync_ldap_user: new LDAP user '{username}' provisioned with role=viewer")
                     return row
 
-                if existing.get("ldap_groups_hash") != groups_hash:
-                    role = self.resolve_role_from_group_map(member_of) or "pending"
-                    print(f"[DB] sync_ldap_user: '{username}' LDAP groups changed — re-resolved role={role}")
-                else:
-                    role = existing.get("role")  # unchanged groups — keep stored role (respects admin edits)
-
+                # Existing user — update profile fields only, preserve role & permissions
                 cur.execute(
                     """
                     UPDATE users SET
-                        display_name = %s, email = %s, role = %s,
+                        display_name = %s, email = %s,
                         ldap_dn = %s, ldap_groups_hash = %s,
                         last_login = NOW(), updated_at = NOW()
                     WHERE id = %s
@@ -1669,7 +1645,7 @@ class DBClient:
                               COALESCE(enabled, TRUE) AS enabled,
                               COALESCE(is_super_admin, FALSE) AS is_super_admin
                     """,
-                    (display_name, email, role, ldap_dn, groups_hash, existing["id"]),
+                    (display_name, email, ldap_dn, groups_hash, existing["id"]),
                 )
                 row = dict(cur.fetchone())
                 if isinstance(row.get("permission_overrides"), str):
@@ -1677,14 +1653,14 @@ class DBClient:
                         row["permission_overrides"] = json.loads(row["permission_overrides"])
                     except Exception:
                         pass
+                print(f"[DB] sync_ldap_user: '{username}' re-authenticated, role={row.get('role')} preserved")
                 return row
         except Exception as e:
             print(f"[DB] sync_ldap_user failed: {e}")
-            # Never hard-fail login because of a sync error — fall back to
-            # whatever we had (or a zero-access synthetic identity).
+            # Never hard-fail login — fall back to whatever we had
             return existing or {
                 "id": f"ldap-{username}", "username": username, "display_name": display_name,
-                "email": email, "role": "pending", "source": "ldap", "enabled": True,
+                "email": email, "role": "viewer", "source": "ldap", "enabled": True,
                 "is_super_admin": False, "permission_overrides": None,
             }
         finally:
@@ -1692,28 +1668,27 @@ class DBClient:
 
     def force_resync_ldap_user(self, user_id: str, member_of: list) -> Optional[dict]:
         """
-        Force re-resolution of a user's role from current LDAP groups,
-        ignoring the ldap_groups_hash short-circuit. Used by the manual
-        resync endpoints (POST /api/users/{id}/resync-ldap).
+        DEPRECATED: Group-based role resolution removed (Migration 019).
+        This method now only updates the ldap_groups_hash for auditing.
+        The user's role is left unchanged.
         """
         import hashlib
         groups_hash = hashlib.sha256(
             "|".join(sorted(g.lower().strip() for g in (member_of or []))).encode()
         ).hexdigest()
-        role = self.resolve_role_from_group_map(member_of) or "pending"
         conn = None
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE users SET role = %s, ldap_groups_hash = %s, updated_at = NOW()
+                    UPDATE users SET ldap_groups_hash = %s, updated_at = NOW()
                     WHERE id = %s AND source = 'ldap'
                     RETURNING id::text, username, display_name, email, role, source,
                               ldap_dn, ldap_groups_hash, permission_overrides,
                               COALESCE(enabled, TRUE) AS enabled
                     """,
-                    (role, groups_hash, user_id),
+                    (groups_hash, user_id),
                 )
                 row = cur.fetchone()
                 return dict(row) if row else None

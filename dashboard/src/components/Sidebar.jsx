@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut, Music2, ListMusic, Disc3, Shield } from 'lucide-react';
+import { Sliders, Mic2, BarChart2, Settings, Calendar, Users, FolderOpen, LogOut, Music2, ListMusic, Disc3 } from 'lucide-react';
 import { useApp } from '../context/useApp';
 
 export default function Sidebar({ onNavClick, collapsed }) {
@@ -23,7 +23,6 @@ export default function Sidebar({ onNavClick, collapsed }) {
     { name: 'Requests',      path: '/requests',      icon: <ListMusic size={20} />,  visible: hasFeature('can_requests') },
     { name: 'Settings',      path: '/settings',      icon: <Settings size={20} />,   visible: hasFeature('can_settings') || isElevated },
     { name: 'Users',         path: '/users',         icon: <Users size={20} />,      visible: isElevated },
-    { name: 'Roles',         path: '/roles',         icon: <Shield size={20} />,     visible: isElevated },
   ];
 
   return (

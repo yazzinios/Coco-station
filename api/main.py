@@ -2424,7 +2424,17 @@ async def update_user(user_id: str, req: UserUpdateRequest, request: Request, _u
     if not is_super and not is_admin and (req.role is not None or req.enabled is not None):
         raise HTTPException(status_code=403, detail="Only admins can change role or enabled status")
 
+    # Super-admin protection: nobody can modify a super-admin account (except themselves changing password)
     loop = asyncio.get_running_loop()
+    target_users = await loop.run_in_executor(None, db.list_users)
+    target = next((u for u in target_users if str(u.get("id")) == user_id), None)
+    if target and (target.get("is_super_admin") or target.get("role") == "super_admin"):
+        # Only allow super-admin to edit their OWN profile fields, but NEVER role or enabled
+        if not is_self:
+            raise HTTPException(status_code=400, detail="Super-admin accounts cannot be modified by other users.")
+        if req.role is not None or req.enabled is not None:
+            raise HTTPException(status_code=400, detail="Super-admin role and status are immutable.")
+
     if req.role is not None:
         all_roles = await loop.run_in_executor(None, db.list_roles)
         valid_names = {r["name"] for r in all_roles}
@@ -2458,7 +2468,14 @@ async def delete_user(user_id: str, request: Request, _user: dict = Depends(veri
         raise HTTPException(status_code=403, detail="Admin access required")
     if _user.get("sub") == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    # Super-admin protection: no one can delete a super-admin account
     loop = asyncio.get_running_loop()
+    target_users = await loop.run_in_executor(None, db.list_users)
+    target = next((u for u in target_users if str(u.get("id")) == user_id), None)
+    if target and (target.get("is_super_admin") or target.get("role") == "super_admin"):
+        raise HTTPException(status_code=400, detail="Super-admin accounts cannot be deleted.")
+
     try:
         await loop.run_in_executor(None, db.delete_user, user_id)
     except Exception as e:
@@ -2489,13 +2506,16 @@ async def save_user_permissions(user_id: str, req: PermissionsRequest, request: 
     if not (_user.get("is_super_admin") or _user.get("role") == "admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
 
+    loop = asyncio.get_running_loop()
+    # Super-admin protection: permissions of super-admin accounts cannot be overridden
+    target_users = await loop.run_in_executor(None, db.list_users)
+    target = next((u for u in target_users if str(u.get("id")) == user_id), None)
+    if target and (target.get("is_super_admin") or target.get("role") == "super_admin"):
+        raise HTTPException(status_code=400, detail="Super-admin permissions cannot be modified.")
+
     # Bug #5 fix: prevent admins from granting super_admin or admin-level
     # access to other users, since admins cannot elevate beyond their own role.
     if not _user.get("is_super_admin"):
-        # Fetch the target user to check their current role
-        loop = asyncio.get_running_loop()
-        target_users = await loop.run_in_executor(None, db.list_users)
-        target = next((u for u in target_users if str(u.get("id")) == user_id), None)
         if target and target.get("role") in ("super_admin", "admin"):
             raise HTTPException(
                 status_code=403,

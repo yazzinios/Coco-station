@@ -502,7 +502,9 @@ END $$;
     cur.execute("SELECT name FROM _migrations")
     applied = set(row[0] for row in cur.fetchall())
 
+    migrations_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migrations")
     migration_files = sorted(
+        glob.glob(os.path.join(migrations_dir, "*.sql")) +
         glob.glob("/app/migrations/*.sql") +
         glob.glob("/app/supabase/migrations/*.sql")
     )

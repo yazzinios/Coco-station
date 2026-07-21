@@ -15,7 +15,6 @@ import RequestsManagementPage from './pages/RequestsManagementPage';
 import LoginPage from './pages/LoginPage';
 import DJPage from './pages/DJPage';
 import UsersPage from './pages/UsersPage';
-import RolesPage from './pages/RolesPage';
 import { useApp } from './context/useApp';
 
 function AppHeader({ onToggleFullscreen, isFullscreen }) {
@@ -224,9 +223,6 @@ function AppLayout() {
           {/* Admin-only pages */}
           <Route path="/users" element={
             <ProtectedRoute elevated><UsersPage /></ProtectedRoute>
-          } />
-          <Route path="/roles" element={
-            <ProtectedRoute elevated><RolesPage /></ProtectedRoute>
           } />
 
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -42,7 +42,7 @@ def _login_rate_limit_key(request: Request) -> str:
 
 from auth import (
     verify_token, verify_password, create_token,
-    verify_ldap_credentials, ldap_authenticate_only,
+    ldap_authenticate_only,
     test_ldap_connection, query_ldap_directory,
     revoke_token,
 )
