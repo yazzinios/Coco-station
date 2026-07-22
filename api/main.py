@@ -2435,42 +2435,68 @@ async def update_user(user_id: str, request: Request, _user: dict = Depends(veri
     is_self  = _user.get("sub") == user_id
     if not is_super and not is_admin and not is_self:
         raise HTTPException(status_code=403, detail="Admin access required")
-    if not is_super and not is_admin and (req.role is not None or req.enabled is not None):
+
+    try:
+        req_data = await request.json()
+    except Exception:
+        req_data = {}
+    if not isinstance(req_data, dict):
+        req_data = {}
+
+    req_role         = req_data.get("role")
+    req_enabled      = req_data.get("enabled")
+    req_display_name = req_data.get("display_name")
+    req_password     = req_data.get("password")
+
+    if not is_super and not is_admin and (req_role is not None or req_enabled is not None):
         raise HTTPException(status_code=403, detail="Only admins can change role or enabled status")
 
-    # Super-admin protection: nobody can modify a super-admin account (except themselves changing password)
     loop = asyncio.get_running_loop()
     target_users = await loop.run_in_executor(None, db.list_users)
     target = next((u for u in target_users if str(u.get("id")) == user_id), None)
     if target and (target.get("is_super_admin") or target.get("role") == "super_admin"):
-        # Only allow super-admin to edit their OWN profile fields, but NEVER role or enabled
         if not is_self:
             raise HTTPException(status_code=400, detail="Super-admin accounts cannot be modified by other users.")
-        if req.role is not None or req.enabled is not None:
+        if req_role is not None or req_enabled is not None:
             raise HTTPException(status_code=400, detail="Super-admin role and status are immutable.")
 
-    if req.role is not None:
+    if req_role is not None:
         all_roles = await loop.run_in_executor(None, db.list_roles)
         valid_names = {r["name"] for r in all_roles}
-        if req.role not in valid_names:
-            raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'. Valid: {sorted(valid_names)}")
-        if req.role in ("admin", "super_admin") and not is_super:
+        if req_role not in valid_names:
+            raise HTTPException(status_code=400, detail=f"Unknown role '{req_role}'. Valid: {sorted(valid_names)}")
+        if req_role in ("admin", "super_admin") and not is_super:
             raise HTTPException(status_code=403, detail="Only super-admin can assign admin/super_admin role")
 
     fields = {}
-    if req.display_name is not None: fields["display_name"] = req.display_name
-    if req.role        is not None:  fields["role"]         = req.role
-    if req.enabled     is not None:  fields["enabled"]      = req.enabled
-    if req.password    is not None:
-        if len(req.password) < 6:
+    if req_display_name is not None: fields["display_name"] = str(req_display_name)
+    if req_role         is not None: fields["role"]         = str(req_role)
+    if req_enabled      is not None: fields["enabled"]      = bool(req_enabled)
+    if req_password     is not None and str(req_password).strip():
+        pw_str = str(req_password).strip()
+        if len(pw_str) < 6:
             raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-        fields["password_hash"] = hash_password(req.password)
+        fields["password_hash"] = hash_password(pw_str)
+
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
     try:
         await loop.run_in_executor(None, db.update_user, user_id, fields)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB error: {e}")
+
+    # If role changed, automatically apply role default permissions
+    if req_role is not None:
+        try:
+            all_roles = await loop.run_in_executor(None, db.list_roles)
+            role_obj = next((r for r in all_roles if r["name"] == req_role), None)
+            if role_obj:
+                from rbac import _role_to_perms
+                perms = _role_to_perms(role_obj)
+                await loop.run_in_executor(None, db.save_permissions, user_id, perms)
+        except Exception as _pe:
+            print(f"[update_user] Non-fatal: failed to apply role permissions: {_pe}")
+
     safe = {k: v for k, v in fields.items() if k != "password_hash"}
     _audit(request, _user, "user.update", {"target_id": user_id, "fields": list(safe.keys())})
     return {"status": "ok"}
