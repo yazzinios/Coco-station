@@ -339,6 +339,7 @@ export default function UsersPage() {
   const [pwForm,       setPwForm]       = useState({ password:'', confirm:'' });
   const [pwVisible,    setPwVisible]    = useState(false);
   const [permModal,    setPermModal]    = useState(null);
+  const [permRole,     setPermRole]     = useState('viewer');
   const [perms,        setPerms]        = useState(DEFAULT_PERMS);
   const [permSaving,   setPermSaving]   = useState(false);
 
@@ -490,6 +491,7 @@ export default function UsersPage() {
   const openPerms = async (u) => {
     if (u.is_super_admin || u.role === 'super_admin') { toast.error('Super-admin permissions are fixed and cannot be edited'); return; }
     try {
+      setPermRole(u.role || 'viewer');
       const res = await api.authFetch(`/api/users/${u.id}/permissions`);
       const p = res.ok ? await res.json() : { ...DEFAULT_PERMS };
       setPerms({ ...DEFAULT_PERMS, ...p });
@@ -499,25 +501,36 @@ export default function UsersPage() {
 
   const savePerms = async () => {
     setPermSaving(true);
-    const allowed_decks = (perms.allowed_decks || DECK_IDS).filter(d => DECK_IDS.includes(d));
-    const payload = {
-      allowed_decks,
-      deck_control:   perms.deck_control   || DEFAULT_DECK_CONTROL,
-      deck_actions:   perms.deck_actions   || DEFAULT_DECK_ACTIONS,
-      playlist_perms: perms.playlist_perms || DEFAULT_PLAYLIST_PERMS,
-      can_announce:  !!perms.can_announce,
-      can_schedule:  !!perms.can_schedule,
-      can_library:   !!perms.can_library,
-      can_requests:  !!perms.can_requests,
-      can_settings:  !!perms.can_settings,
-    };
     try {
+      if (permRole !== permModal.role) {
+        const uRes = await api.authFetch(`/api/users/${permModal.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ role: permRole }),
+        });
+        if (!uRes.ok) {
+          const d = await uRes.json().catch(() => {});
+          throw new Error(d?.detail || 'Failed to update user role');
+        }
+      }
+
+      const allowed_decks = (perms.allowed_decks || DECK_IDS).filter(d => DECK_IDS.includes(d));
+      const payload = {
+        allowed_decks,
+        deck_control:   perms.deck_control   || DEFAULT_DECK_CONTROL,
+        deck_actions:   perms.deck_actions   || DEFAULT_DECK_ACTIONS,
+        playlist_perms: perms.playlist_perms || DEFAULT_PLAYLIST_PERMS,
+        can_announce:  !!perms.can_announce,
+        can_schedule:  !!perms.can_schedule,
+        can_library:   !!perms.can_library,
+        can_requests:  !!perms.can_requests,
+        can_settings:  !!perms.can_settings,
+      };
       const res = await api.authFetch(`/api/users/${permModal.id}/permissions`, {
         method: 'PUT',
         body: JSON.stringify(payload),
       });
       if (!res.ok) { const d = await res.json().catch(()=>{}); throw new Error(d?.detail || 'Failed'); }
-      toast.success(`Permissions saved for @${permModal.username}`);
+      toast.success(`Permissions & Role updated for @${permModal.username}`);
       setPermModal(null);
       await loadUsers();
     } catch(e) { toast.error(e.message); }
@@ -701,11 +714,23 @@ export default function UsersPage() {
         </div>
 
         {/* Actions */}
-        <div style={{ display:'flex', gap:'0.4rem', flexShrink:0, alignItems:'center' }}>
-          {/* Edit user / role */}
+        <div style={{ display:'flex', gap:'0.4rem', flexShrink:0, alignItems:'center', flexWrap:'wrap' }}>
+          {/* Edit user profile */}
           {canEdit && (
-            <button onClick={() => openEdit(u)} style={mkBtn('blue')} title="Edit user profile & assigned role">
-              <Edit2 size={12}/> Edit
+            <button onClick={() => openEdit(u)} style={mkBtn('blue')} title="Edit user profile">
+              <Edit2 size={12}/> Edit Profile
+            </button>
+          )}
+          {/* Edit permissions & role — non-super-admin targets */}
+          {isAdmin && !isSuperUser && (
+            <button onClick={() => openPerms(u)} style={mkBtn('purple')} title="Edit granular permissions, role & features">
+              <Lock size={12}/> Permissions & Role
+            </button>
+          )}
+          {/* Reset to role defaults */}
+          {isAdmin && !isSuperUser && (
+            <button onClick={() => applyRoleTemplate(u)} style={mkBtn('gray')} title="Reset permissions to role defaults">
+              <RotateCcw size={12}/> Reset Defaults
             </button>
           )}
           {/* Change password — local accounts only */}
@@ -713,18 +738,6 @@ export default function UsersPage() {
             <button onClick={() => { setPwModal(u); setPwForm({ password:'', confirm:'' }); setPwVisible(false); }}
               style={mkBtn('amber')} title="Change password">
               <Key size={12}/> Password
-            </button>
-          )}
-          {/* Edit permissions — non-super-admin targets */}
-          {isAdmin && !isSelf && !isSuperUser && (
-            <button onClick={() => openPerms(u)} style={mkBtn('purple')} title="Edit granular permissions">
-              <Lock size={12}/> Permissions
-            </button>
-          )}
-          {/* Reset to role defaults */}
-          {isAdmin && !isSelf && !isSuperUser && (
-            <button onClick={() => applyRoleTemplate(u)} style={mkBtn('gray')} title="Reset permissions to role defaults">
-              <RotateCcw size={12}/> Reset
             </button>
           )}
           {/* Delete — not for super-admin, not for self */}
@@ -1038,17 +1051,54 @@ export default function UsersPage() {
 
       {/* ══ Permissions Modal ══════════════════════════════════════════════════ */}
       {permModal && (
-        <Modal title={`🔐 Permissions — @${permModal.username}`} onClose={() => setPermModal(null)} wide>
+        <Modal title={`🔐 Permissions & Role — @${permModal.username}`} onClose={() => setPermModal(null)} wide>
           <div style={{ display:'flex', flexDirection:'column', gap:'1.2rem' }}>
-            <div style={{ padding:'0.7rem 1rem', borderRadius:'8px', background:'rgba(0,212,255,0.06)', border:'1px solid rgba(0,212,255,0.2)', fontSize:'0.8rem', color:TXS }}>
-              Customise <strong style={{ color:'white' }}>@{permModal.username}</strong>'s granular permissions. These override the role defaults.
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'1rem', padding:'0.85rem 1.1rem', borderRadius:'10px', background:'rgba(165,94,234,0.06)', border:'1px solid rgba(165,94,234,0.25)' }}>
+              <div>
+                <span style={{ fontWeight:'700', fontSize:'0.9rem', color:'white', display:'block' }}>Assigned Role</span>
+                <span style={{ fontSize:'0.75rem', color:TXS }}>Selecting a role loads its default permission template below.</span>
+              </div>
+              <select
+                value={permRole}
+                onChange={e => {
+                  const newRole = e.target.value;
+                  setPermRole(newRole);
+                  const roleObj = roles.find(r => r.name === newRole);
+                  if (roleObj) {
+                    setPerms({
+                      allowed_decks:  roleObj.default_allowed_decks  || DECK_IDS,
+                      deck_control:   roleObj.default_deck_control   || DEFAULT_DECK_CONTROL,
+                      deck_actions:   roleObj.default_deck_actions   || DEFAULT_DECK_ACTIONS,
+                      playlist_perms: roleObj.default_playlist_perms || DEFAULT_PLAYLIST_PERMS,
+                      can_announce:   !!roleObj.default_can_announce,
+                      can_schedule:   !!roleObj.default_can_schedule,
+                      can_library:    !!roleObj.default_can_library,
+                      can_requests:   !!roleObj.default_can_requests,
+                      can_settings:   !!roleObj.default_can_settings,
+                    });
+                  }
+                }}
+                style={{ ...INPUT, width:'190px', padding:'0.45rem 0.7rem', appearance:'none', cursor:'pointer' }}
+              >
+                {roles
+                  .filter(r => isSuper || !['super_admin'].includes(r.name))
+                  .map(r => <option key={r.name} value={r.name}>{r.display_name || r.name}</option>)
+                }
+              </select>
             </div>
+
             <PermissionEditor perms={perms} onChange={setPerms}/>
-            <div style={{ display:'flex', justifyContent:'flex-end', gap:'0.6rem', marginTop:'0.5rem' }}>
-              <button onClick={() => setPermModal(null)} style={mkBtn('gray')}>Cancel</button>
-              <button onClick={savePerms} disabled={permSaving} style={mkBtn('blue')}>
-                {permSaving ? '⟳ Saving…' : <><Check size={13}/> Save Permissions</>}
+
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'0.5rem', pt:'0.5rem', borderTop:'1px solid var(--panel-border)' }}>
+              <button onClick={() => applyRoleTemplate(permModal)} style={mkBtn('gray')} title="Reset to role defaults">
+                <RotateCcw size={12}/> Reset to Role Defaults
               </button>
+              <div style={{ display:'flex', gap:'0.6rem' }}>
+                <button onClick={() => setPermModal(null)} style={mkBtn('gray')}>Cancel</button>
+                <button onClick={savePerms} disabled={permSaving} style={mkBtn('purple')}>
+                  {permSaving ? '⟳ Saving…' : <><Check size={13}/> Save Permissions & Role</>}
+                </button>
+              </div>
             </div>
           </div>
         </Modal>
