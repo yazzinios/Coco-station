@@ -308,7 +308,7 @@ async def login(req: LoginRequest, request: Request):
     token = create_token(user_row, expiry_hours=expiry_hrs)
     _audit_login(str(user_row["id"]), user_row["username"], "local", ip)
 
-    perms = await _fetch_permissions(str(user_row["id"]))
+    perms = await _fetch_permissions(str(user_row["id"]), role=user_row.get("role"))
 
     return _login_response(token, user_row, perms, expiry_hrs, source="local")
 
@@ -356,7 +356,9 @@ async def refresh_token(user: dict = Depends(verify_token)):
 
     # Issue fresh token with current role (in case it changed since last login)
     new_token = create_token(user_row, expiry_hours=expiry_hrs)
-    perms     = await _fetch_permissions(user_id)
+    current_role = user_row.get("role", "operator")
+    is_super     = bool(user_row.get("is_super_admin", False)) or current_role == "super_admin"
+    perms        = await _fetch_permissions(user_id, role=current_role)
 
     try:
         db.log_action(user_id, user.get("username"), "token_refresh", {}, "internal")
@@ -372,8 +374,8 @@ async def refresh_token(user: dict = Depends(verify_token)):
             "id":             str(user_row["id"]),
             "username":       user_row["username"],
             "display_name":   user_row.get("display_name") or user_row["username"],
-            "role":           user_row.get("role", "operator"),
-            "is_super_admin": bool(user_row.get("is_super_admin", False)),
+            "role":           current_role,
+            "is_super_admin": is_super,
             "permissions":    perms,
         },
     }
@@ -386,12 +388,28 @@ async def refresh_token(user: dict = Depends(verify_token)):
 async def get_me(user: dict = Depends(verify_token)):
     """Return the currently authenticated user's info + fresh permissions."""
     user_id  = user.get("sub")
-    role_val = user.get("role", "operator")
-    is_super = bool(user.get("is_super_admin", False)) or role_val == "super_admin"
-    perms    = await _fetch_permissions(user_id, role=role_val)
+    loop     = asyncio.get_event_loop()
+
+    # Always fetch fresh role from DB — the JWT may be stale if the role changed
+    try:
+        user_row = await loop.run_in_executor(None, get_user_by_id, db, user_id)
+    except Exception:
+        user_row = None
+
+    if user_row:
+        role_val = user_row.get("role", user.get("role", "operator"))
+        is_super = bool(user_row.get("is_super_admin", False)) or role_val == "super_admin"
+        display  = user_row.get("display_name") or user_row.get("username") or user.get("username")
+    else:
+        role_val = user.get("role", "operator")
+        is_super = bool(user.get("is_super_admin", False)) or role_val == "super_admin"
+        display  = user.get("username")
+
+    perms = await _fetch_permissions(user_id, role=role_val)
     return {
         "id":             user_id,
         "username":       user.get("username"),
+        "display_name":   display,
         "role":           role_val,
         "is_super_admin": is_super,
         "permissions":    perms,

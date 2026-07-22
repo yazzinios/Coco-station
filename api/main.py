@@ -2539,6 +2539,46 @@ class PermissionsRequest(_PydanticBase):
 @app.get("/api/users/{user_id}/permissions")
 async def get_user_permissions(user_id: str, _user: dict = Depends(verify_token)):
     loop = asyncio.get_running_loop()
+
+    # Look up the target user's role so we can return role-aware permissions.
+    # Super-admin and admin always get full access regardless of what's in the DB.
+    try:
+        from db_auth_helpers import get_user_by_id as _get_by_id
+        target_user = await loop.run_in_executor(None, _get_by_id, db, user_id)
+        target_role = (target_user or {}).get("role", "")
+        target_is_super = bool((target_user or {}).get("is_super_admin", False)) or target_role == "super_admin"
+    except Exception:
+        target_role = ""
+        target_is_super = False
+
+    if target_is_super or target_role == "super_admin":
+        return {
+            "allowed_decks":  ["a", "b", "c", "d", "e", "f"],
+            "deck_control":   {d: {"view": True, "control": True} for d in ["a", "b", "c", "d", "e", "f"]},
+            "deck_actions":   ["deck.play", "deck.pause", "deck.stop", "deck.next", "deck.previous",
+                               "deck.volume", "deck.crossfader", "deck.load_track", "deck.load_playlist"],
+            "playlist_perms": ["playlist.view", "playlist.load", "playlist.create", "playlist.edit", "playlist.delete"],
+            "can_announce":   True,
+            "can_schedule":   True,
+            "can_library":    True,
+            "can_requests":   True,
+            "can_settings":   True,
+        }
+
+    if target_role == "admin":
+        return {
+            "allowed_decks":  ["a", "b", "c", "d", "e", "f"],
+            "deck_control":   {d: {"view": True, "control": True} for d in ["a", "b", "c", "d", "e", "f"]},
+            "deck_actions":   ["deck.play", "deck.pause", "deck.stop", "deck.next", "deck.previous",
+                               "deck.volume", "deck.crossfader", "deck.load_track", "deck.load_playlist"],
+            "playlist_perms": ["playlist.view", "playlist.load", "playlist.create", "playlist.edit", "playlist.delete"],
+            "can_announce":   True,
+            "can_schedule":   True,
+            "can_library":    True,
+            "can_requests":   True,
+            "can_settings":   False,
+        }
+
     return await loop.run_in_executor(None, db.get_permissions, user_id)
 
 @app.put("/api/users/{user_id}/permissions")
