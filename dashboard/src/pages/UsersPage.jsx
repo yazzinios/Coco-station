@@ -309,7 +309,7 @@ export default function UsersPage() {
   const { currentUser, api } = useApp();
   const { toasts, toast } = useToast();
 
-  const isSuper = currentUser?.is_super_admin;
+  const isSuper = Boolean(currentUser?.is_super_admin || currentUser?.role === 'super_admin');
   const isAdmin = currentUser?.role === 'admin' || isSuper;
 
   // State
@@ -596,7 +596,7 @@ export default function UsersPage() {
         {/* Actions */}
         <div style={{ display:'flex', gap:'0.4rem', flexShrink:0, alignItems:'center' }}>
           {/* Edit user / role */}
-          {canEdit && !isSuperUser && (
+          {canEdit && (
             <button onClick={() => openEdit(u)} style={mkBtn('blue')} title="Edit user profile & assigned role">
               <Edit2 size={12}/> Edit
             </button>
