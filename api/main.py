@@ -2502,9 +2502,16 @@ async def get_user_permissions(user_id: str, _user: dict = Depends(verify_token)
     return await loop.run_in_executor(None, db.get_permissions, user_id)
 
 @app.put("/api/users/{user_id}/permissions")
-async def save_user_permissions(user_id: str, req: PermissionsRequest, request: Request, _user: dict = Depends(verify_token)):
+async def save_user_permissions(user_id: str, request: Request, _user: dict = Depends(verify_token)):
     if not (_user.get("is_super_admin") or _user.get("role") == "admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
 
     loop = asyncio.get_running_loop()
     # Super-admin protection: permissions of super-admin accounts cannot be overridden
@@ -2513,33 +2520,32 @@ async def save_user_permissions(user_id: str, req: PermissionsRequest, request: 
     if target and (target.get("is_super_admin") or target.get("role") == "super_admin"):
         raise HTTPException(status_code=400, detail="Super-admin permissions cannot be modified.")
 
-    # Bug #5 fix: prevent admins from granting super_admin or admin-level
-    # access to other users, since admins cannot elevate beyond their own role.
+    # Bug #5 fix: prevent admins from granting super_admin or admin-level access
     if not _user.get("is_super_admin"):
         if target and target.get("role") in ("super_admin", "admin"):
             raise HTTPException(
                 status_code=403,
                 detail="Admins cannot modify permissions of super_admin or admin accounts."
             )
-        # Also block setting can_settings=True (reserved for super_admin)
-        if req.can_settings:
+        if body.get("can_settings"):
             raise HTTPException(
                 status_code=403,
                 detail="Only super_admin can grant the settings permission."
             )
 
     from db_client import DEFAULT_DECK_CONTROL, DEFAULT_DECK_ACTIONS, DEFAULT_PLAYLIST_PERMS
-    perms = req.dict()
-    if perms.get("allowed_decks") is None:  perms["allowed_decks"]  = ["a","b","c","d","e","f"]
-    if perms.get("deck_control")   is None:  perms["deck_control"]   = DEFAULT_DECK_CONTROL
-    if perms.get("deck_actions")   is None:  perms["deck_actions"]   = DEFAULT_DECK_ACTIONS
-    if perms.get("playlist_perms") is None:  perms["playlist_perms"] = DEFAULT_PLAYLIST_PERMS
-    perms["can_announce"] = bool(perms.get("can_announce", True))
-    perms["can_schedule"] = bool(perms.get("can_schedule", True))
-    perms["can_library"]  = bool(perms.get("can_library", True))
-    perms["can_requests"] = bool(perms.get("can_requests", True))
-    perms["can_settings"] = bool(perms.get("can_settings", False))
-    loop = asyncio.get_running_loop()
+    perms = {
+        "allowed_decks":  body.get("allowed_decks") if isinstance(body.get("allowed_decks"), list) else ["a","b","c","d","e","f"],
+        "deck_control":   body.get("deck_control") if isinstance(body.get("deck_control"), dict) else DEFAULT_DECK_CONTROL,
+        "deck_actions":   body.get("deck_actions") if isinstance(body.get("deck_actions"), list) else DEFAULT_DECK_ACTIONS,
+        "playlist_perms": body.get("playlist_perms") if isinstance(body.get("playlist_perms"), list) else DEFAULT_PLAYLIST_PERMS,
+        "can_announce":  bool(body.get("can_announce", True)),
+        "can_schedule":  bool(body.get("can_schedule", True)),
+        "can_library":   bool(body.get("can_library", True)),
+        "can_requests":  bool(body.get("can_requests", True)),
+        "can_settings":  bool(body.get("can_settings", False)),
+    }
+
     await loop.run_in_executor(None, db.save_permissions, user_id, perms)
     _audit(request, _user, "user.permissions", {"target_id": user_id, "decks": perms["allowed_decks"]})
     return {"status": "ok"}
