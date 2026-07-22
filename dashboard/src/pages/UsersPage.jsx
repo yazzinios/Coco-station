@@ -64,6 +64,16 @@ const DEFAULT_PERMS = {
 
 const EMPTY_USER_FORM = { username:'', display_name:'', password:'', role:'viewer' };
 
+const EMPTY_ROLE_FORM = {
+  name: '', display_name: '', description: '', color: '#2563EB',
+  default_allowed_decks:  DECK_IDS,
+  default_deck_control:   DEFAULT_DECK_CONTROL,
+  default_deck_actions:   DEFAULT_DECK_ACTIONS,
+  default_playlist_perms: DEFAULT_PLAYLIST_PERMS,
+  default_can_announce: true, default_can_schedule: true, default_can_library: true,
+  default_can_requests: true, default_can_settings: false,
+};
+
 // Role colour palette
 const ROLE_COLORS = {
   super_admin: '#DC2626',
@@ -525,6 +535,103 @@ export default function UsersPage() {
     } catch(e) { toast.error(e.message); }
   };
 
+  // ── Role Management Actions ────────────────────────────────────────────────
+  const [roleModal,  setRoleModal]  = useState(false); // false | 'add' | 'edit'
+  const [roleTarget, setRoleTarget] = useState(null);
+  const [roleForm,   setRoleForm]   = useState(EMPTY_ROLE_FORM);
+  const [roleSaving, setRoleSaving] = useState(false);
+
+  const openAddRole = () => {
+    setRoleTarget(null);
+    setRoleForm(EMPTY_ROLE_FORM);
+    setRoleModal('add');
+  };
+
+  const openEditRole = (r) => {
+    setRoleTarget(r);
+    setRoleForm({
+      name: r.name,
+      display_name: r.display_name || r.name,
+      description: r.description || '',
+      color: r.color || '#6B7280',
+      default_allowed_decks:  r.default_allowed_decks  || DECK_IDS,
+      default_deck_control:   r.default_deck_control   || DEFAULT_DECK_CONTROL,
+      default_deck_actions:   r.default_deck_actions   || DEFAULT_DECK_ACTIONS,
+      default_playlist_perms: r.default_playlist_perms || DEFAULT_PLAYLIST_PERMS,
+      default_can_announce:   !!r.default_can_announce,
+      default_can_schedule:   !!r.default_can_schedule,
+      default_can_library:    !!r.default_can_library,
+      default_can_requests:   !!r.default_can_requests,
+      default_can_settings:   !!r.default_can_settings,
+    });
+    setRoleModal('edit');
+  };
+
+  const handleSaveRole = async () => {
+    if (roleModal === 'add') {
+      if (!roleForm.name.trim() || !roleForm.display_name.trim()) {
+        toast.error('Role name and display name are required');
+        return;
+      }
+      setRoleSaving(true);
+      try {
+        const res = await api.authFetch('/api/roles', {
+          method: 'POST',
+          body: JSON.stringify(roleForm),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => {});
+          throw new Error(d?.detail || 'Failed to create role');
+        }
+        toast.success(`Role "${roleForm.display_name}" created`);
+        setRoleModal(false);
+        await loadUsers();
+      } catch (e) {
+        toast.error(e.message);
+      } finally {
+        setRoleSaving(false);
+      }
+    } else {
+      setRoleSaving(true);
+      try {
+        const res = await api.authFetch(`/api/roles/${roleTarget.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(roleForm),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => {});
+          throw new Error(d?.detail || 'Failed to update role');
+        }
+        toast.success(`Role "${roleForm.display_name}" updated`);
+        setRoleModal(false);
+        await loadUsers();
+      } catch (e) {
+        toast.error(e.message);
+      } finally {
+        setRoleSaving(false);
+      }
+    }
+  };
+
+  const handleDeleteRole = async (r) => {
+    if (r.is_system) {
+      toast.error('System roles cannot be deleted');
+      return;
+    }
+    if (!window.confirm(`Delete role "${r.display_name || r.name}"?`)) return;
+    try {
+      const res = await api.authFetch(`/api/roles/${r.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const d = await res.json().catch(() => {});
+        throw new Error(d?.detail || 'Failed to delete role');
+      }
+      toast.success(`Role "${r.name}" deleted`);
+      await loadUsers();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  };
+
   // ── Render User Card ──────────────────────────────────────────────────────
   const renderUserRow = (u, isPending) => {
     const isSelf          = u.id === currentUser?.id;
@@ -652,9 +759,14 @@ export default function UsersPage() {
           <button onClick={() => { setLoading(true); loadUsers(); }} style={mkBtn('gray')} title="Refresh">
             <RefreshCw size={14}/>
           </button>
-          {isAdmin && (
+          {isAdmin && tab === 'users' && (
             <button onClick={openAdd} style={{ ...mkBtn('blue'), padding:'0.45rem 1rem', fontSize:'0.85rem' }}>
               <Plus size={14}/> Add User
+            </button>
+          )}
+          {isAdmin && tab === 'roles' && (
+            <button onClick={openAddRole} style={{ ...mkBtn('purple'), padding:'0.45rem 1rem', fontSize:'0.85rem' }}>
+              <Plus size={14}/> Add Custom Role
             </button>
           )}
         </div>
@@ -683,6 +795,7 @@ export default function UsersPage() {
       <div style={{ display:'flex', gap:'0.5rem', marginBottom:'1.2rem' }}>
         {[
           { id:'users', label:'Users', icon:<Users size={14}/> },
+          { id:'roles', label:'Roles & Templates', icon:<Shield size={14}/> },
           { id:'logs',  label:'Activity Log', icon:<Activity size={14}/> },
         ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -743,6 +856,74 @@ export default function UsersPage() {
               {activeUsers.map(u => renderUserRow(u, false))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Roles Tab */}
+      {tab === 'roles' && (
+        <div>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.2rem', flexWrap:'wrap', gap:'0.8rem' }}>
+            <div>
+              <h3 style={{ margin:0, fontSize:'1.05rem', fontWeight:'700', color:'white' }}>Role Permission Templates</h3>
+              <p style={{ margin:'0.2rem 0 0', fontSize:'0.82rem', color:TXS }}>
+                Default permissions and access templates granted to users assigned each role.
+              </p>
+            </div>
+            {isAdmin && (
+              <button onClick={openAddRole} style={{ ...mkBtn('purple'), padding:'0.45rem 0.9rem', fontSize:'0.82rem' }}>
+                <Plus size={13}/> Add Custom Role
+              </button>
+            )}
+          </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(320px, 1fr))', gap:'1rem' }}>
+            {roles.map(r => {
+              const assignedCount = users.filter(u => u.role === r.name).length;
+              const rColor = r.color || ROLE_COLORS[r.name] || '#6B7280';
+              return (
+                <div key={r.id || r.name} style={{
+                  padding:'1.2rem', borderRadius:'14px', border:'1px solid var(--panel-border)',
+                  background:'rgba(255,255,255,0.02)', display:'flex', flexDirection:'column', gap:'0.85rem',
+                  boxShadow:'0 4px 16px rgba(0,0,0,0.25)',
+                }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
+                      <span style={{ width:'12px', height:'12px', borderRadius:'50%', background:rColor, display:'inline-block' }}/>
+                      <span style={{ fontWeight:'700', fontSize:'0.95rem', color:'white' }}>{r.display_name || r.name}</span>
+                    </div>
+                    <span style={{
+                      fontSize:'0.68rem', padding:'0.15rem 0.5rem', borderRadius:'99px',
+                      background: r.is_system ? 'rgba(255,255,255,0.06)' : 'rgba(165,94,234,0.15)',
+                      color: r.is_system ? TXS : '#a55eea', border:`1px solid ${r.is_system ? 'var(--panel-border)' : 'rgba(165,94,234,0.3)'}`,
+                      fontWeight:'600', textTransform:'uppercase', letterSpacing:'0.5px',
+                    }}>
+                      {r.is_system ? 'System' : 'Custom'}
+                    </span>
+                  </div>
+
+                  <p style={{ margin:0, fontSize:'0.8rem', color:TXS, lineHeight:'1.45', minHeight:'2.4rem' }}>
+                    {r.description || 'System role default template.'}
+                  </p>
+
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', fontSize:'0.78rem', color:TXS, paddingTop:'0.6rem', borderTop:'1px solid var(--panel-border)' }}>
+                    <span style={{ fontWeight:'600' }}>👥 {assignedCount} user{assignedCount!==1?'s':''}</span>
+                    <div style={{ display:'flex', gap:'0.4rem' }}>
+                      {isAdmin && (
+                        <button onClick={() => openEditRole(r)} style={mkBtn('blue')} title="Edit Role Template">
+                          <Edit2 size={12}/> Edit Template
+                        </button>
+                      )}
+                      {!r.is_system && isSuper && (
+                        <button onClick={() => handleDeleteRole(r)} style={mkBtn('red')} title="Delete Custom Role">
+                          <Trash2 size={12}/> Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
