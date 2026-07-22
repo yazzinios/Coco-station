@@ -102,17 +102,21 @@ _UUID_RE = re.compile(
 async def _fetch_permissions(user_id: str, role: str = None, source: str = None, permission_overrides: dict = None) -> dict:
     """
     Fetch permissions for a user.
-
-    Unified-identity LDAP users (USER_ROLE_REDESIGN_PLAN.md) are real rows in
-    `users` with a real UUID id, so they can't be distinguished from local
-    users by id shape anymore — `source` (carried in the JWT / passed by the
-    caller) is what selects the resolution path:
-
-      source == 'ldap' -> role defaults from the `roles` table, merged with
-                           the user's `permission_overrides` (plan §6).
-      source == 'local' (default) -> the existing per-user `user_permissions`
-                           table, as before.
+    Admins and Super-Admins always receive full permissions.
     """
+    if role in ("super_admin", "admin"):
+        return {
+            "allowed_decks":  ["a", "b", "c", "d", "e", "f"],
+            "deck_control":   { d: {"view": True, "control": True} for d in ["a", "b", "c", "d", "e", "f"] },
+            "deck_actions":   ["deck.play","deck.pause","deck.stop","deck.next","deck.previous","deck.volume","deck.crossfader","deck.load_track","deck.load_playlist"],
+            "playlist_perms": ["playlist.view","playlist.load","playlist.create","playlist.edit","playlist.delete"],
+            "can_announce":   True,
+            "can_schedule":   True,
+            "can_library":    True,
+            "can_requests":   True,
+            "can_settings":   role == "super_admin",
+        }
+
     if source == "ldap" and role:
         try:
             loop = asyncio.get_event_loop()
@@ -121,13 +125,11 @@ async def _fetch_permissions(user_id: str, role: str = None, source: str = None,
                 from rbac import _role_to_perms
                 perms = _role_to_perms(role_obj)
             else:
-                print(f"[auth] LDAP user '{user_id}' — role '{role}' not found in roles table, using zero-access defaults")
                 perms = {
                     "allowed_decks": [], "deck_control": {}, "deck_actions": [], "playlist_perms": [],
                     "can_announce": False, "can_schedule": False, "can_library": False,
                     "can_requests": False, "can_settings": False,
                 }
-            # USER_ROLE_REDESIGN_PLAN.md §6: effective = role_defaults merged with permission_overrides
             if permission_overrides:
                 perms.update(permission_overrides)
             return perms
@@ -312,6 +314,7 @@ async def login(req: LoginRequest, request: Request):
 
 
 def _login_response(token: str, user: dict, perms: dict, expiry_hrs: int, source: str = "local") -> dict:
+    is_super = bool(user.get("is_super_admin", False)) or user.get("role") == "super_admin"
     return {
         "access_token":     token,
         "token_type":       "bearer",
@@ -322,7 +325,7 @@ def _login_response(token: str, user: dict, perms: dict, expiry_hrs: int, source
             "username":       user.get("username", ""),
             "display_name":   user.get("display_name") or user.get("username", ""),
             "role":           user.get("role", "operator"),
-            "is_super_admin": bool(user.get("is_super_admin", False)),
+            "is_super_admin": is_super,
             "source":         source,
             "permissions":    perms,
         },
@@ -382,14 +385,15 @@ async def refresh_token(user: dict = Depends(verify_token)):
 @auth_router.get("/api/auth/me")
 async def get_me(user: dict = Depends(verify_token)):
     """Return the currently authenticated user's info + fresh permissions."""
-    user_id = user.get("sub")
-    # For LDAP users the sub is "ldap-username"; pass the role from the token
-    perms   = await _fetch_permissions(user_id, role=user.get("role"))
+    user_id  = user.get("sub")
+    role_val = user.get("role", "operator")
+    is_super = bool(user.get("is_super_admin", False)) or role_val == "super_admin"
+    perms    = await _fetch_permissions(user_id, role=role_val)
     return {
         "id":             user_id,
         "username":       user.get("username"),
-        "role":           user.get("role", "operator"),
-        "is_super_admin": bool(user.get("is_super_admin", False)),
+        "role":           role_val,
+        "is_super_admin": is_super,
         "permissions":    perms,
     }
 

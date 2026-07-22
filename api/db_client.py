@@ -911,8 +911,10 @@ class DBClient:
                 self._put_conn(conn)
 
     def update_user(self, user_id: str, fields: dict):
-        allowed = {"display_name", "role", "enabled", "password_hash"}
+        allowed = {"display_name", "role", "enabled", "password_hash", "is_super_admin"}
         data = {k: v for k, v in fields.items() if k in allowed}
+        if "role" in data:
+            data["is_super_admin"] = (data["role"] == "super_admin")
         if not data: return
         if self.mode == "cloud":
             try:
