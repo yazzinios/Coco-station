@@ -495,7 +495,6 @@ async def create_user_extended(
 @router.post("/users/{user_id}/apply-role-template")
 async def apply_role_template(
     user_id: str,
-    req: ApplyRoleTemplateRequest,
     request: Request,
     _user: dict = Depends(require_admin),
 ):

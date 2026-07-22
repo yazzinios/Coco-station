@@ -2373,27 +2373,41 @@ async def list_users(_user: dict = Depends(verify_token)):
     return [{k: v for k, v in u.items() if k != "password_hash"} for u in users]
 
 @app.post("/api/users", status_code=201)
-async def create_user(req: UserCreateRequest, request: Request, _user: dict = Depends(verify_token)):
+async def create_user(request: Request, _user: dict = Depends(verify_token)):
     if not (_user.get("role") == "admin" or _user.get("is_super_admin")):
         raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    username     = str(body.get("username") or "").strip()
+    display_name = str(body.get("display_name") or username).strip()
+    password     = str(body.get("password") or "")
+    role         = str(body.get("role") or "viewer").strip().lower()
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username required")
 
     loop = asyncio.get_running_loop()
     all_roles = await loop.run_in_executor(None, db.list_roles)
     valid_names = {r["name"] for r in all_roles}
-    role = req.role.strip().lower()
     if role not in valid_names:
         raise HTTPException(status_code=400, detail=f"Unknown role '{role}'. Valid: {sorted(valid_names)}")
 
     if role in ("admin", "super_admin") and not _user.get("is_super_admin"):
         raise HTTPException(status_code=403, detail="Only super-admin can create admin accounts")
-    if len(req.password) < 6:
+    if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    pw_hash = hash_password(req.password)
+    pw_hash = hash_password(password)
     user_id = str(uuid.uuid4())
     try:
         user = await loop.run_in_executor(None, db.create_user, user_id,
-                                           req.username.strip(),
-                                           req.display_name or req.username.strip(),
+                                           username,
+                                           display_name or username,
                                            pw_hash, role,
                                            role == "super_admin")
     except Exception as e:
@@ -2411,11 +2425,11 @@ async def create_user(req: UserCreateRequest, request: Request, _user: dict = De
     except Exception as e:
         print(f"[create_user] Failed to auto-apply role permissions: {e}")
 
-    _audit(request, _user, "user.create", {"target": req.username, "role": role})
+    _audit(request, _user, "user.create", {"target": username, "role": role})
     return {k: v for k, v in user.items() if k != "password_hash"}
 
 @app.put("/api/users/{user_id}")
-async def update_user(user_id: str, req: UserUpdateRequest, request: Request, _user: dict = Depends(verify_token)):
+async def update_user(user_id: str, request: Request, _user: dict = Depends(verify_token)):
     is_super = _user.get("is_super_admin", False)
     is_admin = _user.get("role") == "admin"
     is_self  = _user.get("sub") == user_id
