@@ -594,37 +594,37 @@ export default function UsersPage() {
         </div>
 
         {/* Actions */}
-        <div style={{ display:'flex', gap:'0.35rem', flexShrink:0 }}>
-          {/* Edit user */}
+        <div style={{ display:'flex', gap:'0.4rem', flexShrink:0, alignItems:'center' }}>
+          {/* Edit user / role */}
           {canEdit && !isSuperUser && (
-            <button onClick={() => openEdit(u)} style={mkBtn('blue')} title="Edit user">
-              <Edit2 size={12}/>
+            <button onClick={() => openEdit(u)} style={mkBtn('blue')} title="Edit user profile & assigned role">
+              <Edit2 size={12}/> Edit
             </button>
           )}
           {/* Change password — local accounts only */}
           {canEdit && u.source === 'local' && (
             <button onClick={() => { setPwModal(u); setPwForm({ password:'', confirm:'' }); setPwVisible(false); }}
               style={mkBtn('amber')} title="Change password">
-              <Key size={12}/>
+              <Key size={12}/> Password
             </button>
           )}
           {/* Edit permissions — non-super-admin targets */}
           {isAdmin && !isSelf && !isSuperUser && (
-            <button onClick={() => openPerms(u)} style={mkBtn('purple')} title="Edit permissions">
-              <Lock size={12}/>
+            <button onClick={() => openPerms(u)} style={mkBtn('purple')} title="Edit granular permissions">
+              <Lock size={12}/> Permissions
             </button>
           )}
           {/* Reset to role defaults */}
           {isAdmin && !isSelf && !isSuperUser && (
-            <button onClick={() => applyRoleTemplate(u)} style={mkBtn('gray')} title="Reset to role defaults">
-              <RotateCcw size={12}/>
+            <button onClick={() => applyRoleTemplate(u)} style={mkBtn('gray')} title="Reset permissions to role defaults">
+              <RotateCcw size={12}/> Reset
             </button>
           )}
           {/* Delete — not for super-admin, not for self */}
-          {!isSelf && !isSuperUser && (isAdmin) && (
+          {!isSelf && !isSuperUser && isAdmin && (
             <button onClick={() => handleDeleteUser(u)} disabled={deleting === u.id}
-              style={{ ...mkBtn('red'), opacity: deleting===u.id ? 0.4 : 1 }} title="Delete user">
-              <Trash2 size={12}/>
+              style={{ ...mkBtn('red'), opacity: deleting===u.id ? 0.4 : 1 }} title="Delete user account">
+              <Trash2 size={12}/> Delete
             </button>
           )}
         </div>
